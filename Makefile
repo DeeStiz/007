@@ -219,6 +219,15 @@ endif
 
 OBJCOPY := $(TOOLCHAIN)objcopy
 
+# Apple clang must preprocess the linker script in C mode: Darwin's `/usr/bin/cpp`
+# leaves the legacy `_##name##Segment` token-paste macros untouched. Keep the
+# historical standalone `cpp` path for Linux and other source-build hosts.
+ifeq ($(shell uname -s),Darwin)
+  LD_PREPROCESSOR := clang -x c -E
+else
+  LD_PREPROCESSOR := cpp
+endif
+
 
 
 
@@ -325,7 +334,7 @@ endif
 
 #Link Files
 $(APPELF): $(RSPOBJECTS) $(ULTRAOBJECTS) $(HEADEROBJECTS) $(OBSEG_RZ) $(BUILD_DIR)/$(OBSEGMENT) $(MUSIC_RZ_FILES) $(BOOTOBJECTS) $(CODEOBJECTS) $(GAMEOBJECTS) $(RZOBJECTS) $(ROMOBJECTS) $(ASSET_DATAOBJECTS) $(ROMOBJECTS2) $(RAMROM_OBJECTS) $(FONTOBJECTS) $(MUSIC_OBJECTS) $(OBSEG_OBJECTS) ge007.ld
-	cpp $(LDFILEOPTS) -P ge007.ld -o $(BUILD_DIR)/ge007.$(OUTCODE).ld
+	$(LD_PREPROCESSOR) $(LDFILEOPTS) -P ge007.ld -o $(BUILD_DIR)/ge007.$(OUTCODE).ld
 	@echo "Linking Files into ELF"
 	$(LD) $(LDFLAGS) -o $@
 
