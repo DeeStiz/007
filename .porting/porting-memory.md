@@ -2,10 +2,11 @@
 
 ## Active Goal
 
-- Goal: `classic-gbi-static-prop-replay`
-- Goal document: `.porting/goal-classic-gbi-static-prop-replay.md`
-- Current milestone: None — `classic-gbi-static-prop-replay` complete
-- Status: Complete; prior `native-metal-first-frame` goal remains complete
+- Goal: `classic-textured-prop-material`
+- Goal document: `.porting/goal-classic-textured-prop-material.md`
+- Current milestone: none; M0–M8 complete
+- Status: Complete; prior `classic-gbi-static-prop-replay` and
+  `native-metal-first-frame` goals are complete
 
 # Watch List
 
@@ -33,6 +34,13 @@
 - Texture/TMEM/TLUT/combiner fidelity is explicitly deferred. Replay records texture/mode state, while the visible prop acceptance uses an explicitly labeled vertex-color diagnostic material.
 - Missing or mismatched extracted assets must fail closed. The native host must never fall back to reading the external ROM or bundle generated private assets.
 - The M10 replay/event hashes are stable, but raw `CGWindowListCreateImage` screenshots can vary SDR channels by one code between captures because of the local compositor; retain the screenshot artifact and treat the replay/GPU evidence as the deterministic acceptance baseline.
+- The next goal must preserve V1/V2 replay hashes and add V3 texture/material records; do not retrofit texture pointers or mutable texture graphs into existing ABI records.
+- Ammo texture source facts are fixed by repository evidence: AMMOCRATE1 is I8/Huffman-blur 64x32, AMMOTEXT765 is IA4/Huffman-lookup 128x16, and CRATEROPE is RGBA16-CI8 with a 256-entry palette at 32x32.
+- The crate primary list contains custom `G_SETTEX`/`G_TEXTURE` but no generic texture-load commands. Reproduce the source runtime's bounded material expansion from `ModelFileTextures` and decoded payloads; do not invent source commands or claim generic RDP coverage.
+- Metal 4 texture upload requires private shader-readable textures, shared staging, unified compute-encoder copies, committed residency, and explicit event/barrier synchronization. Never silently fall back to the vertex-color diagnostic material.
+- The completed M11 textured lane is bounded to the three ROM-derived payloads and the crate's custom `G_SETTEX`/`G_TEXTURE` expansion. The exact replay hashes are packet `11580554792388204033`, event `9845751795158270468`, and material `14168780479827987350`; the runtime matches these hashes at 60 frames/240 draws with six resource allocations.
+- M11 provenance is captured in `build/native/classic-textures/classic-texture-manifest.txt`; the external ROM remains outside the checkout and bundle. PNGs are diagnostic only. The inspected capture proves three texture uploads (`64x32`, `128x16`, `32x32` RGBA8Unorm), three compute blits, four render draws, and one texture plus one sampler binding per stage.
+- M11 lifecycle evidence is separate from the capture run: resize `960x540 -> 800x450 -> 1024x576`, normal-process leaks `0 leaks for 0 total leaked bytes`, and `shutdown=1`. Local screenshots remain compositor evidence, not N64 visual parity.
 
 # Feature Status
 
@@ -41,7 +49,7 @@
 | Source provenance / Git | Implemented | Shallow local `HEAD` references upstream `c4356466796c697dfd298010b9bed261f9ed8c6a`; tracked source matches except documented Darwin portability edits. |
 | Original N64 build baseline | Implemented | The native Linux qemu-irix reference lane passes `sha1sum -c ge007.u.sha1` with the expected US ROM hash; macOS remains a documented portability lane. |
 | External ROM provenance | Implemented | Correct US ROM SHA-1 verified; remains external and untracked. |
-| Extracted asset pipeline | Partial | Assets extracted; no native manifest, bundle policy, or repeatability proof. |
+| Extracted asset pipeline | Implemented | M11 provenance extraction is repeatable, guarded by exact ROM/imagelist offsets and hashes, and writes only ignored build output; private payloads are not bundled. |
 | Native Apple-Clang archive | Implemented | M1 archive/test harnesses pass under `scripts/test_native_m1.sh`; N64 objects remain out of the archive. |
 | Fixed-width C/Swift ABI | Implemented | C and Swift layout assertions, malformed-input tests, and pointer-free V1/V2 boundary checks pass. |
 | Deterministic fixture producer | Implemented | Synthetic three-vertex/two-command triangle fixture is deterministic; GBI normalization remains M7. |
@@ -61,17 +69,22 @@
 | Nested display lists / segments | Implemented | Classic `G_DL` push/branch/return, `G_MOVEWORD` segment aliases, cycle rejection, and command/depth budgets pass. |
 | Matrix / viewport / transforms | Implemented | Classic s15.16 matrices, modelview/projection stacks, viewport mapping, and transformed draw hashes pass; lighting/clipping remain deferred. |
 | ROM-derived ammo-crate ingestion | Implemented | External `Pammo_crate1Z.bin` manifest/hash guard and C parser replay 40 vertices/20 triangles in source order pass. |
-| Static prop Metal replay | Implemented | Four transformed draw packets render through Metal 4 argument tables/residency with explicit vertex-color diagnostic material. |
-| Textures / TMEM / TLUT / samplers | Not started | Deferred. |
+| Static prop Metal replay | Implemented | Four transformed draw packets render through Metal 4 argument tables/residency; V2 remains the explicit vertex-color diagnostic lane. |
+| Texture/material ABI v3 | Implemented | Fixed-width V3 UV/material/TMEM/TLUT records and deterministic packet/event/material hashes preserve V1/V2 layouts and hashes. |
+| PD texture decoding | Implemented | Bounded native decoders cover I8/Huffman-blur, IA4/Huffman-lookup, and RGBA16-CI8/TLUT with malformed-input tests and deterministic decoded hashes. |
+| TMEM/TLUT material state | Implemented | The crate's custom `G_SETTEX`/`G_TEXTURE` sequence expands to bounded texture-image, tile, TMEM, and TLUT plans; generic RDP load commands remain out of scope. |
+| Metal 4 texture upload/sampling | Implemented | Private RGBA8 textures use shared staging and unified compute copies with residency, event/barrier synchronization, argument-table texture/sampler bindings, and no fallback. |
+| Textured ammo-crate material | Implemented | All four crate draw groups render source UVs with the explicit `TEXEL0 * vertex shade` material; runtime and capture bindings are inspected. |
+| Textures / TMEM / TLUT / samplers | Partial | Bounded M11 material path is implemented; generic texture database, RDP load commands, and full combiner parity remain deferred. |
 | Combiner / raster / depth / fog | Not started | Deferred. |
 | Full source display-list production | Not started | `bossEntry`, `bossMainloop`, and `lvlRender` deferred. |
 | Audio | Not started | Deferred. |
 | Saves / replay | Not started | Deferred. |
-| Debug markers / resource labels | Implemented | M8/M10 frame, encoder, pipeline, buffer, and draw labels are present in inspected captures. |
-| Metal validation | Implemented | M4–M9 real-device runs use API/load/store/shader validation; no reported Metal fault. |
-| GPU capture / `gpudebug` | Implemented | M5/M8/M10 `.gputrace` capture plus command-tree, draw, pipeline, binding, and attachment inspection pass; resource fetch remains environment-limited. |
-| ASan / UBSan / leaks | Implemented | C/M1/M7 and bounded Swift/AppKit host ASan/UBSan runs pass; the separate normal non-HUD host reports zero leaks. |
-| Metal HUD / resource stability | Implemented | M9 synthetic and M10 classic-prop runs pass 60 frames, explicit residency/resource counts, resize, and no Metal fault log. |
+| Debug markers / resource labels | Implemented | M8/M10/M11 frame, encoder, pipeline, buffer, texture, staging, and draw labels are present in inspected captures. |
+| Metal validation | Implemented | M4–M11 real-device runs use API/load/store/shader validation; no reported Metal fault. |
+| GPU capture / `gpudebug` | Implemented | M5/M8/M10/M11 `.gputrace` captures plus command-tree, compute, draw, texture, pipeline, sampler, binding, and attachment inspection pass; resource fetch remains environment-limited. |
+| ASan / UBSan / leaks | Implemented | C/M1/M7/M11 ASan/UBSan runs pass; the separate normal M11 textured host reports zero leaks. |
+| Metal HUD / resource stability | Implemented | M9 synthetic, M10 classic-prop, and M11 textured runs pass 60 frames with explicit residency/resource counts; M11 resize, shutdown, and validation also pass. |
 | Emulator/reference visual parity | Not started | No reference artifacts currently available. |
 | Sustained performance / release | Not started | Deferred beyond this goal. |
 
@@ -98,4 +111,5 @@ Status values: Not started, Stubbed, Partial, Implemented.
 - A port screenshot is not an N64 reference image.
 - The verified ROM proves provenance, not game or renderer parity.
 - GPU capture must be inspected and correlated with the intended packet/draw count.
+- Texture decoder hashes, PNG diagnostics, and sampled Metal output do not establish N64 texture or pixel parity without emulator/reference artifacts.
 - Bounded ASan, leaks, and HUD runs do not prove unexercised paths or indefinite stability.

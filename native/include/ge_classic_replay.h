@@ -12,10 +12,9 @@
 
 #include <stdint.h>
 
-/* SwiftPM imports public headers in filename order, so make this header
-   self-contained while retaining the intentional goldeneye_native.h include
-   at the end of that header. Include guards make the cycle harmless. */
-#include "goldeneye_native.h"
+/* SwiftPM imports public headers in filename order; use the shared foundation
+   rather than depending on goldeneye_native.h include order. */
+#include "ge_native_foundation.h"
 
 #define GE_CLASSIC_REPLAY_ABI_VERSION ((uint32_t)2u)
 #define GE_CLASSIC_REPLAY_PACKET_VERSION ((uint32_t)1u)

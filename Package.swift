@@ -15,7 +15,7 @@ let package = Package(
             name: "GoldenEyeNative",
             path: "native",
             exclude: ["host", "shaders", "tests"],
-            sources: ["src/goldeneye_native.c", "src/ge_classic_replay.c"],
+            sources: ["src/goldeneye_native.c", "src/ge_classic_replay.c", "src/ge_texture_decode.c", "src/ge_texture_replay.c"],
             publicHeadersPath: "include"
         ),
         .executableTarget(

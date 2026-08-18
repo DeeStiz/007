@@ -71,6 +71,8 @@ final class GoldenEyeMetalDeviceState {
             captureOutputPath = "/tmp/goldeneye-m8-triangle.gputrace"
         } else if environment["GOLDENEYE_M10_CAPTURE"] == "1" {
             captureOutputPath = "/tmp/goldeneye-m10-classic-prop.gputrace"
+        } else if environment["GOLDENEYE_M11_CAPTURE"] == "1" {
+            captureOutputPath = "/tmp/goldeneye-m11-classic-textured-prop.gputrace"
         } else {
             captureOutputPath = nil
         }

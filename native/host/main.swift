@@ -257,12 +257,32 @@ private final class GoldenEyeViewController: NSViewController {
                 )
                 print("GoldenEye Metal device ready: \(state.evidenceLine)")
                 let wantsClassicProp = ProcessInfo.processInfo.environment["GOLDENEYE_M10_PROP"] == "1"
+                let wantsClassicTexturedProp = ProcessInfo.processInfo.environment["GOLDENEYE_M11_TEXTURED_PROP"] == "1"
                 let wantsPipeline = ProcessInfo.processInfo.environment["GOLDENEYE_M6_PIPELINE"] == "1"
                     || ProcessInfo.processInfo.environment["GOLDENEYE_M8_TRIANGLE"] == "1"
                     || wantsClassicProp
+                    || wantsClassicTexturedProp
                 if wantsPipeline {
                     do {
-                        if wantsClassicProp {
+                        if wantsClassicTexturedProp {
+                            guard let libraryURL = Bundle.main.url(forResource: "GoldenEyeClassicTexturedProp", withExtension: "metallib") else {
+                                print("GoldenEye classic textured prop metallib is missing")
+                                return
+                            }
+                            let pipeline = try GoldenEyeClassicTexturedPropPipeline(device: device, libraryURL: libraryURL)
+                            baselinePipeline = pipeline
+                            let propBlob = try GoldenEyeClassicPropAsset.loadFromEnvironment()
+                            let textureBlobs = try GoldenEyeClassicPropAsset.loadTextureBlobsFromEnvironment()
+                            let materials = GoldenEyeClassicPropAsset.textureMaterials()
+                            frameRenderer = try GoldenEyeMetalClassicTexturedPropRenderer(
+                                state: state,
+                                layer: gameView.metalLayer,
+                                pipeline: pipeline,
+                                propBlob: propBlob,
+                                materials: materials,
+                                textureBlobs: textureBlobs
+                            )
+                        } else if wantsClassicProp {
                             guard let libraryURL = Bundle.main.url(forResource: "GoldenEyeClassicProp", withExtension: "metallib") else {
                                 print("GoldenEye classic prop metallib is missing")
                                 return
