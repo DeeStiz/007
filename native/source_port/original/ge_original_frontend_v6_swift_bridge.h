@@ -1,0 +1,6 @@
+#ifndef GE_ORIGINAL_FRONTEND_V6_SWIFT_BRIDGE_H
+#define GE_ORIGINAL_FRONTEND_V6_SWIFT_BRIDGE_H
+
+#include "public/ge_original_frontend_v6.h"
+
+#endif /* GE_ORIGINAL_FRONTEND_V6_SWIFT_BRIDGE_H */

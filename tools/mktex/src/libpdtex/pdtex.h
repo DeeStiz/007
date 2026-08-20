@@ -53,6 +53,7 @@ struct pd_tex *pdtex_allocate(void);
 void pdtex_free(struct pd_tex *tex);
 
 int pdtex_read(struct pd_tex *tex, char *filename);
+int pdtex_read_unflipped(struct pd_tex *tex, char *filename);
 
 int pdtex_write(struct pd_image *image, char *filename);
 

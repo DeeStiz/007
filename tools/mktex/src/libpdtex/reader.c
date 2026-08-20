@@ -262,8 +262,9 @@ static void texInflateRle(uint8_t *dst, int blockstotal)
 				dst[blocksdone] = texReadBits(blocksize);
 				blocksdone++;
 			} else {
-				uint16_t *tmp = (uint16_t *)dst;
-				tmp[blocksdone] = texReadBits(blocksize);
+				uint16_t value = (uint16_t)texReadBits(blocksize);
+				dst[blocksdone * 2 + 0] = (uint8_t)(value >> 8);
+				dst[blocksdone * 2 + 1] = (uint8_t)value;
 				blocksdone++;
 			}
 		} else {
@@ -281,15 +282,16 @@ static void texInflateRle(uint8_t *dst, int blockstotal)
 				dst[blocksdone] = texReadBits(blocksize);
 				blocksdone++;
 			} else {
-				uint16_t *tmp = (uint16_t *)dst;
-
 				for (i = startblockindex; i < startblockindex + runnumblocks; i++) {
-					tmp[blocksdone] = tmp[i];
+					dst[blocksdone * 2 + 0] = dst[i * 2 + 0];
+					dst[blocksdone * 2 + 1] = dst[i * 2 + 1];
 					blocksdone++;
 				}
 
 				// The next instruction must be a literal
-				tmp[blocksdone] = texReadBits(blocksize);
+				uint16_t value = (uint16_t)texReadBits(blocksize);
+				dst[blocksdone * 2 + 0] = (uint8_t)(value >> 8);
+				dst[blocksdone * 2 + 1] = (uint8_t)value;
 				blocksdone++;
 			}
 		}
@@ -439,16 +441,12 @@ static void texChannelsToPixels(uint8_t *src, int width, int height, uint8_t *ds
 
 		break;
 	case PDFORMAT_IA4:
+		/* Keep one unpacked I3/A1 value per texel, matching I4. */
 		for (y = 0; y < height; y++) {
-			for (x = 0; x < width; x += 2) {
-				dst[x >> 1] = src[pos] << 5 | src[pos + mult * 3] << 4 | src[pos + 1] << 1 | src[pos + mult * 3 + 1];
-				pos += 2;
+			for (x = 0; x < width; x++) {
+				dst[y * width + x] = (uint8_t)(src[x + y * width] << 1)
+					| src[mult * 3 + x + y * width];
 			}
-			if (width & 1) {
-				pos--;
-			}
-
-			dst += width;
 		}
 
 		break;
@@ -531,15 +529,9 @@ static void texInflateLookup(int width, int height, uint8_t *dst, uint8_t *looku
 	case PDFORMAT_IA4:
 	case PDFORMAT_I4:
 		for (y = 0; y < height; y++) {
-			for (x = 0; x < width; x += 2) {
-				dst[x >> 1] = lookup[texReadBits(bitspercolour) * 2 + 1] << 4;
-
-				if (x + 1 < width) {
-					dst[x >> 1] |= lookup[(texReadBits(bitspercolour) * 2) + 1];
-				}
+			for (x = 0; x < width; x++) {
+				dst[y * width + x] = lookup[texReadBits(bitspercolour) * 2 + 1] & 0x0f;
 			}
-
-			dst += width >> 1;
 		}
 
 		break;
@@ -559,7 +551,8 @@ static void texInflateLookupFromBuffer(uint8_t *src, int width, int height, uint
 		}
 	} else {
 		for (int i = 0; i < width * height; i++) {
-			indexesarray[i] = src[i * 2];
+			/* Source texInflateHuffman/RLE writes 16-bit indices in stream order. */
+			indexesarray[i] = (uint16_t)src[i * 2] << 8 | src[i * 2 + 1];
 		}
 	}
 
@@ -620,7 +613,7 @@ static void texInflateLookupFromBuffer(uint8_t *src, int width, int height, uint
 	case PDFORMAT_I8:
 		for (y = 0; y < height; y++) {
 			for (x = 0; x < width; x++) {
-				dst[x] = lookup[indexes[x] * 2];
+				dst[x] = lookup[indexes[x] * 2 + 1];
 			}
 
 			dst += width;
@@ -631,11 +624,10 @@ static void texInflateLookupFromBuffer(uint8_t *src, int width, int height, uint
 	case PDFORMAT_IA4:
 	case PDFORMAT_I4:
 		for (y = 0; y < height; y++) {
-			for (x = 0; x < width; x += 2) {
-				dst[x >> 1] = lookup[indexes[x] * 2] << 4 | lookup[indexes[x + 1] * 2];
+			for (x = 0; x < width; x++) {
+				dst[y * width + x] = lookup[indexes[x] * 2 + 1] & 0x0f;
 			}
 
-			dst += width >> 1;
 			indexes += width;
 		}
 
@@ -704,6 +696,19 @@ static void texAlignIndices(uint8_t *src, int width, int height, int format, uin
 			}
 
 			src += (width + 1) / 2;
+		}
+	} else if (format == PDFORMAT_I4 || format == PDFORMAT_IA4) {
+		/*
+		 * Zlib streams retain four-bit texels in packed bytes.  The source
+		 * tex2png contract exposes one value per texel, so unpack both
+		 * nibbles here before the format-specific PNG conversion. Leaving
+		 * this packed was the source of all-zero I4/IA4 rows.
+		 */
+		for (y = 0; y < height; y++) {
+			for (x = 0; x < width; x++) {
+				uint8_t packed = src[y * ((width + 1) / 2) + (x >> 1)];
+				dst[y * width + x] = (x & 1) ? (packed & 0x0f) : (packed >> 4);
+			}
 		}
 	}
 }
@@ -854,7 +859,7 @@ static void texLoad(struct pd_tex *tex)
 	}
 }
 
-int reader_read(FILE *fp, struct pd_tex *tex)
+int reader_read(FILE *fp, struct pd_tex *tex, int flip)
 {
 	size_t len;
 	uint8_t *buffer;
@@ -871,7 +876,9 @@ int reader_read(FILE *fp, struct pd_tex *tex)
 
 	texLoad(tex);
 
-	pdtex_flip(tex);
+	if (flip) {
+		pdtex_flip(tex);
+	}
 
 	return 1;
 }

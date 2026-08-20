@@ -55,9 +55,9 @@ struct GoldenEyeKeyboardInputState {
     }
 
     static func mask(for keyCode: UInt16) -> UInt32? {
-        // macOS virtual-key codes are layout-independent HID usages. Keep the
-        // M3 fixture bounded; the full GoldenEye key map belongs to a later
-        // input milestone.
+        // macOS virtual-key codes are layout-independent HID usages.  The
+        // low bits preserve the existing M3 fixture; the additive high bits
+        // are native N64 frontend actions and do not alter the frozen V1 ABI.
         let index: UInt32?
         switch keyCode {
         case 0x00: index = 0 // A
@@ -75,6 +75,9 @@ struct GoldenEyeKeyboardInputState {
         case 0x39: index = 12 // Caps Lock
         case 0x3A: index = 13 // Option
         case 0x3B: index = 14 // Control
+        case 0x24, 0x4C: index = 15 // Return / keypad Enter -> Start
+        case 0x06: index = 16 // Z -> Z trigger
+        case 0x08: index = 17 // C -> A convenience binding
         default: index = nil
         }
         guard let index else { return nil }

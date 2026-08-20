@@ -31,7 +31,7 @@ int g_TexFormatHas1BitAlpha[] = { 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0 };
 int g_TexFormatChannelSizes[] = { 256, 32, 256, 32, 256, 16, 8, 256, 16, 256, 16, 256, 16 };
 int g_TexFormatBitsPerPixel[] = { 32, 16, 24, 15, 16, 8, 4, 8, 4, 16, 16, 16, 16 };
 
-int reader_read(FILE *fp, struct pd_tex *tex);
+int reader_read(FILE *fp, struct pd_tex *tex, int flip);
 int writer_write(FILE *fp, struct pd_image *image);
 
 struct pd_tex *pdtex_allocate(void)
@@ -53,7 +53,8 @@ void pdtex_free(struct pd_tex *tex)
 
 void pdtex_flip(struct pd_tex *tex)
 {
-	uint8_t buffer[1000];
+	/* A source RGBA32 row can be 256 texels after 4-word alignment. */
+	uint8_t buffer[2048];
 	int rowlen;
 
 	for (int i = 0; i < PDTEX_MAX_IMAGES; i++) {
@@ -70,6 +71,9 @@ void pdtex_flip(struct pd_tex *tex)
 				rowlen = image->width;
 			} else if (image->format == PDFORMAT_I4) {
 				// 4 bits in ROM, but at this point it's 8 bits
+				rowlen = image->width;
+			} else if (image->format == PDFORMAT_IA4) {
+				// The reader expands each IA4 texel to one byte (I3/A1).
 				rowlen = image->width;
 			} else if (image->format == PDFORMAT_RGB15) {
 				rowlen = 2 * image->width;
@@ -98,7 +102,24 @@ int pdtex_read(struct pd_tex *tex, char *filename)
 		return errno;
 	}
 
-	if (!reader_read(fp, tex)) {
+	if (!reader_read(fp, tex, 1)) {
+		return 1;
+	}
+
+	fclose(fp);
+
+	return 0;
+}
+
+int pdtex_read_unflipped(struct pd_tex *tex, char *filename)
+{
+	FILE *fp = fopen(filename, "rb");
+
+	if (!fp) {
+		return errno;
+	}
+
+	if (!reader_read(fp, tex, 0)) {
 		return 1;
 	}
 

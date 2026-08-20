@@ -1,0 +1,7 @@
+# Required after R2 regenerates GESM with raw {{w0,w1}} initializer commands
+# preserved. The existing reduced sidecars are historical evidence only.
+legalpage=nodes:3,display_lists:1,commands:58,vertices:24,textures:5
+nintendologo=nodes:42,display_lists:23,commands:821,vertices:1363,textures:1
+goldeneyelogo=nodes:3,display_lists:1,commands:162,vertices:438,textures:2
+rarewarelogo=nodes:0,display_lists:9,commands:389,vertices:397,textures:6
+walletbond=nodes:90,display_lists:46,commands:982,vertices:765,textures:84

@@ -7,6 +7,16 @@
 
 #include <stdint.h>
 #include "ge_native_foundation.h"
+#include "ge_classic_raster_v5.h"
+#include "ge_title_raster_v5.h"
+#include "ge_title_texture_v8.h"
+#include "ge_title_uv_v1.h"
+#include "ge_source_scene_v6.h"
+#include "ge_source_reference_v6.h"
+#include "ge_source_gbi_v6.h"
+#include "ge_source_texture_coordinates_v6.h"
+#include "ge_source_frontend_runtime_v6.h"
+#include "ge_file_mode_v6.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -131,6 +141,22 @@ GE_NATIVE_STATIC_ASSERT(sizeof(GEGBINormalizationResultV1) == 152u, "GEGBINormal
 
 #include "ge_classic_replay.h"
 #include "ge_texture_replay.h"
+#include "ge_classic_combiner.h"
+#include "ge_native_runtime_v5.h"
+#include "ge_audio_v5.h"
+#include "ge_audio_engine_v5.h"
+#include "ge_audio_effects_v6.h"
+#include "ge_audio_output_v5.h"
+#include "ge_audio_source_node_v5.h"
+#include "ge_ramrom_v5.h"
+#include "ge_ramrom_playback_v5.h"
+#include "ge_ramrom_gameplay_v6.h"
+#include "ge_guard_door_owner_v6.h"
+#include "../source_port/gameplay_v6/ge_player_camera_owner_v6.h"
+#include "../source_port/gameplay_v6/ge_weapon_effect_owner_v6.h"
+#include "../source_port/gameplay_v6/ge_ramrom_weapon_source_pages_v6.h"
+#include "ge_title_route_v5.h"
+#include "ge_stage_v5.h"
 
 #ifdef __cplusplus
 }

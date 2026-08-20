@@ -73,6 +73,13 @@ final class GoldenEyeMetalDeviceState {
             captureOutputPath = "/tmp/goldeneye-m10-classic-prop.gputrace"
         } else if environment["GOLDENEYE_M11_CAPTURE"] == "1" {
             captureOutputPath = "/tmp/goldeneye-m11-classic-textured-prop.gputrace"
+        } else if environment["GOLDENEYE_M12_CAPTURE"] == "1" {
+            captureOutputPath = "/tmp/goldeneye-m12-classic-combiner.gputrace"
+        } else if environment["GOLDENEYE_M15_CAPTURE"] == "1" {
+            captureOutputPath = environment["GOLDENEYE_M15_CAPTURE_PATH"]
+                ?? "/tmp/goldeneye-m15-title.gputrace"
+        } else if environment["GOLDENEYE_M27_CAPTURE"] == "1" {
+            captureOutputPath = "/tmp/goldeneye-m27-stage-background.gputrace"
         } else {
             captureOutputPath = nil
         }

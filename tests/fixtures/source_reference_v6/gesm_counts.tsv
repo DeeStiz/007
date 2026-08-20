@@ -1,0 +1,7 @@
+# Historical reduced GESM V6 sidecar summary. These sidecars omitted raw
+# {{w0,w1}} initializer commands and must never be treated as source-complete.
+legalpage=nodes:3,display_lists:1,commands:46,vertices:24,textures:5
+nintendologo=nodes:42,display_lists:23,commands:752,vertices:1363,textures:1
+goldeneyelogo=nodes:3,display_lists:1,commands:145,vertices:438,textures:2
+rarewarelogo=nodes:0,display_lists:9,commands:389,vertices:397,textures:6
+walletbond=nodes:90,display_lists:46,commands:982,vertices:765,textures:84

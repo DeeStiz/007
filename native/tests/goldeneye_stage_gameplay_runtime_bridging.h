@@ -1,0 +1,7 @@
+#ifndef GOLDENEYE_STAGE_GAMEPLAY_RUNTIME_BRIDGING_H
+#define GOLDENEYE_STAGE_GAMEPLAY_RUNTIME_BRIDGING_H
+
+#include "ge_ramrom_playback_v5.h"
+#include "ge_stage_v5.h"
+
+#endif /* GOLDENEYE_STAGE_GAMEPLAY_RUNTIME_BRIDGING_H */
