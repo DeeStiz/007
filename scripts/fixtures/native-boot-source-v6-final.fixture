@@ -1,0 +1,16 @@
+fixture_version=1
+goal=native-boot-menu-attract-120
+packet_sha256=b9247beab28b0e101c471c1a94d0d4baebf8a3ea85e306981bef1365d3e485ad
+record_count=1517
+count_texture_payload=127
+count_mip_payload=209
+count_tlut_payload=26
+count_model=7
+count_node=183
+count_display_list=109
+count_vertex_group=125
+sidecar_count=8
+historical_packet_sha256=39d9075c8ab73c57a1ad4e70da61112b7fab58fa362419a05ff164e88563dffb
+historical_root=history/39d9075c8ab73c57a1ad4e70da61112b7fab58fa362419a05ff164e88563dffb
+historical_sums=history/39d9075c8ab73c57a1ad4e70da61112b7fab58fa362419a05ff164e88563dffb/SHA256SUMS
+selectfile_payload=SELECTFILE.payload

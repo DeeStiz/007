@@ -1,0 +1,6 @@
+#ifndef GOLDENEYE_TITLE_ROUTE_V5_BRIDGING_H
+#define GOLDENEYE_TITLE_ROUTE_V5_BRIDGING_H
+
+#include "ge_title_route_v5.h"
+
+#endif /* GOLDENEYE_TITLE_ROUTE_V5_BRIDGING_H */

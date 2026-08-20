@@ -204,6 +204,10 @@ SECTIONS
 #include "ld/lib.rodata.ld.inc"
 #include "ld/game.data.ld.inc"
 #include "ld/game.rodata.ld.inc"
+      /* The source-authored RSP data addresses begin at 0x8005c820.  Keep
+         the linker cursor on the 0x20 boundary before the embedded GSP/ASP
+         data blocks; GNU/Linux IDO builds provide this padding implicitly. */
+      . = ALIGN(0x20);
       build/OUTCODE/src/gspboot.o (.data);
       build/OUTCODE/src/aspboot.o (.data);
    }

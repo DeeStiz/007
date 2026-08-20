@@ -1,6 +1,7 @@
 #Git and VS files
 .*~
 __pycache__/*
+**/__pycache__/*
 .vscode/
 .[vV][sS]/
 
@@ -65,6 +66,7 @@ assets/ramrom/[eju]/*.bin
 # bin is required, but lets prevent accidental deletion
 bin/*
 build/*
+.build/*
 build-*/*
 notes/*
 !build/test.c

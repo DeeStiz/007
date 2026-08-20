@@ -1,0 +1,19 @@
+# Source-location audit anchors. The audit script fails closed if a line moves
+# or an expected source symbol disappears.
+front_legal_init=1405|void init_menu00_legalscreen(void)
+front_legal_constructor=1500|Gfx *constructor_menu00_legalscreen(Gfx *DL)
+front_nintendo_init=1598|void init_menu01_nintendo(void)
+front_nintendo_constructor=1662|Gfx *constructor_menu01_nintendo(Gfx *DL)
+front_goldeneye_init=1869|void init_menu04_goldeneyelogo(void)
+front_goldeneye_constructor=1936|Gfx *constructor_menu04_goldeneyelogo(Gfx *DL)
+front_file_init=2063|void load_walletbond(void)
+front_file_constructor=2451|Gfx *constructor_menu05_fileselect(Gfx *DL)
+front_rareware_constructor=1813|Gfx * constructor_menu02_rareware(Gfx * DL)
+title_rareware_retrieve=384|Gfx *retrieve_display_rareware_logo(Gfx *gdl)
+title_rareware_timing=387|#define RAREWARE_LOGO_DEN 58
+asset_legal_text=342|struct legal_screen_text legalpage_text_array[] = {
+asset_legal_model=31|ModelNode ModelNode_0x03c =
+asset_nintendo_model=182|ModelNode ModelNode_0x114 =
+asset_goldeneye_model=28|ModelNode ModelNode_0x018 =
+asset_wallet_model=335|(u32)&ModelNode_0x4e4
+asset_rareware_display_list=10|Gfx DL_0x0018[] = {

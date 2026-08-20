@@ -1,0 +1,28 @@
+# GoldenEye source-title paired cadence (US/NTSC, source 60 Hz -> native 120 Hz)
+#
+# Columns:
+# field | source_owner | native_policy | source_comparator | endpoint_or_quantization
+#
+# `anchor-only` means that the source field is allowed to mutate and branch on
+# even native ticks only.  `midpoint` is an additive odd render projection: it
+# must be strictly between the two adjacent source-render endpoints whenever
+# those endpoints differ.  No row authorizes an autonomous branch, RNG call,
+# one-shot, or source timer increment on an odd tick.
+field	source_owner	native_policy	source_comparator	endpoint_or_quantization
+menu_timer	front.c:g_MenuTimer	anchor-only; input may set pending transition	Legal >=241; Nintendo >=501; GoldenEye >180/>90; File idle >=1801	uint32 source value; no half-tick comparator
+switch_timer	front.c:interface_menu17_switchscreens	anchor-only	>=4	uint32 source value; commit on even anchor
+nintendo_rotation	front.c:constructor_menu01_nintendo:ninLogoRotRate	midpoint on odd render; +1 degree/source render	no autonomous branch	Q16.16; initial -80 degrees; front.c increments before building the visible matrix
+nintendo_scale	front.c:constructor_menu01_nintendo:ninLogoScale	midpoint on odd render; x1.07977/source render, clamp 1.1	>1.1 clamp	Q16.16; timer zero is 0.0183333326; shared matrix-provider timer convention counts committed multipliers
+nintendo_ambient	front.c:constructor_menu01_nintendo:ninlogolight	midpoint on odd render; derived from timer	clamp 0...255	Q16.16 of source integer light; timer remains anchor-only
+rareware_counter	title.c:retrieve_display_rareware_logo:intro_eye_counter	anchor-only; odd projection only	postincrement >=260 then >=290	uint32 source counter
+rareware_rotation	title.c:load_display_rare_logo:D_8002A89C	midpoint on odd render; +2 degrees/source render	no autonomous branch	Q16.16; visual value is pre-increment matrix
+rareware_alpha	title.c:retrieve_display_rareware_logo:var1*var2/255	midpoint on odd render	postincrement >=260 then >=290	Q16.16 of source 0...255 alpha
+gunbarrel_title_x	title.c:renderGunbarrelEyeIntroSequence:g_TitleX	midpoint on odd render; +3/-2.9091637 per native tick	mode comparators remain even-only	Q16.16; source XINC=6 and XDEC3=5.8183274 per source frame
+gunbarrel_transition_x	title.c:renderGunbarrelEyeIntroSequence:titleTransitionX	midpoint only for a linear source update	word sign and mode changes are even-only	Q16.16; no previewed discrete reset
+gunbarrel_animation_word	title.c:renderGunbarrelEyeIntroSequence:word_CODE_bss_80069584	midpoint on odd render; source deltas halved (+0x1c7 or -3)	postincrement/threshold branches even-only	Q16.16 projection; source state remains uint16/s16
+gunbarrel_counter	title.c:renderGunbarrelEyeIntroSequence:intro_eye_counter	midpoint on odd render; source delta halved (+/-1 or +4)	137/212/230/108/247/30 comparators even-only	Q16.16 projection; one-shot blood callback even-only
+gunbarrel_model_substeps	title.c:insert_bond_eye_intro	one native substep per tick; not doubled	model animation source is two substeps/source frame	fixed source model cadence; no extra source branch
+goldeneye_logo	front.c:interface_menu04_goldeneyelogo	static/exempt; source timer anchor-only	>180/>90	no autonomous odd transition
+menu_cursor	front.c:interface_menu05_fileselect	paired midpoint on odd render; rebase to exact even source endpoint	input/stick source rules; odd pressed action may commit once	Q16.16 cursor preview; odd clock_timer=0 is half delta, even clock_timer=1 is one source delta
+mode_cursor	front.c:interface_menu06_modeselect	paired midpoint on odd render; rebase to exact even source endpoint	input/stick source rules; mode row comparator after source cursor quantization	Q16.16 cursor/mode-selection preview; controller-count MP availability is copied once per tick
+file_idle_timer	front.c:interface_menu05_fileselect	anchor-only	>=1801 source anchors	odd ticks do not advance idle; even anchors advance exactly one source timer

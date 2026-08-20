@@ -28,7 +28,7 @@
 
 static int usage(void)
 {
-	fprintf(stderr, "Usage: tex2png <infile> <outdir>\n");
+	fprintf(stderr, "Usage: tex2png <infile> <outdir> [--no-flip]\n");
 	fprintf(stderr, "eg. tex2png 0000.bin pngs/\n");
 
 	return 1;
@@ -148,7 +148,8 @@ static void ia4_to_ia16(uint8_t *in, png_bytep out, int numpixels)
 	int outpos = 0;
 	int i;
 
-	for (i = 0; i < (numpixels + 1) / 2; i++) {
+	for (i = 0; i < numpixels; i++) {
+		/* libpdtex exposes one unpacked I3/A1 value per texel. */
 		out[outpos + 0] = ((in[i] >> 1) & 7) * 32;
 		out[outpos + 1] = (in[i] & 1) * 255;
 		outpos += 2;
@@ -186,7 +187,7 @@ static bool write_image(struct pd_image *image, struct pd_tex *tex, char *outfil
 	png.height = image->height;
 	png.format = tex_format_to_png_format(image->format);
 
-	if (png.format | PNG_FORMAT_FLAG_COLORMAP) {
+	if (png.format & PNG_FORMAT_FLAG_COLORMAP) {
 		png.colormap_entries = tex->numcolours;
 		palette = malloc(PNG_IMAGE_COLORMAP_SIZE(png));
 	}
@@ -245,7 +246,11 @@ static bool write_image(struct pd_image *image, struct pd_tex *tex, char *outfil
 
 int main(int argc, char **argv)
 {
-	if (argc != 3) {
+	bool flip = true;
+	if (argc == 4 && strcmp(argv[3], "--no-flip") == 0) {
+		flip = false;
+	}
+	if (argc < 3 || argc > 4 || (argc == 4 && flip)) {
 		return usage();
 	}
 
@@ -256,7 +261,8 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if (pdtex_read(tex, argv[1]) != 0) {
+	int result = flip ? pdtex_read(tex, argv[1]) : pdtex_read_unflipped(tex, argv[1]);
+	if (result != 0) {
 		fprintf(stderr, "Unable to read texture at '%s'\n", argv[1]);
 		return 1;
 	}

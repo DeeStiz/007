@@ -19,6 +19,12 @@ acpp: OPT_CFLAGS := -O2
 
 RECOMP := recomp
 
+ifeq ($(shell uname -s),Darwin)
+RECOMP_EXPORT_DYNAMIC := -Wl,-export_dynamic
+else
+RECOMP_EXPORT_DYNAMIC := -Wl,-export-dynamic
+endif
+
 ugen_c.c: RECOMP_FLAGS := --conservative
 
 all: cc cfe uopt ugen as1 acpp copt ujoin uld umerge usplit err.english.cc
@@ -33,7 +39,7 @@ $(RABBITIZER_LIB):
 $(RECOMP): recomp.cpp $(RABBITIZER_LIB)
 	$(CXX) recomp.cpp -o $@ -std=c++17 -O2 -Wno-switch \
 		-I $(RABBITIZER)/include -I $(RABBITIZER)/cplusplus/include \
-		-L $(RABBITIZER)/build -lrabbitizerpp -ldl -Wl,-export-dynamic
+		-L $(RABBITIZER)/build -lrabbitizerpp -ldl $(RECOMP_EXPORT_DYNAMIC)
 
 libc_impl.o: libc_impl.c libc_impl.h
 	$(CC) $< -c -fno-strict-aliasing -O2 -DIDO53
