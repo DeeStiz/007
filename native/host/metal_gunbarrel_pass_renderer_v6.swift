@@ -181,9 +181,29 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
         slotIndex: Int
     ) throws {
         guard pass.mode >= 2, pass.mode <= 7 else { return }
-        try encode(kind: .background, pass: pass, encoder: encoder, slotIndex: slotIndex)
-        if pass.holeTriangleCount > 0, pass.mode >= 3, pass.mode <= 7 {
-            try encode(kind: .hole, pass: pass, encoder: encoder, slotIndex: slotIndex)
+        if pass.backgroundVisible {
+            try encode(kind: .background, pass: pass, encoder: encoder, slotIndex: slotIndex)
+        }
+        guard pass.holeVisible, pass.holeTriangleCount > 0 else { return }
+        // title.c's mode-2 sweep submits the generated sight geometry twice:
+        // the leading ring follows g_TitleX and the trailing ring follows
+        // titleTransitionX.  Later modes keep one enlarged ring centered on
+        // the moving backdrop.
+        try encode(
+            kind: .hole,
+            pass: pass,
+            holeXQ16: pass.titleXQ16,
+            encoder: encoder,
+            slotIndex: slotIndex
+        )
+        if pass.holePassCount > 1 {
+            try encode(
+                kind: .hole,
+                pass: pass,
+                holeXQ16: pass.transitionXQ16,
+                encoder: encoder,
+                slotIndex: slotIndex
+            )
         }
     }
 
@@ -206,6 +226,7 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
     private func encode(
         kind: Kind,
         pass: GoldenEyeGunbarrelRenderPassV6,
+        holeXQ16: Int32? = nil,
         encoder: any MTL4RenderCommandEncoder,
         slotIndex: Int
     ) throws {
@@ -213,7 +234,9 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
         var uniforms = Uniforms(
             kind: kind.rawValue,
             mode: pass.mode,
-            titleXQ16: pass.titleXQ16,
+            // For hole draws this field is the selected ring center.  The
+            // background/fade/blood passes retain the source title position.
+            titleXQ16: holeXQ16 ?? pass.titleXQ16,
             fadeAlphaQ8: pass.fadeAlphaQ8,
             bloodFrame: pass.bloodFrameIndex,
             reserved0: 0,
@@ -247,7 +270,8 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
         encoder.setArgumentTable(state.argumentTable, stages: [.vertex, .fragment])
         encoder.setDepthStencilState(depthState)
         encoder.setCullMode(.none)
-        encoder.pushDebugGroup("GoldenEye.V6.Gunbarrel.Pass.\(kind.rawValue).Mode.\(pass.mode)")
+        let centerSuffix = holeXQ16.map { ".Center.\($0)" } ?? ""
+        encoder.pushDebugGroup("GoldenEye.V6.Gunbarrel.Pass.\(kind.rawValue).Mode.\(pass.mode)\(centerSuffix)")
         encoder.drawPrimitives(primitiveType: .triangle, vertexStart: 0, vertexCount: count)
         encoder.popDebugGroup()
     }
@@ -305,11 +329,19 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
             let angle = Float(step) * pi / 30
             let sinValue = sin(angle) * 64
             let cosValue = cos(angle) * -64
-            let brightness = (143 - cosValue * -111) / 255
+            // The source computes 143 - cos(angle) * -111.  `cosValue` is
+            // already scaled to the 64-unit radius and must not be reused in
+            // the colour expression (that would clamp nearly every vertex to
+            // black or white instead of producing the authored gradient).
+            let brightness = (143 - cos(angle) * -111) / 255
             let color = SIMD4<Float>(repeating: max(0, min(1, brightness)))
             source.append(Vertex(position: SIMD2(sinValue, cosValue), uv: .zero, color: color))
             if step != 0 && step < 30 {
-                source.append(Vertex(position: SIMD2(-sinValue, -cosValue), uv: .zero, color: color))
+                // title3.c stores the paired vertex as (-sinval, cosval),
+                // not (-sinval, -cosval).  Keeping the second coordinate
+                // unchanged is what makes the two 14-vertex triangle strips
+                // form the source circular hole.
+                source.append(Vertex(position: SIMD2(-sinValue, cosValue), uv: .zero, color: color))
             }
         }
         var output: [Vertex] = []

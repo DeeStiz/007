@@ -315,7 +315,9 @@ public struct GoldenEyeOriginalPairedAuthorityV6: @unchecked Sendable {
                 screenEventHash: Self.hashOffset,
                 audioEventHash: Self.hashOffset
             )
-            let authoritativeFrame = nativeFrame.withProvenance(.native120Extension)
+            let authoritativeFrame = nativeFrame
+                .withProvenance(.native120Extension)
+                .withRarewareCounter(UInt32(originalState.rareware_counter))
             let frame = GoldenEyeOriginalPairedFrameV6(
                 projection: projection,
                 nativeFrame: nativeFrame,

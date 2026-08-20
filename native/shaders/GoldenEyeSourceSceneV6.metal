@@ -898,11 +898,19 @@ vertex GoldenEyeGunbarrelPassVaryings goldeneye_gunbarrel_pass_vertex(
     const GoldenEyeGunbarrelPassVertex source = vertices[vertexID];
     float2 sourcePosition = source.position;
     if (uniforms.kind == 1u) {
-        const float centerX = 264.0f + float(uniforms.titleXQ16) / 65536.0f * (440.0f / 1280.0f);
-        const float centerY = 442.0f / 960.0f * 330.0f;
+        // The first Gunbarrel phase is the source's two-ring dot sweep.  It
+        // uses the 1280x960 orthographic space directly (g_TitleX and
+        // titleTransitionX), while the later sight/backdrop phase adds the
+        // authored +768/+442 offsets and enlarges the mesh.
+        const bool dotSweep = uniforms.mode == 2u;
+        const float centerX = (dotSweep ? 0.0f : 768.0f)
+            + float(uniforms.titleXQ16) / 65536.0f * (440.0f / 1280.0f);
+        const float centerY = (dotSweep ? 482.0f : 442.0f) / 960.0f * 330.0f;
+        const float xScale = (dotSweep ? 1.0f : 2.7f) / (1280.0f / 440.0f);
+        const float yScale = (dotSweep ? 1.0f : 2.57f) / (960.0f / 330.0f);
         sourcePosition = float2(
-            centerX + source.position.x * (2.7f / (1280.0f / 440.0f)),
-            centerY + source.position.y * (2.57f / (960.0f / 330.0f))
+            centerX + source.position.x * xScale,
+            centerY + source.position.y * yScale
         );
     }
     const float2 ndc = float2(

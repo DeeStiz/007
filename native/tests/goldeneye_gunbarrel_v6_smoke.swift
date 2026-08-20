@@ -41,6 +41,38 @@ struct GoldenEyeGunbarrelV6Smoke {
         check(frame1.rifleCue == false && frame2.rifleCue == false, "no early rifle cue")
         check(frame1.parts.count == 3 && frame1.parts[2].attachmentNode == 3, "body/head/weapon parts")
         check(frame1.parts.allSatisfy { $0.visible }, "initial model visibility")
+        check(frame1.backgroundVisible == false && frame1.holeVisible,
+              "mode-2 uses the generated dot mesh without the barrel backdrop")
+        let mode2Pass = GoldenEyeGunbarrelRenderPassV6.make(
+            nativeTick: 2,
+            mode: 2,
+            poseCount: 0,
+            bloodPayloadAvailable: false,
+            bloodVisible: false,
+            muzzleFlashVisible: false,
+            fade: .none,
+            fadeAlphaQ8: 0,
+            titleXQ16: frame2.titleXQ16,
+            transitionXQ16: frame2.transitionXQ16
+        )
+        check(mode2Pass.backgroundVisible == false
+            && mode2Pass.holeVisible
+            && mode2Pass.holePassCount == 2,
+              "mode-2 compositor submits both moving hole passes")
+        let mode3Pass = GoldenEyeGunbarrelRenderPassV6.make(
+            nativeTick: 3,
+            mode: 3,
+            poseCount: 0,
+            bloodPayloadAvailable: false,
+            bloodVisible: false,
+            muzzleFlashVisible: false,
+            fade: .none,
+            fadeAlphaQ8: 0,
+            titleXQ16: 1_276 * 65_536
+        )
+        check(mode3Pass.backgroundVisible && mode3Pass.holeVisible
+            && mode3Pass.holePassCount == 1,
+              "mode-3 switches to one enlarged sight/backdrop pass")
 
         var cueFrame: GoldenEyeGunbarrelFrameV6?
         var routeModes = Set<UInt32>([frame1.mode, frame2.mode])

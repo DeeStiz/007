@@ -15,10 +15,17 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
     /// while allowing a bounded launch-time trim for hardware/listener tuning.
     private static let defaultMasterVolume: Float = 0.2
 
-    enum Track: String, Sendable {
+    enum Track: String, CaseIterable, Hashable, Sendable {
         case nintendo = "Mnint_rare_logo.bin"
         case gunbarrel = "Mintro_eye.bin"
         case folders = "Mfolders.bin"
+    }
+
+    private struct RenderedPCM: Sendable {
+        let samples: [Int16]
+        let frames: UInt32
+        let hash: UInt64
+        let effectsHash: UInt64
     }
 
     private let assetRoot: URL
@@ -38,10 +45,15 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
     private var pcmSource: UnsafeMutablePointer<GEAudioPCMSourceV5>?
     private var sourceAdapter: OpaquePointer?
     private var sourceNode: AVAudioSourceNode?
+    private var renderedTrackCache: [Track: RenderedPCM] = [:]
+    private var renderedSFXCache: [UInt32: RenderedPCM] = [:]
     private var renderedSamples: [Int16] = []
     private var renderedFrameCount: UInt32 = 0
     private var trackStartSampleIndex: UInt64 = 0
-    private var lastRefilledNativeTick: UInt64?
+    /// The next exact source-clock block that still needs to enter the ring.
+    /// It advances only after a complete block is written; a full ring must
+    /// never make the producer skip source samples.
+    private var nextRefillNativeTick: UInt64?
     private var routeGeneration: UInt32 = 0
     private var realtimeActive = false
     private var audioPaused = false
@@ -89,6 +101,10 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
         started = true
         lock.unlock()
 
+        // Decode and effect-process the bounded title/SFX payloads before the
+        // 120 Hz owner starts.  Rendering a 131,072-frame music track on the
+        // owner thread starves both the source ring and the title scheduler.
+        prewarmAudioAssets()
         let realtimeReady = makeRealtimeSourceNode()
         engine.attach(sfxPlayer)
         let sfxFormat = try makeFormat()
@@ -127,7 +143,7 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
             recordSuppressedImmediateCue("music=\(track.rawValue) nativeTick=\(nativeTick)")
             return
         }
-        guard let rendered = try? renderPCM(for: track) else {
+        guard let rendered = try? renderedMusic(for: track) else {
             print("GoldenEye audio: unable to render (track.rawValue)")
             return
         }
@@ -151,11 +167,11 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
             renderedFrameCount = rendered.frames
             lastRenderHash = rendered.hash
             trackStartSampleIndex = ge_audio_pcm_source_sample_index_for_tick_v5(nativeTick)
-            lastRefilledNativeTick = nil
+            nextRefillNativeTick = nativeTick
             // Fill a bounded source-rate preroll immediately.  Subsequent
             // owner ticks refill one exact 735/4 quantum; the Core Audio
             // callback only consumes the C ring.
-            for offset in 0..<16 {
+            for offset in 0..<24 {
                 refillRealtime(nativeTick: nativeTick &+ UInt64(offset))
             }
             let runningStatus = ge_audio_pcm_source_mark_running_v5(source)
@@ -192,7 +208,7 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
             recordSuppressedImmediateCue("sfx=\(soundIndex) nativeTick=\(nativeTick)")
             return
         }
-        guard started, let rendered = try? renderSFX(soundIndex: soundIndex) else { return }
+        guard started, let rendered = try? renderedSFX(soundIndex: soundIndex) else { return }
         guard let buffer = makeBuffer(from: rendered) else { return }
         sfxPlayer.scheduleBuffer(buffer, at: nil, options: [])
         try? sfxPlayer.playAudio()
@@ -399,7 +415,7 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
         nativeTick: UInt64,
         sequence: UInt64
     ) {
-        guard let rendered = try? renderPCM(for: track) else {
+        guard let rendered = try? renderedMusic(for: track) else {
             recordSuppressedImmediateCue(
                 "unreadable-music=\(track.rawValue) sequence=\(sequence)"
             )
@@ -432,11 +448,11 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
         lastRenderHash = rendered.hash
         trackStartSampleIndex = sampleIndex
         scheduledSFX.removeAll(keepingCapacity: true)
-        lastRefilledNativeTick = nil
+        nextRefillNativeTick = nativeTick
 
         // Build the fixed preroll through the same exact 735/4 producer path
         // used on later owner ticks.  The callback remains a pure ring reader.
-        for offset in 0..<16 {
+        for offset in 0..<24 {
             refillRealtime(nativeTick: nativeTick &+ UInt64(offset))
         }
         let runningStatus = ge_audio_pcm_source_mark_running_v5(source)
@@ -455,7 +471,7 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
         renderedFrameCount = 0
         scheduledSFX.removeAll(keepingCapacity: true)
         trackStartSampleIndex = sampleIndex
-        lastRefilledNativeTick = nativeTick
+        nextRefillNativeTick = nil
 
         guard let source = pcmSource else { return }
         routeGeneration &+= 1
@@ -476,7 +492,7 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
         nativeTick: UInt64,
         sequence: UInt64
     ) {
-        guard let rendered = try? renderSFX(soundIndex: soundIndex) else {
+        guard let rendered = try? renderedSFX(soundIndex: soundIndex) else {
             recordSuppressedImmediateCue(
                 "unreadable-sfx=\(soundIndex) sequence=\(sequence)"
             )
@@ -535,8 +551,8 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
                 return
             }
             trackStartSampleIndex = sampleIndex
-            lastRefilledNativeTick = nil
-            for offset in 0..<16 {
+            nextRefillNativeTick = nativeTick
+            for offset in 0..<24 {
                 refillRealtime(nativeTick: nativeTick &+ UInt64(offset))
             }
             let runningStatus = ge_audio_pcm_source_mark_running_v5(source)
@@ -554,7 +570,7 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
     /// never at `nil`/wall-clock-immediate time.  The node's origin is learned
     /// once from the same 22,050 Hz output clock and the source sample index.
     private func scheduleSFXOnNode(
-        _ rendered: (samples: [Int16], frames: UInt32, hash: UInt64),
+        _ rendered: RenderedPCM,
         at sampleIndex: UInt64,
         soundIndex: UInt32,
         sequence: UInt64
@@ -590,6 +606,53 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
             encoding: .utf8
         )
         return true
+    }
+
+    private func prewarmAudioAssets() {
+        for track in Track.allCases {
+            _ = try? renderedMusic(for: track)
+        }
+        for soundIndex in [
+            GoldenEyeSourceAudioBindingV6.sfxRarewareLogo,
+            GoldenEyeSourceAudioBindingV6.sfxOptionClick2,
+            GoldenEyeSourceAudioBindingV6.sfxGunRifle7Big1,
+        ] {
+            _ = try? renderedSFX(soundIndex: soundIndex)
+        }
+    }
+
+    private func renderedMusic(for track: Track) throws -> RenderedPCM {
+        if let cached = renderedTrackCache[track] {
+            lastRenderHash = cached.hash
+            lastEffectsHash = cached.effectsHash
+            return cached
+        }
+        let rendered = try renderPCM(for: track)
+        let value = RenderedPCM(
+            samples: rendered.samples,
+            frames: rendered.frames,
+            hash: rendered.hash,
+            effectsHash: lastEffectsHash
+        )
+        renderedTrackCache[track] = value
+        return value
+    }
+
+    private func renderedSFX(soundIndex: UInt32) throws -> RenderedPCM {
+        if let cached = renderedSFXCache[soundIndex] {
+            lastRenderHash = cached.hash
+            lastEffectsHash = cached.effectsHash
+            return cached
+        }
+        let rendered = try renderSFX(soundIndex: soundIndex)
+        let value = RenderedPCM(
+            samples: rendered.samples,
+            frames: rendered.frames,
+            hash: rendered.hash,
+            effectsHash: lastEffectsHash
+        )
+        renderedSFXCache[soundIndex] = value
+        return value
     }
 
     private func renderPCM(for track: Track) throws -> (samples: [Int16], frames: UInt32, hash: UInt64) {
@@ -701,12 +764,17 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
             &diagnostic
         ) == GE_STATUS_OK else { return nil }
 
-        let bus = UnsafeMutablePointer<GEAudioReverbBusV6>.allocate(capacity: 1)
-        bus.initialize(to: GEAudioReverbBusV6())
-        defer {
-            bus.deinitialize(count: 1)
-            bus.deallocate()
-        }
+        // This bus owns four 8,192-frame stereo delay banks (~128 KiB).  Do
+        // not initialize it with `GEAudioReverbBusV6()` here: Swift's Debug
+        // lowering materializes several copies of that value on the caller's
+        // stack, which exhausts the 544 KiB owner-thread stack before the C
+        // initializer can run.  The C initializer clears and fully writes
+        // the allocation, so keep the storage raw and heap-backed.
+        let bus = UnsafeMutableRawPointer.allocate(
+            byteCount: MemoryLayout<GEAudioReverbBusV6>.stride,
+            alignment: MemoryLayout<GEAudioReverbBusV6>.alignment
+        ).assumingMemoryBound(to: GEAudioReverbBusV6.self)
+        defer { bus.deallocate() }
         guard ge_audio_reverb_bus_init_v6(bus, &config, &diagnostic) == GE_STATUS_OK else {
             return nil
         }
@@ -726,7 +794,7 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
         return result.output_hash
     }
 
-    private func makeBuffer(from rendered: (samples: [Int16], frames: UInt32, hash: UInt64)) -> AVAudioPCMBuffer? {
+    private func makeBuffer(from rendered: RenderedPCM) -> AVAudioPCMBuffer? {
         guard let format = try? makeFormat() else { return nil }
         guard let buffer = AVAudioPCMBuffer(
             pcmFormat: format,
@@ -796,25 +864,36 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
         sfxNodeSampleOrigin = nil
         renderedFrameCount = 0
         trackStartSampleIndex = 0
-        lastRefilledNativeTick = nil
+        nextRefillNativeTick = nil
     }
 
     private func refillRealtime(nativeTick: UInt64) {
         guard let source = pcmSource,
-              renderedFrameCount != 0 || !scheduledSFX.isEmpty,
-              lastRefilledNativeTick.map({ nativeTick > $0 }) ?? true else {
+              renderedFrameCount != 0 || !scheduledSFX.isEmpty else {
             return
         }
-        let frameCount = ge_audio_pcm_source_frame_count_for_tick_v5(nativeTick)
-        let sampleIndex = ge_audio_pcm_source_sample_index_for_tick_v5(nativeTick)
+        let refillTick = nextRefillNativeTick ?? nativeTick
+        let frameCount = ge_audio_pcm_source_frame_count_for_tick_v5(refillTick)
+        let sampleIndex = ge_audio_pcm_source_sample_index_for_tick_v5(refillTick)
         guard sampleIndex >= trackStartSampleIndex else {
-            lastRefilledNativeTick = nativeTick
+            nextRefillNativeTick = refillTick &+ 1
             return
         }
         let relativeSampleIndex = sampleIndex - trackStartSampleIndex
         let stereoCount = Int(frameCount) * Int(GE_AUDIO_OUTPUT_V5_CHANNELS)
         guard stereoCount <= refillScratch.count else {
-            lastRefilledNativeTick = nativeTick
+            return
+        }
+
+        // Keep the exact pending source block until the ring has room for the
+        // whole block.  The C API may legally write a partial block when the
+        // ring is nearly full; retrying that same tick after a partial write
+        // would duplicate samples, so wait before calling it instead.
+        var sourceSnapshot = GEAudioPCMSourceSnapshotV5()
+        ge_audio_pcm_source_snapshot_v5(source, &sourceSnapshot)
+        guard sourceSnapshot.available_frames <= sourceSnapshot.capacity_frames,
+              sourceSnapshot.capacity_frames >= frameCount,
+              sourceSnapshot.capacity_frames - sourceSnapshot.available_frames >= frameCount else {
             return
         }
 
@@ -852,31 +931,33 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
             )
         }
 
+        var refillResult = GEAudioPCMRefillResultV5()
         let status = refillScratch.withUnsafeBufferPointer { samples -> GEStatusV1 in
             guard let base = samples.baseAddress else { return GE_STATUS_INVALID_ARGUMENT }
-            var result = GEAudioPCMRefillResultV5()
             var diagnostic = GEAudioDiagnosticV5()
             return ge_audio_pcm_source_refill_tick_v5(
                 source,
-                nativeTick,
+                refillTick,
                 sampleIndex,
                 base,
                 frameCount,
-                &result,
+                &refillResult,
                 &diagnostic
             )
         }
-        if status != GE_STATUS_OK {
+        if status == GE_STATUS_OK && refillResult.written_frame_count == frameCount {
+            nextRefillNativeTick = refillTick &+ 1
+            let consumedThrough = sampleIndex + UInt64(frameCount)
+            scheduledSFX.removeAll { event in
+                event.startSampleIndex + UInt64(event.frames) <= consumedThrough
+            }
+        } else if status != GE_STATUS_INVALID_STATE {
             try? "nativeTick=\(nativeTick) refillStatus=\(status)\n".write(
                 toFile: "/tmp/goldeneye-native-audio-realtime.log",
                 atomically: false,
                 encoding: .utf8
             )
+            return
         }
-        let consumedThrough = sampleIndex + UInt64(frameCount)
-        scheduledSFX.removeAll { event in
-            event.startSampleIndex + UInt64(event.frames) <= consumedThrough
-        }
-        lastRefilledNativeTick = nativeTick
     }
 }

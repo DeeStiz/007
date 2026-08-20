@@ -1302,6 +1302,10 @@ public struct GoldenEyeGunbarrelRenderPassV6: Sendable, Equatable {
     public let nativeTick: UInt64
     public let mode: UInt32
     public let titleXQ16: Int32
+    /// The second source translation used by mode 2.  The original title
+    /// draws the generated sight mesh twice during the dot sweep: once at
+    /// `g_TitleX` and once at `titleTransitionX`.
+    public let transitionXQ16: Int32
     public let bloodFrameIndex: UInt32
     public let modelHandles: [UInt32]
     public let poseCount: UInt32
@@ -1310,6 +1314,9 @@ public struct GoldenEyeGunbarrelRenderPassV6: Sendable, Equatable {
     public let backgroundHeight: UInt32
     public let holeVertexCount: UInt32
     public let holeTriangleCount: UInt32
+    public let holePassCount: UInt32
+    public let backgroundVisible: Bool
+    public let holeVisible: Bool
     public let bloodWidth: UInt32
     public let bloodHeight: UInt32
     public let bloodPayloadAvailable: Bool
@@ -1327,10 +1334,12 @@ public struct GoldenEyeGunbarrelRenderPassV6: Sendable, Equatable {
     ) -> Self {
         var hash: UInt64 = 1_469_598_103_934_665_603
         for value in [
-            frame.nativeTick, UInt64(frame.mode), UInt64(bitPattern: Int64(frame.titleXQ16)), UInt64(frame.bloodFrameIndex), UInt64(frame.poses.count),
+            frame.nativeTick, UInt64(frame.mode), UInt64(bitPattern: Int64(frame.titleXQ16)),
+            UInt64(bitPattern: Int64(frame.transitionXQ16)), UInt64(frame.bloodFrameIndex), UInt64(frame.poses.count),
             UInt64(backgroundWidth), UInt64(backgroundHeight),
             UInt64(frame.bloodVisible ? 1 : 0), UInt64(frame.muzzleFlashVisible ? 1 : 0),
-            UInt64(bloodPayloadAvailable ? 1 : 0), UInt64(frame.fadeAlphaQ8)
+            UInt64(bloodPayloadAvailable ? 1 : 0), UInt64(frame.backgroundVisible ? 1 : 0),
+            UInt64(frame.holeVisible ? 1 : 0), UInt64(frame.fadeAlphaQ8)
         ] {
             hash ^= value
             hash &*= 1_099_511_628_211
@@ -1339,6 +1348,7 @@ public struct GoldenEyeGunbarrelRenderPassV6: Sendable, Equatable {
             nativeTick: frame.nativeTick,
             mode: frame.mode,
             titleXQ16: frame.titleXQ16,
+            transitionXQ16: frame.transitionXQ16,
             bloodFrameIndex: frame.bloodFrameIndex,
             modelHandles: frame.parts.map(\.modelHandle),
             poseCount: UInt32(frame.poses.count),
@@ -1347,6 +1357,9 @@ public struct GoldenEyeGunbarrelRenderPassV6: Sendable, Equatable {
             backgroundHeight: backgroundHeight,
             holeVertexCount: 30,
             holeTriangleCount: 28,
+            holePassCount: frame.mode == 2 && frame.holeVisible ? 2 : (frame.holeVisible ? 1 : 0),
+            backgroundVisible: frame.backgroundVisible,
+            holeVisible: frame.holeVisible,
             bloodWidth: 96,
             bloodHeight: 80,
             bloodPayloadAvailable: bloodPayloadAvailable,
@@ -1368,10 +1381,22 @@ public struct GoldenEyeGunbarrelRenderPassV6: Sendable, Equatable {
         fade: GoldenEyeGunbarrelFrameV6.Fade,
         fadeAlphaQ8: UInt32,
         titleXQ16: Int32 = -30 * 65_536,
-        bloodFrameIndex: UInt32 = 0
+        bloodFrameIndex: UInt32 = 0,
+        transitionXQ16: Int32 = -100 * 65_536,
+        backgroundVisible: Bool? = nil,
+        holeVisible: Bool? = nil
     ) -> Self {
+        let resolvedBackgroundVisible = backgroundVisible ?? (mode >= 3 && mode <= 7)
+        let resolvedHoleVisible = holeVisible ?? (mode >= 2 && mode <= 7)
+        let resolvedHolePassCount: UInt32 = resolvedHoleVisible ? (mode == 2 ? 2 : 1) : 0
         var hash: UInt64 = 1_469_598_103_934_665_603
-        for value in [nativeTick, UInt64(mode), UInt64(bitPattern: Int64(titleXQ16)), UInt64(bloodFrameIndex), UInt64(poseCount), UInt64(bloodPayloadAvailable ? 1 : 0), UInt64(bloodVisible ? 1 : 0), UInt64(muzzleFlashVisible ? 1 : 0), UInt64(fadeAlphaQ8)] {
+        for value in [
+            nativeTick, UInt64(mode), UInt64(bitPattern: Int64(titleXQ16)),
+            UInt64(bitPattern: Int64(transitionXQ16)), UInt64(bloodFrameIndex), UInt64(poseCount),
+            UInt64(bloodPayloadAvailable ? 1 : 0), UInt64(bloodVisible ? 1 : 0),
+            UInt64(muzzleFlashVisible ? 1 : 0), UInt64(resolvedBackgroundVisible ? 1 : 0),
+            UInt64(resolvedHoleVisible ? 1 : 0), UInt64(resolvedHolePassCount), UInt64(fadeAlphaQ8)
+        ] {
             hash ^= value
             hash &*= 1_099_511_628_211
         }
@@ -1379,6 +1404,7 @@ public struct GoldenEyeGunbarrelRenderPassV6: Sendable, Equatable {
             nativeTick: nativeTick,
             mode: mode,
             titleXQ16: titleXQ16,
+            transitionXQ16: transitionXQ16,
             bloodFrameIndex: bloodFrameIndex,
             modelHandles: [8, 7, 9],
             poseCount: poseCount,
@@ -1387,6 +1413,9 @@ public struct GoldenEyeGunbarrelRenderPassV6: Sendable, Equatable {
             backgroundHeight: 299,
             holeVertexCount: 30,
             holeTriangleCount: 28,
+            holePassCount: resolvedHolePassCount,
+            backgroundVisible: resolvedBackgroundVisible,
+            holeVisible: resolvedHoleVisible,
             bloodWidth: 96,
             bloodHeight: 80,
             bloodPayloadAvailable: bloodPayloadAvailable,
@@ -1749,8 +1778,10 @@ public struct GoldenEyeGunbarrelRuntimeV6: Sendable {
             bloodFrameIndex: bloodIndex,
             bloodVisible: isBlood,
             muzzleFlashVisible: rifleCue,
-            backgroundVisible: renderMode >= 2 && renderMode <= 7,
-            holeVisible: isSight,
+            // Mode 2 is the source's two-ring dot sweep.  It has no barrel
+            // backdrop yet, but the generated hole mesh is visible twice.
+            backgroundVisible: renderMode >= 3 && renderMode <= 7,
+            holeVisible: renderMode == 2 || isSight,
             fade: fade,
             fadeAlphaQ8: alpha,
             camera: GoldenEyeGunbarrelCameraFrameV6(

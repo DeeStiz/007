@@ -176,6 +176,11 @@ public struct GoldenEyeSourceFrontendFrameSummaryV6: Sendable, Equatable {
     public let saveEvents: UInt32
     public let renderEvents: UInt32
     public let diagnosticEvents: UInt32
+    /// The source keeps the Rareware animation counter separate from the
+    /// inherited menu timer.  It is carried only by the authoritative paired
+    /// value frame; the copied runtime snapshot does not expose it directly,
+    /// so the Swift authority attaches it from its fixed-width state record.
+    public let rarewareCounter: UInt32
 
     init(
         _ snapshot: GEFrontendRuntimeV6Snapshot,
@@ -210,6 +215,7 @@ public struct GoldenEyeSourceFrontendFrameSummaryV6: Sendable, Equatable {
         saveEvents = UInt32(snapshot.save_count)
         renderEvents = UInt32(snapshot.render_count)
         diagnosticEvents = UInt32(snapshot.diagnostic_count)
+        rarewareCounter = 0
     }
 
     /// Builds a summary whose source projection and scalar hashes are
@@ -250,11 +256,13 @@ public struct GoldenEyeSourceFrontendFrameSummaryV6: Sendable, Equatable {
         saveEvents = sidecar.saveEvents
         renderEvents = sidecar.renderEvents
         diagnosticEvents = sidecar.diagnosticEvents
+        rarewareCounter = original.rarewareCounter
     }
 
     fileprivate init(
         relabeling source: GoldenEyeSourceFrontendFrameSummaryV6,
-        provenance: GoldenEyeSourceFrontendFrameProvenanceV6
+        provenance: GoldenEyeSourceFrontendFrameProvenanceV6,
+        rarewareCounter: UInt32? = nil
     ) {
         self.provenance = provenance
         flags = source.flags
@@ -285,6 +293,7 @@ public struct GoldenEyeSourceFrontendFrameSummaryV6: Sendable, Equatable {
         saveEvents = source.saveEvents
         renderEvents = source.renderEvents
         diagnosticEvents = source.diagnosticEvents
+        self.rarewareCounter = rarewareCounter ?? source.rarewareCounter
     }
 }
 
@@ -478,6 +487,9 @@ public struct GoldenEyeSourceFrontendFrameV6: Sendable, Equatable {
     public let saveEvents: [GoldenEyeSourceFrontendSaveEventV6]
     public let renderEvents: [GoldenEyeSourceFrontendRenderEventV6]
     public let diagnosticEvents: [GoldenEyeSourceFrontendDiagnosticEventV6]
+    /// Source-authoritative Rareware animation counter.  Unlike `sourceTimer`,
+    /// this advances while the source is on the Rareware screen.
+    public let rarewareCounter: UInt32
 
     public var flags: UInt32 { summary.flags }
     public var screen: UInt32 { summary.screen }
@@ -551,6 +563,7 @@ public struct GoldenEyeSourceFrontendFrameV6: Sendable, Equatable {
             count: Int(frame.events.diagnostic_count),
             as: GEFrontendRuntimeV6DiagnosticEvent.self
         ).map(GoldenEyeSourceFrontendDiagnosticEventV6.init)
+        rarewareCounter = 0
     }
 
     /// Retains the native typed frame arrays as verified lowerings/sidecars,
@@ -573,6 +586,7 @@ public struct GoldenEyeSourceFrontendFrameV6: Sendable, Equatable {
         saveEvents = sidecar.saveEvents
         renderEvents = sidecar.renderEvents
         diagnosticEvents = sidecar.diagnosticEvents
+        rarewareCounter = original.rarewareCounter
     }
 
     private init(
@@ -589,6 +603,7 @@ public struct GoldenEyeSourceFrontendFrameV6: Sendable, Equatable {
         saveEvents = sidecar.saveEvents
         renderEvents = sidecar.renderEvents
         diagnosticEvents = sidecar.diagnosticEvents
+        rarewareCounter = summary.rarewareCounter
     }
 
     func withProvenance(
@@ -598,6 +613,17 @@ public struct GoldenEyeSourceFrontendFrameV6: Sendable, Equatable {
             summary: GoldenEyeSourceFrontendFrameSummaryV6(
                 relabeling: summary,
                 provenance: provenance
+            ),
+            sidecar: self
+        )
+    }
+
+    func withRarewareCounter(_ counter: UInt32) -> Self {
+        Self(
+            summary: GoldenEyeSourceFrontendFrameSummaryV6(
+                relabeling: summary,
+                provenance: summary.provenance,
+                rarewareCounter: counter
             ),
             sidecar: self
         )
@@ -666,6 +692,7 @@ public struct GoldenEyeSourceFrontendAuthorityV6: @unchecked Sendable {
         fileModeAuthority = nil
         installedFileModeSaveState = nil
         lastFrame = GoldenEyeSourceFrontendFrameV6(cFrame)
+            .withRarewareCounter(UInt32(cState.rareware_counter))
     }
 
     /// Internal parity-test hook. Production callers never mutate authority
@@ -767,6 +794,7 @@ public struct GoldenEyeSourceFrontendAuthorityV6: @unchecked Sendable {
             throw GoldenEyeSourceFrontendAuthorityV6Error.cStatus(UInt32(status))
         }
         let sourceFrame = GoldenEyeSourceFrontendFrameV6(cFrame)
+            .withRarewareCounter(UInt32(state.rareware_counter))
         var menuFrame: GoldenEyeFileModeFrameV6?
         let menuActive = fileModeAuthority != nil ||
             sourceFrame.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_FILE_SELECT) ||
@@ -808,7 +836,7 @@ public struct GoldenEyeSourceFrontendAuthorityV6: @unchecked Sendable {
             cFrame,
             fileModeFrame: menuFrame,
             fileModeSaveState: fileModeAuthority?.saveState
-        )
+        ).withRarewareCounter(UInt32(state.rareware_counter))
         lastFrame = frame
         return frame
     }

@@ -167,6 +167,13 @@ struct GoldenEyeSourceFrontendAuthorityV6Smoke {
                     $0.operation == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_AUDIO_OP_PLAY_SFX) &&
                         $0.assetID == 258
                 })
+                precondition(frame.rarewareCounter == 1)
+            }
+            if tick == 1_502 {
+                precondition(frame.rarewareCounter == 2)
+            }
+            if tick == 1_504 {
+                precondition(frame.rarewareCounter == 3)
             }
             if tick == 2_088 {
                 precondition(frame.audioEvents.contains {

@@ -277,7 +277,7 @@ enum GoldenEyeSourceFrontendMatricesV6 {
             // segment itself intentionally has no gsSPMatrix command, so the
             // provider carries that setup as explicit value-only resources.
             let motion = rarewareMotion(
-                sourceTimer: input.sourceTimer,
+                rarewareCounter: input.sourceTimer,
                 pairPhase: input.pairPhase
             )
             var model = sourceRotationY(motion.rotationRadians)
@@ -437,11 +437,18 @@ enum GoldenEyeSourceFrontendMatricesV6 {
         guard selectedFolder < 4 else {
             throw GoldenEyeSourceFrontendMatricesV6Error.invalidSelection(selectedFolder)
         }
+        // Rareware inherits the switch's menu timer (normally four) while
+        // `retrieve_display_rareware_logo` advances its own eye counter.  Feed
+        // that source-authoritative counter into the matrix path; using the
+        // inherited timer makes the logo render the same rotation forever.
+        let matrixTimer = frame.screen == screenRareware
+            ? frame.rarewareCounter
+            : frame.sourceTimer
         let input = try GoldenEyeSourceFrontendMatrixInputV6(
             screen: frame.screen,
             nativeTick: frame.nativeTick,
             referenceTick: frame.referenceTick,
-            sourceTimer: frame.sourceTimer,
+            sourceTimer: matrixTimer,
             pairPhase: frame.nativeTick & 1 == 0 ? 0 : 1
         )
         let expectedModel: String
@@ -543,13 +550,13 @@ enum GoldenEyeSourceFrontendMatricesV6 {
     }
 
     private static func rarewareMotion(
-        sourceTimer: UInt32,
+        rarewareCounter: UInt32,
         pairPhase: UInt32
     ) -> (rotationRadians: Float, rotationDegreesQ16: Int32) {
         // setupRarewareLogoData initializes D_8002A89C to -40 degrees and
         // load_display_rare_logo advances it by 2 degrees after each NTSC
         // source frame.  The paired native odd tick is the exact midpoint.
-        let degrees = -40.0 + Float(sourceTimer) * 2.0 +
+        let degrees = -40.0 + Float(rarewareCounter) * 2.0 +
             (pairPhase == 1 ? 1.0 : 0.0)
         return (
             degrees * piDegrees / 180.0,

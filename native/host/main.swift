@@ -636,6 +636,9 @@ private final class GoldenEyeViewController: NSViewController {
             nativeAudioService = audioService
             let nativeOwner: GoldenEyeNativeTitleOwner
             do {
+                if let sourceRenderer = frameRenderer as? GoldenEyeSourceProductRendererV6 {
+                    try sourceRenderer.prewarmSourceTitleScenes()
+                }
                 nativeOwner = try GoldenEyeNativeTitleOwner(
                     renderer: frameRenderer,
                     layer: gameView.metalLayer,

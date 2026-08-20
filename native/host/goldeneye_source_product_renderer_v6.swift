@@ -219,6 +219,11 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     private var gunbarrelPreviousAnchorScene: GoldenEyeSourceSceneSnapshotV6?
     private var gunbarrelCurrentAnchorScene: GoldenEyeSourceSceneSnapshotV6?
     private var gunbarrelCurrentAnchorPass: GoldenEyeGunbarrelRenderPassV6?
+    /// The source ABI exposes titleTransitionX on the odd continuous-state
+    /// event only. Retain that copied value so the even mode-2 dot frames do
+    /// not fall back to the initial -100 position after the trailing ring is
+    /// retargeted by title.c.
+    private var gunbarrelTransitionXQ16: Int32 = -100 * 65_536
 
 
     var stageTextureDependenciesReady: Bool {
@@ -573,6 +578,140 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         }
     }
 
+    /// Build the first static topology for the title models before the 120 Hz
+    /// owner starts.  GESM traversal, texture setup resolution, and vertex
+    /// expansion are bounded but intentionally not realtime work; doing the
+    /// first Rareware/Nintendo build inside a source tick creates seconds of
+    /// scheduler debt and leaves the display link with no submitted scene.
+    func prewarmSourceTitleScenes() throws {
+        try prewarmSourceTitleModel(
+            model: UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_NINTENDOLOGO),
+            screen: UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_NINTENDO),
+            sourceTimer: 0,
+            subphase: 0
+        )
+        try prewarmSourceTitleModel(
+            model: UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_RAREWARELOGO),
+            screen: UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_RAREWARE),
+            sourceTimer: 4,
+            subphase: 0
+        )
+        try prewarmGunbarrelTopologies()
+        try prewarmSourceTitleModel(
+            model: UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_GOLDENEYELOGO),
+            screen: UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_GOLDENEYE),
+            sourceTimer: 0,
+            subphase: 0
+        )
+        // Do not present the synthetic prewarm frame; the first owner tick
+        // will publish the real source-authoritative frame.
+        latestScene = nil
+        latestSourceFrame = nil
+        latestGunbarrelPass = nil
+        gunbarrelPreviousAnchorScene = nil
+        gunbarrelCurrentAnchorScene = nil
+        gunbarrelCurrentAnchorPass = nil
+        gunbarrelTransitionXQ16 = -100 * 65_536
+        pendingModelExecutionResult = nil
+    }
+
+    private func prewarmGunbarrelTopologies() throws {
+        guard let sidecar = gunbarrelSidecar, sidecar.resolvesGunbarrelModels else {
+            throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
+                "validated Gunbarrel animation/attachment sidecar is missing"
+            )
+        }
+        let resolver = sidecar.dynamicResolver
+        for modelName in ["suitbond", "headbrosnansuit", "chrwppk"] {
+            guard gunbarrelTopologyCache[modelName] == nil else { continue }
+            let model = try preparation.model(named: modelName)
+            let compilation = GESourceModelCompilerV6.compile(
+                model,
+                modelName: modelName,
+                dynamicResolver: resolver
+            )
+            guard compilation.status == .complete,
+                  let scene = compilation.scene,
+                  compilation.diagnostics.isEmpty,
+                  scene.unsupportedCount == 0 else {
+                throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
+                    "Gunbarrel dynamic source traversal is incomplete for \(modelName)"
+                )
+            }
+            let setup = try GoldenEyeSourceTextureSetupResolverV6.resolve(
+                modelName: modelName,
+                model: model,
+                catalog: preparation.catalog,
+                compiledCommands: scene.commands
+            )
+            gunbarrelTopologyCache[modelName] = GunbarrelTopologyCacheEntry(
+                scene: scene,
+                textureSetups: setup.setups
+            )
+        }
+    }
+
+    private func prewarmSourceTitleModel(
+        model modelID: UInt32,
+        screen: UInt32,
+        sourceTimer: UInt32,
+        subphase: UInt32
+    ) throws {
+        guard let modelName = Self.modelNameForID[modelID],
+              Self.modelForScreen[screen] == modelName else {
+            throw GoldenEyeSourceProductRendererV6Error.unsupportedScreen(screen)
+        }
+        let modelPacket = try preparation.model(named: modelName)
+        var matrixHandles: [UInt32] = []
+        for (index, command) in modelPacket.commands.enumerated()
+            where command.semantic.hasPrefix("gsSPMatrix") {
+            guard let token = modelPacket.tokens(for: index).first,
+                  token.encodedValue != 0,
+                  !matrixHandles.contains(token.encodedValue) else { continue }
+            matrixHandles.append(token.encodedValue)
+        }
+        let modelMatrixHandle: UInt32
+        if screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_RAREWARE),
+           matrixHandles.isEmpty {
+            modelMatrixHandle = 0xF300_0001
+        } else {
+            guard let first = matrixHandles.first else {
+                throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
+                    "prewarm model \(modelName) has no source matrix handle"
+                )
+            }
+            modelMatrixHandle = first
+        }
+        let matrixInput = try GoldenEyeSourceFrontendMatrixInputV6(
+            screen: screen,
+            nativeTick: 2,
+            referenceTick: 1,
+            sourceTimer: sourceTimer,
+            pairPhase: 0
+        )
+        let matrixFrame = try GoldenEyeSourceFrontendMatricesV6.make(
+            input: matrixInput,
+            modelMatrixHandle: modelMatrixHandle,
+            viewportWidth: 440,
+            viewportHeight: 330
+        )
+        let request = try GoldenEyeSourceProductModelRequestV6(
+            screen: screen,
+            model: modelID,
+            operation: UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_OP_DRAW),
+            nativeTick: 2,
+            referenceTick: 1,
+            sourceTimer: sourceTimer,
+            subphase: subphase,
+            flags: 0
+        )
+        _ = try buildModelScene(
+            request: request,
+            sourceFrame: nil,
+            frameResources: matrixFrame.resources
+        )
+    }
+
     /// Source-owner handoff used by the 120 Hz engine owner.  The provider is
     /// the sole authority for matrices and viewports; a missing or rejected
     /// resource set is propagated as a typed failure before any drawable is
@@ -582,8 +721,15 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             gunbarrelPreviousAnchorScene = nil
             gunbarrelCurrentAnchorScene = nil
             gunbarrelCurrentAnchorPass = nil
+            gunbarrelTransitionXQ16 = -100 * 65_536
+        } else if let transitionEvent = sourceFrontendFrame.renderEvents.first(where: {
+            $0.operation == GE_SOURCE_FRONTEND_RUNTIME_V6_RENDER_CONTINUOUS_STATE
+                && $0.subphase == GE_SOURCE_FRONTEND_RUNTIME_V6_CONTINUOUS_GUNBARREL_TRANSLATION
+        }) {
+            gunbarrelTransitionXQ16 = transitionEvent.value1
         }
-        latestScene = nil
+        // Build the replacement scene off to the side and publish it only
+        // from `buildModelScene` after all validation has succeeded.
         latestStageScene = nil
         latestStagePacketHash = 0
         latestStageUnsupportedMask = 0
@@ -795,14 +941,30 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         let availableHandles = availableModels.reduce(into: [String: UInt32]()) {
             $0[$1.key] = $1.value.header.modelHandle
         }
-        let binding = try GoldenEyeCastSceneComposerV6.resolveModels(
-            identity: request.identity,
-            animation: request.animation,
-            availableModelNames: availableNames,
-            availableHandles: availableHandles,
-            randomWord: request.randomWord,
-            requestedWeaponPropID: request.weapon?.propID
-        )
+        let binding: GoldenEyeCastPreparedModelBindingV6
+        do {
+            binding = try GoldenEyeCastSceneComposerV6.resolveModels(
+                identity: request.identity,
+                animation: request.animation,
+                availableModelNames: availableNames,
+                availableHandles: availableHandles,
+                randomWord: request.randomWord,
+                requestedWeaponPropID: request.weapon?.propID
+            )
+        } catch GoldenEyeCastSceneComposerV6Error.missingWeapon {
+            // The source roster can select a prop ID whose distinct packet is
+            // not present in the guarded Cast catalog. Resolve the same
+            // animation against the prepared pool instead of terminating the
+            // attract route at its first Cast frame.
+            binding = try GoldenEyeCastSceneComposerV6.resolveModels(
+                identity: request.identity,
+                animation: request.animation,
+                availableModelNames: availableNames,
+                availableHandles: availableHandles,
+                randomWord: request.randomWord,
+                requestedWeaponPropID: nil
+            )
+        }
         let castCatalog = castPreparation?.catalog ?? preparation.catalog
         let resolver = GESourceModelDynamicResolverV6(resolvedModels: availableNames)
 
@@ -876,10 +1038,17 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             }
             return gunbarrelMatrixQ16V6(transform)
         }
+        let weaponSwitchForCast: UInt32 = request.flip ? 5 : 3
         guard let headAttachmentValuesForCast = attachmentValues(4),
-              let weaponAttachmentValuesForCast = attachmentValues(3) else {
+              let weaponAttachmentValuesForCast = attachmentValues(weaponSwitchForCast) else {
             throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
-                "Cast body neck/hand attachment matrix is missing"
+                "Cast body neck/hand attachment matrix is missing "
+                    + "body=\(binding.bodyName) poses=\(bodyPosesForAttachment.count) "
+                    + "bindings=\(bodyLowering.bindings.count) "
+                    + "exactMatrices=\(bodyLowering.exactMatrixAssociations.count) "
+                    + "matrixTransforms=\(bodyLowering.matrixTransformHandles.count) "
+                    + "groups=\((try? GoldenEyeCastSkeletonTransformV6.groups(model: bodyModelForAttachment).count) ?? 0) "
+                    + "weaponSwitch=\(weaponSwitchForCast)"
             )
         }
 
@@ -921,7 +1090,10 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             let attachmentValues: [Int32]?
             switch modelName {
             case binding.headName: attachmentValues = headAttachmentValuesForCast
-            case binding.weaponName: attachmentValues = weaponAttachmentValuesForCast
+            case binding.weaponName:
+                attachmentValues = request.flip
+                    ? Self.castFlippedWeaponAttachment(weaponAttachmentValuesForCast)
+                    : weaponAttachmentValuesForCast
             default: attachmentValues = nil
             }
             var modelMatrices = bodyFrameResources.matrices
@@ -1122,10 +1294,19 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             }
             return gunbarrelMatrixQ16V6(transform)
         }
+        // The older RAMROM frame contract does not carry the mirrored-hand
+        // bit; its source camera path always uses the primary gun hand.
+        let weaponSwitchForCastFrame: UInt32 = 3
         guard let headAttachmentValuesForCastFrame = attachmentValues(4),
-              let weaponAttachmentValuesForCastFrame = attachmentValues(3) else {
+              let weaponAttachmentValuesForCastFrame = attachmentValues(weaponSwitchForCastFrame) else {
             throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
-                "Cast body neck/hand attachment matrix is missing"
+                "Cast body neck/hand attachment matrix is missing "
+                    + "body=\(binding.bodyName) poses=\(bodyPosesForCast.count) "
+                    + "bindings=\(bodyLowering.bindings.count) "
+                    + "exactMatrices=\(bodyLowering.exactMatrixAssociations.count) "
+                    + "matrixTransforms=\(bodyLowering.matrixTransformHandles.count) "
+                    + "groups=\((try? GoldenEyeCastSkeletonTransformV6.groups(model: bodyModelForCast).count) ?? 0) "
+                    + "weaponSwitch=\(weaponSwitchForCastFrame)"
             )
         }
         var results: [GoldenEyeGBISceneBuildResultV6] = []
@@ -1246,7 +1427,8 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         sourceFrame: GoldenEyeSourceFrontendFrameV6,
         frameResources: GoldenEyeSourceProductFrameResourcesV6? = nil
     ) throws {
-        latestScene = nil
+        // Preserve the last complete scene until the replacement model build
+        // reaches its publication point.
         latestGunbarrelPass = nil
         latestTitleSnapshot = nil
         latestSource2DFrame = nil
@@ -1331,10 +1513,17 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         if let modelEvent = sourceFrame.modelEvents.first(where: {
             $0.operation == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_OP_DRAW)
         }) {
-            let modelSourceTimer = modelEvent.model ==
-                UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_GUNBARREL)
-                ? (modelEvent.gunbarrelSourceSubstep ?? modelEvent.sourceTimer)
-                : modelEvent.sourceTimer
+            let modelSourceTimer: UInt32
+            if modelEvent.model == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_RAREWARELOGO) {
+                // Rareware's animation uses the source counter, not the
+                // inherited switch/menu timer carried on the model event.
+                modelSourceTimer = sourceFrame.rarewareCounter
+            } else if modelEvent.model ==
+                        UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_GUNBARREL) {
+                modelSourceTimer = modelEvent.gunbarrelSourceSubstep ?? modelEvent.sourceTimer
+            } else {
+                modelSourceTimer = modelEvent.sourceTimer
+            }
             modelRequest = try GoldenEyeSourceProductModelRequestV6(
                 screen: renderedScreen,
                 model: modelEvent.model,
@@ -1402,7 +1591,8 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         modelRequest request: GoldenEyeSourceProductModelRequestV6,
         frameResources: GoldenEyeSourceProductFrameResourcesV6
     ) throws -> GoldenEyeSourceProductModelExecutionResultV6 {
-        latestScene = nil
+        // Preserve the last complete scene until the replacement model build
+        // reaches its publication point.
         latestGunbarrelPass = nil
         latestTitleSnapshot = nil
         latestSource2DFrame = nil
@@ -1772,6 +1962,40 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
                 "validated Gunbarrel animation/attachment sidecar is missing"
             )
         }
+        let gunbarrelMode = request.subphase &+ 2
+        let pipelineEvent = sourceFrame?.renderEvents.first {
+            $0.operation == GE_SOURCE_FRONTEND_RUNTIME_V6_RENDER_GUNBARREL_PIPELINE
+        }
+        let titleXQ16 = pipelineEvent?.value0 ?? (-30 * 65_536)
+        let transitionXQ16 = sourceFrame?.renderEvents.first {
+            $0.operation == GE_SOURCE_FRONTEND_RUNTIME_V6_RENDER_CONTINUOUS_STATE
+                && $0.subphase == GE_SOURCE_FRONTEND_RUNTIME_V6_CONTINUOUS_GUNBARREL_TRANSLATION
+        }?.value1 ?? gunbarrelTransitionXQ16
+        // title.c does not submit Bond during the first dot-sweep mode, and
+        // keeps the character off-screen during the first part of mode 3
+        // until the moving sight reaches the authored reveal threshold.
+        let bondVisible = gunbarrelMode >= 4
+            || (gunbarrelMode == 3 && titleXQ16 < 600 * 65_536)
+
+        if let sourceFrame {
+            recordSourceDiagnostics(sourceFrame.diagnosticEvents)
+            let modelBelongs = sourceFrame.modelEvents.contains {
+                $0.model == request.model
+                    && ($0.operation == request.operation
+                        || (request.operation == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_OP_DRAW)
+                            && $0.operation == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_OP_BLOOD_TICK)))
+            }
+            let pipelineBelongs = sourceFrame.renderEvents.contains {
+                $0.operation == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_RENDER_GUNBARREL_PIPELINE)
+            }
+            guard sourceFrame.screen == request.screen,
+                  modelBelongs || pipelineBelongs else {
+                throw GoldenEyeSourceProductRendererV6Error.sourceBuild("Gunbarrel request does not belong to source frame")
+            }
+            latestSourceFrame = sourceFrame
+        } else {
+            latestSourceFrame = nil
+        }
         if request.nativeTick & 1 == 1,
            let previous = gunbarrelPreviousAnchorScene,
            let current = gunbarrelCurrentAnchorScene {
@@ -1781,8 +2005,16 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
                 nativeTick: request.nativeTick
             )
             latestScene = interpolated
-            latestGunbarrelPass = gunbarrelCurrentAnchorPass
-            latestSourceFrame = sourceFrame
+            if let anchorPass = gunbarrelCurrentAnchorPass {
+                latestGunbarrelPass = reframeGunbarrelPass(
+                    anchorPass,
+                    sourceFrame: sourceFrame,
+                    titleXQ16: titleXQ16,
+                    transitionXQ16: transitionXQ16
+                )
+            } else {
+                latestGunbarrelPass = nil
+            }
             lastRenderableSceneScreen = request.screen
             pendingModelExecutionResult = gunbarrelModelExecutionResult(
                 request: request,
@@ -1792,21 +2024,60 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             )
             return pendingModelExecutionResult!
         }
-        let sourceSubstep = request.sourceTimer
-        let integratedRootMotion = try sidecar.integratedRootMotion(
-            sourceSubstep: sourceSubstep
-        )
-        let resolver = sidecar.dynamicResolver
         let sceneFrame = try GoldenEyeGBISceneFrameContextV6(
             nativeTick: request.nativeTick,
             referenceTick: request.referenceTick,
-            sourceTimer: sourceSubstep,
+            sourceTimer: request.sourceTimer,
             pairPhase: request.nativeTick & 1 == 0 ? 0 : 1,
             screen: request.screen,
             subphase: request.subphase,
             viewportWidth: frameResources.viewportWidth,
             viewportHeight: frameResources.viewportHeight
         )
+
+        // The source mode-2 dot sweep is a 2D/non-model phase.  Keep the
+        // dynamic Bond scene absent until title.c's explicit reveal gate; the
+        // compositor still renders the generated dot/hole pass below.
+        if !bondVisible {
+            let snapshot = try makeEmptyGunbarrelScene(frame: sceneFrame)
+            let gunbarrelPass = GoldenEyeGunbarrelRenderPassV6.make(
+                nativeTick: request.nativeTick,
+                mode: gunbarrelMode,
+                poseCount: 0,
+                bloodPayloadAvailable: !sidecar.bloodEncoded.isEmpty,
+                bloodVisible: false,
+                muzzleFlashVisible: false,
+                fade: .none,
+                fadeAlphaQ8: 0,
+                titleXQ16: titleXQ16,
+                bloodFrameIndex: 0,
+                transitionXQ16: transitionXQ16,
+                backgroundVisible: gunbarrelMode >= 3 && gunbarrelMode <= 7,
+                holeVisible: gunbarrelMode >= 2 && gunbarrelMode <= 7
+            )
+            if request.nativeTick & 1 == 0 {
+                gunbarrelPreviousAnchorScene = gunbarrelCurrentAnchorScene
+                gunbarrelCurrentAnchorScene = snapshot
+                gunbarrelCurrentAnchorPass = gunbarrelPass
+            }
+            latestScene = snapshot
+            latestGunbarrelPass = gunbarrelPass
+            lastRenderableSceneScreen = request.screen
+            latestTitleSnapshot = nil
+            pendingModelExecutionResult = gunbarrelModelExecutionResult(
+                request: request,
+                sourceFrame: sourceFrame,
+                snapshot: snapshot,
+                sidecar: sidecar
+            )
+            return pendingModelExecutionResult!
+        }
+
+        let sourceSubstep = request.sourceTimer
+        let integratedRootMotion = try sidecar.integratedRootMotion(
+            sourceSubstep: sourceSubstep
+        )
+        let resolver = sidecar.dynamicResolver
         let roles = try frameResources.matrices.compactMap {
             matrix -> GoldenEyeSourceMatrixRoleSidecarV6? in
             guard matrix.roleFlags != 0 else { return nil }
@@ -1819,10 +2090,7 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         let animationFrame = UInt32(
             max(0, integratedRootMotion.frameQ16 / 65_536)
         ) % (try sidecar.clip(named: clipName)).frameCount
-        let muzzleVisible = sourceSubstep == 230 && (request.nativeTick & 1) == 0
-        let titleXQ16 = sourceFrame?.renderEvents.first(where: {
-            $0.operation == GE_SOURCE_FRONTEND_RUNTIME_V6_RENDER_GUNBARREL_PIPELINE
-        })?.value0 ?? (-30 * 65_536)
+        let muzzleVisible = bondVisible && sourceSubstep == 230 && (request.nativeTick & 1) == 0
         let bloodFrameIndex = sourceFrame?.modelEvents.first(where: {
             $0.model == request.model && $0.operation == request.operation
         })?.resultValue0 ?? 0
@@ -1999,32 +2267,12 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             }
             built.append(result)
         }
-        let gunbarrelMode = request.subphase &+ 2
         let gunbarrelFade: GoldenEyeGunbarrelFrameV6.Fade = switch gunbarrelMode {
         case 6, 7: .red
         case 8: .clearBlack
         default: .none
         }
         let snapshot = try combineGunbarrelScenes(built, frame: sceneFrame)
-        if let sourceFrame {
-            recordSourceDiagnostics(sourceFrame.diagnosticEvents)
-            let modelBelongs = sourceFrame.modelEvents.contains {
-                $0.model == request.model
-                    && ($0.operation == request.operation
-                        || (request.operation == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_OP_DRAW)
-                            && $0.operation == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_OP_BLOOD_TICK)))
-            }
-            let pipelineBelongs = sourceFrame.renderEvents.contains {
-                $0.operation == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_RENDER_GUNBARREL_PIPELINE)
-            }
-            guard sourceFrame.screen == request.screen,
-                  modelBelongs || pipelineBelongs else {
-                throw GoldenEyeSourceProductRendererV6Error.sourceBuild("Gunbarrel request does not belong to source frame")
-            }
-            latestSourceFrame = sourceFrame
-        } else {
-            latestSourceFrame = nil
-        }
         let gunbarrelPass = GoldenEyeGunbarrelRenderPassV6.make(
             nativeTick: request.nativeTick,
             mode: gunbarrelMode,
@@ -2035,7 +2283,10 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             fade: gunbarrelFade,
             fadeAlphaQ8: gunbarrelMode == 8 ? 255 : ((gunbarrelMode == 6 || gunbarrelMode == 7) ? 180 : 0),
             titleXQ16: titleXQ16,
-            bloodFrameIndex: bloodFrameIndex
+            bloodFrameIndex: bloodFrameIndex,
+            transitionXQ16: transitionXQ16,
+            backgroundVisible: gunbarrelMode >= 3 && gunbarrelMode <= 7,
+            holeVisible: gunbarrelMode >= 3 && gunbarrelMode <= 7
         )
         if request.nativeTick & 1 == 0 {
             gunbarrelPreviousAnchorScene = gunbarrelCurrentAnchorScene
@@ -2155,6 +2406,22 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         summary.scene_hash = hash
         summary.render_hash = hash ^ 0x9E37_79B9_7F4A_7C15
         summary.frame_hash = hash ^ 0xD1B5_4A32_D192_ED03
+        // The interpolated vertices are published under the odd native tick,
+        // so the lighting sidecar must carry that same frame identity.  The
+        // previous snapshot reused the even anchor's context, which made the
+        // renderer reject the otherwise valid frame as stale and left the
+        // title/intro route visibly frozen at the first dynamic scene.
+        let interpolatedLighting = try current.lightingFrameContext.map {
+            try GoldenEyeSourceSceneLightingFrameContextV6(
+                screen: $0.screen,
+                nativeTick: nativeTick,
+                referenceTick: nativeTick >> 1,
+                sourceTimer: $0.sourceTimer,
+                pairPhase: 1,
+                geometryModesByState: $0.geometryModesByState,
+                modelViewQ16ByState: $0.modelViewQ16ByState
+            )
+        }
         return try GoldenEyeSourceSceneSnapshotV6(
             summary: summary,
             resources: current.resources,
@@ -2167,12 +2434,43 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             textEvents: current.textEvents,
             audioEvents: current.audioEvents,
             diagnostics: current.diagnostics,
-            lightingFrameContext: current.lightingFrameContext
+            lightingFrameContext: interpolatedLighting
         )
     }
 
     private func midpoint(_ a: Int32, _ b: Int32) -> Int32 {
         Int32((Int64(a) + Int64(b)) / 2)
+    }
+
+    private func reframeGunbarrelPass(
+        _ pass: GoldenEyeGunbarrelRenderPassV6,
+        sourceFrame: GoldenEyeSourceFrontendFrameV6?,
+        titleXQ16: Int32,
+        transitionXQ16: Int32
+    ) -> GoldenEyeGunbarrelRenderPassV6 {
+        // The odd source frame already carries the midpoint translations in
+        // its render events. Keep the anchor's mode/payload policy while
+        // rebasing only those two compositor positions. A mode transition can
+        // occur between the even anchor and this odd frame, so prefer the
+        // source pipeline subphase when it is available.
+        let mode = sourceFrame?.renderEvents.first(where: {
+            $0.operation == GE_SOURCE_FRONTEND_RUNTIME_V6_RENDER_GUNBARREL_PIPELINE
+        }).map { $0.subphase &+ 2 } ?? pass.mode
+        return GoldenEyeGunbarrelRenderPassV6.make(
+            nativeTick: pass.nativeTick,
+            mode: mode,
+            poseCount: pass.poseCount,
+            bloodPayloadAvailable: pass.bloodPayloadAvailable,
+            bloodVisible: pass.bloodVisible,
+            muzzleFlashVisible: pass.muzzleFlashVisible,
+            fade: pass.fade,
+            fadeAlphaQ8: pass.fadeAlphaQ8,
+            titleXQ16: titleXQ16,
+            bloodFrameIndex: pass.bloodFrameIndex,
+            transitionXQ16: transitionXQ16,
+            backgroundVisible: mode >= 3 && mode <= 7,
+            holeVisible: mode >= 2 && mode <= 7
+        )
     }
 
     private func combineGunbarrelScenes(
@@ -2421,6 +2719,86 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         )
     }
 
+    /// Presentable zero-draw scene used while title.c is still running the
+    /// mode-2 dot sweep (and while mode 3 is waiting for the sight reveal).
+    /// The non-model compositor owns the visible work for those frames; an
+    /// empty source scene keeps the renderer's clear/depth/present contract
+    /// intact without leaking Bond into the earlier phase.
+    private func makeEmptyGunbarrelScene(
+        frame: GoldenEyeGBISceneFrameContextV6
+    ) throws -> GoldenEyeSourceSceneSnapshotV6 {
+        var summary = GESourceFrameSummaryV6()
+        summary.header.abi_version = UInt32(GE_NATIVE_ABI_VERSION)
+        summary.header.struct_size = UInt32(MemoryLayout<GESourceFrameSummaryV6>.size)
+        summary.record_version = UInt32(GE_SOURCE_SCENE_V6_RECORD_VERSION)
+        summary.flags = UInt32(GE_SOURCE_FRAME_V6_FLAG_PRESENTABLE)
+            | (frame.pairPhase == 0
+                ? UInt32(GE_SOURCE_FRAME_V6_FLAG_SOURCE_ANCHOR)
+                : UInt32(GE_SOURCE_FRAME_V6_FLAG_INTERPOLATED))
+        summary.screen = frame.screen
+        summary.subphase = frame.subphase
+        summary.native_tick = frame.nativeTick
+        summary.reference_tick = frame.referenceTick
+        summary.pair_phase = frame.pairPhase
+        summary.viewport_width = frame.viewportWidth
+        summary.viewport_height = frame.viewportHeight
+        summary.logical_width = frame.logicalWidth
+        summary.logical_height = frame.logicalHeight
+        summary.transform_count = 0
+        summary.resource_count = 0
+        summary.pose_count = 0
+        summary.vertex_count = 0
+        summary.index_count = 0
+        summary.draw_count = 0
+        summary.render_state_count = 0
+        summary.text_count = 0
+        summary.audio_count = 0
+        summary.diagnostic_count = 0
+        summary.unsupported_visible_count = 0
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        for value in [
+            frame.nativeTick,
+            frame.referenceTick,
+            UInt64(frame.screen),
+            UInt64(frame.subphase),
+            UInt64(frame.pairPhase)
+        ] {
+            hash ^= value
+            hash &*= 1_099_511_628_211
+        }
+        if hash == 0 { hash = 1 }
+        summary.scene_hash = hash
+        summary.render_hash = hash ^ 0x9E37_79B9_7F4A_7C15
+        summary.state_hash = hash ^ 0xD1B5_4A32_D192_ED03
+        summary.audio_hash = 1
+        summary.frame_hash = hash ^ frame.nativeTick
+        summary.reserved0 = 0
+        summary.reserved1 = 0
+        let lighting = try GoldenEyeSourceSceneLightingFrameContextV6(
+            screen: frame.screen,
+            nativeTick: frame.nativeTick,
+            referenceTick: frame.referenceTick,
+            sourceTimer: frame.sourceTimer ?? 0,
+            pairPhase: frame.pairPhase,
+            geometryModesByState: [:],
+            modelViewQ16ByState: [:]
+        )
+        return try GoldenEyeSourceSceneSnapshotV6(
+            summary: summary,
+            resources: [],
+            transforms: [],
+            animationPoses: [],
+            vertices: [],
+            indices: [],
+            renderStates: [],
+            drawCommands: [],
+            textEvents: [],
+            audioEvents: [],
+            diagnostics: [],
+            lightingFrameContext: lighting
+        )
+    }
+
     private func makeClearBlackScene(
         sourceFrame: GoldenEyeSourceFrontendFrameV6,
         screenOverride: UInt32? = nil
@@ -2593,6 +2971,20 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             )
         }
         return handles
+    }
+
+    /// The source Cast constructor rotates the attached weapon half a turn
+    /// when the mirrored hand is selected. Keep that value-only post-multiply
+    /// beside the attachment handoff so the weapon is not silently rendered
+    /// from the unmirrored switch matrix.
+    private static func castFlippedWeaponAttachment(_ values: [Int32]) -> [Int32] {
+        let halfTurn: [Int32] = [
+            -65_536, 0, 0, 0,
+            0, -65_536, 0, 0,
+            0, 0, 65_536, 0,
+            0, 0, 0, 65_536,
+        ]
+        return GoldenEyeSourceProjectionBindingV6.multiply(values, halfTurn)
     }
 
     private func firstModelMatrixHandle(
@@ -2803,7 +3195,12 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             + "gunbarrelPass=\(latestGunbarrelPass?.passHash ?? 0) "
             + "gunbarrelMode=\(latestGunbarrelPass?.mode ?? 0) "
             + "gunbarrelBackground=\(latestGunbarrelPass.map { "\($0.backgroundWidth)x\($0.backgroundHeight)" } ?? "none") "
+            + "gunbarrelBackgroundVisible=\(latestGunbarrelPass?.backgroundVisible == true ? 1 : 0) "
             + "gunbarrelHole=\(latestGunbarrelPass?.holeTriangleCount ?? 0) "
+            + "gunbarrelHoleVisible=\(latestGunbarrelPass?.holeVisible == true ? 1 : 0) "
+            + "gunbarrelHolePasses=\(latestGunbarrelPass?.holePassCount ?? 0) "
+            + "gunbarrelTitleXQ16=\(latestGunbarrelPass?.titleXQ16 ?? 0) "
+            + "gunbarrelTransitionXQ16=\(latestGunbarrelPass?.transitionXQ16 ?? 0) "
             + "gunbarrelPoses=\(latestGunbarrelPass?.poseCount ?? 0) "
             + "gunbarrelMuzzle=\(latestGunbarrelPass?.muzzleFlashVisible == true ? 1 : 0) "
             + "gunbarrelBlood=\(latestGunbarrelPass?.bloodVisible == true ? 1 : 0) "
