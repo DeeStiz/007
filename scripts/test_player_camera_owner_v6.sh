@@ -72,7 +72,7 @@ build_and_run() {
             "${prefix}" | tee "${prefix}.log"
         fi
     fi
-    grep -Fq 'ge_player_camera_owner_v6_smoke: PASS source=Dam1' "${prefix}.log"
+    grep -Fq 'ge_player_camera_owner_v6_smoke: PASS source=Dam1 ticks=6 interpolant=1 weapon=1 abort=1 stanTopology=1 stanEdgeSlide=1' "${prefix}.log"
 }
 
 echo "Building directly compiled source player/camera owner V6 smoke"

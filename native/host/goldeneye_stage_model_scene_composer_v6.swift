@@ -64,7 +64,8 @@ struct GoldenEyeStageModelSceneCompositionV6: @unchecked Sendable {
         frameResources: GoldenEyeSourceProductFrameResourcesV6?,
         nativeTick: UInt64,
         demoID: UInt8? = nil,
-        visibleDependencies: GoldenEyeRamRomVisibleDependencyCatalogV6? = nil
+        visibleDependencies: GoldenEyeRamRomVisibleDependencyCatalogV6? = nil,
+        requireExactFogCoordinates: Bool = true
     ) throws -> Result {
         let base = try GoldenEyeStageSourceSceneSnapshotAdapterV6.make(
             packet: environmentPacket,
@@ -101,7 +102,8 @@ struct GoldenEyeStageModelSceneCompositionV6: @unchecked Sendable {
                 modelResults: [],
                 unsupportedMask: stageMask,
                 nativeTick: nativeTick,
-                stageID: stageScene.stageID
+                stageID: stageScene.stageID,
+                requireExactFogCoordinates: requireExactFogCoordinates
             )
             return Result(
                 snapshot: snapshot,
@@ -275,7 +277,8 @@ struct GoldenEyeStageModelSceneCompositionV6: @unchecked Sendable {
             modelResults: modelResults,
             unsupportedMask: unsupportedMask,
             nativeTick: nativeTick,
-            stageID: stageScene.stageID
+            stageID: stageScene.stageID,
+            requireExactFogCoordinates: requireExactFogCoordinates
         )
         return Result(
             snapshot: snapshot,
@@ -906,7 +909,8 @@ struct GoldenEyeStageModelSceneCompositionV6: @unchecked Sendable {
         modelResults: [GoldenEyeGBISceneBuildResultV6],
         unsupportedMask: UInt32,
         nativeTick: UInt64,
-        stageID: UInt32
+        stageID: UInt32,
+        requireExactFogCoordinates: Bool
     ) throws -> GoldenEyeSourceSceneSnapshotV6 {
         var permissiveSummary = base.summary
         permissiveSummary.flags |= UInt32(GE_SOURCE_FRAME_V6_FLAG_PRESENTABLE)
@@ -916,7 +920,17 @@ struct GoldenEyeStageModelSceneCompositionV6: @unchecked Sendable {
             animationPoses: base.animationPoses, vertices: base.vertices, indices: base.indices,
             renderStates: base.renderStates, drawCommands: base.drawCommands,
             textEvents: base.textEvents, audioEvents: base.audioEvents,
-            diagnostics: base.diagnostics, lightingFrameContext: nil
+            // The environment adapter already decoded a source-local GBI
+            // lighting sidecar for every stage material state.  Keep that
+            // value-only context on the synthetic source result so the
+            // composer can remap it alongside the copied render-state
+            // handles below.  Dropping it here leaves the composed E2xx
+            // state namespace without a geometry/model-view record and
+            // makes the renderer fail closed even for a fully lowerable
+            // room+prop subset.
+            diagnostics: base.diagnostics, lightingFrameContext: base.lightingFrameContext,
+            eyeSpaceZQ16: base.eyeSpaceZQ16,
+            fogCoordinateQ16: base.fogCoordinateQ16
         )
         let synthetic = GoldenEyeGBISceneBuildResultV6(
             snapshot: permissiveBase, packetDialect: 0, packetCommandCount: 0,
@@ -942,7 +956,12 @@ struct GoldenEyeStageModelSceneCompositionV6: @unchecked Sendable {
             exactNodeTransformHandles: []
         )
         let combined = try GoldenEyeSourceSceneComposerV6.combine(
-            [synthetic] + modelResults.map(resultWithoutLighting),
+            // Model results carry decoded GBI geometry-mode/model-view
+            // sidecars keyed by their source state handles.  Preserve them
+            // so combine() can perform the same explicit state remap as it
+            // does for render-state records; no defaults or inferred light
+            // values cross this boundary.
+            [synthetic] + modelResults,
             frame: try GoldenEyeGBISceneFrameContextV6(
                 nativeTick: nativeTick, referenceTick: nativeTick >> 1,
                 sourceTimer: 0, pairPhase: UInt32(nativeTick & 1),
@@ -967,13 +986,119 @@ struct GoldenEyeStageModelSceneCompositionV6: @unchecked Sendable {
         summary.render_hash = mix(combined.summary.render_hash, UInt64(stageID))
         summary.state_hash = mix(combined.summary.state_hash, UInt64(nativeTick))
         summary.frame_hash = mix(combined.summary.frame_hash, UInt64(unsupportedMask) ^ nativeTick)
+        let fogSidecars = try propagatedFogSidecars(
+            base: base,
+            modelResults: modelResults,
+            combinedVertexCount: combined.vertices.count,
+            stageID: stageID,
+            requireExactFogCoordinates: requireExactFogCoordinates
+        )
         return try GoldenEyeSourceSceneSnapshotV6(
             summary: summary, resources: combined.resources, transforms: combined.transforms,
             animationPoses: combined.animationPoses, vertices: combined.vertices, indices: combined.indices,
             renderStates: combined.renderStates, drawCommands: combined.drawCommands,
             textEvents: combined.textEvents, audioEvents: combined.audioEvents,
-            diagnostics: combined.diagnostics, lightingFrameContext: combined.lightingFrameContext
+            diagnostics: combined.diagnostics, lightingFrameContext: combined.lightingFrameContext,
+            eyeSpaceZQ16: fogSidecars.eyeSpaceZQ16,
+            fogCoordinateQ16: fogSidecars.fogCoordinateQ16
         )
+    }
+
+    /// `GoldenEyeSourceSceneComposerV6.combine` predates the additive stage
+    /// fog sidecars and therefore intentionally knows nothing about them.
+    /// Rebuild the parallel arrays here in source order, and reject any
+    /// composed stage frame whose fog-enabled draw would otherwise reach the
+    /// renderer without an exact clip-Z/clip-W coordinate. Proven non-fog
+    /// model vertices receive a neutral parallel sidecar entry only so the
+    /// value-only GPU arrays retain one-to-one indexing.
+    private static func propagatedFogSidecars(
+        base: GoldenEyeSourceSceneSnapshotV6,
+        modelResults: [GoldenEyeGBISceneBuildResultV6],
+        combinedVertexCount: Int,
+        stageID: UInt32,
+        requireExactFogCoordinates: Bool
+    ) throws -> (eyeSpaceZQ16: [Int32]?, fogCoordinateQ16: [Int32]?) {
+        let sources = [base] + modelResults.map(\.snapshot)
+        let hasEye = sources.contains { $0.eyeSpaceZQ16 != nil }
+        let hasFog = sources.contains { $0.fogCoordinateQ16 != nil }
+        guard hasEye == hasFog else {
+            throw Error.composition("stage fog sidecars must be present as a pair")
+        }
+        guard sources.allSatisfy({ source in
+            let eyeCount = source.eyeSpaceZQ16?.count
+            let fogCount = source.fogCoordinateQ16?.count
+            guard eyeCount == nil && fogCount == nil ||
+                    eyeCount == source.vertices.count && fogCount == source.vertices.count else {
+                return false
+            }
+            return (eyeCount == nil) == (fogCount == nil)
+        }) else {
+            throw Error.composition("stage fog sidecar count mismatch")
+        }
+
+        let fogEnabled = (try? GoldenEyeStageFogLoweringV6.make(stageID: stageID))?.enabled == true
+        let missingFogCoordinates = fogEnabled && sources.contains { source in
+            hasFogShadeDraw(source) &&
+                (source.eyeSpaceZQ16 == nil || source.fogCoordinateQ16 == nil)
+        }
+        if missingFogCoordinates {
+            if !requireExactFogCoordinates { return (nil, nil) }
+            throw Error.composition(
+                "fog-enabled stage draw lacks exact eye-space/fog coordinate arrays"
+            )
+        }
+
+        guard hasEye else {
+            return (nil, nil)
+        }
+        // Non-fog model draws do not need a source coordinate, but the
+        // generic GPU vertex/index view remains one parallel array. Use the
+        // typed neutral payload only for those proven non-fog draws; a
+        // fog-enabled draw took the fail-closed path above instead of being
+        // silently zero-filled.
+        var eye: [Int32] = []
+        var fog: [Int32] = []
+        eye.reserveCapacity(combinedVertexCount)
+        fog.reserveCapacity(combinedVertexCount)
+        for source in sources {
+            if let values = source.eyeSpaceZQ16 {
+                eye.append(contentsOf: values)
+            } else {
+                eye.append(contentsOf: repeatElement(Int32(0), count: source.vertices.count))
+            }
+            if let values = source.fogCoordinateQ16 {
+                fog.append(contentsOf: values)
+            } else {
+                fog.append(contentsOf: repeatElement(Int32(0), count: source.vertices.count))
+            }
+        }
+        guard eye.count == combinedVertexCount, fog.count == combinedVertexCount else {
+            throw Error.composition("stage fog sidecars are not parallel to composed vertices")
+        }
+        return (eye, fog)
+    }
+
+    /// Match the renderer's exact admitted geometry-fog blender tuple without
+    /// importing its Metal-facing pipeline type into the packet composer.
+    /// This keeps the source draw classification value-only and makes the
+    /// fail-closed sidecar rule testable in the strict/ASan/UBSan packet lanes.
+    private static func hasFogShadeDraw(
+        _ snapshot: GoldenEyeSourceSceneSnapshotV6
+    ) -> Bool {
+        let states = Dictionary(uniqueKeysWithValues: snapshot.renderStates.map {
+            ($0.state_handle, $0)
+        })
+        return snapshot.drawCommands.contains { draw in
+            guard let state = states[draw.render_state_handle],
+                  state.flags & UInt32(GE_SOURCE_RENDER_STATE_V6_FLAG_FOG) != 0 else {
+                return false
+            }
+            let mode = state.raw_render_mode
+            return ((mode >> 30) & 3) == 3 &&
+                ((mode >> 26) & 3) == 2 &&
+                ((mode >> 22) & 3) == 0 &&
+                ((mode >> 18) & 3) == 0
+        }
     }
 
     private static func resultWithoutLighting(
@@ -995,7 +1120,9 @@ struct GoldenEyeStageModelSceneCompositionV6: @unchecked Sendable {
                 textEvents: result.snapshot.textEvents,
                 audioEvents: result.snapshot.audioEvents,
                 diagnostics: result.snapshot.diagnostics,
-                lightingFrameContext: nil
+                lightingFrameContext: nil,
+                eyeSpaceZQ16: result.snapshot.eyeSpaceZQ16,
+                fogCoordinateQ16: result.snapshot.fogCoordinateQ16
             )
         } catch {
             return result

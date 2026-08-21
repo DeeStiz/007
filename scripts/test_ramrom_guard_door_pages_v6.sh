@@ -58,6 +58,7 @@ build_and_run() {
             "${ROOT}/native/host/goldeneye_ramrom_visible_dependency_catalog_v6.swift" \
             "${ROOT}/native/host/goldeneye_ramrom_guard_ai_source_v6.swift" \
             "${ROOT}/native/host/goldeneye_ramrom_guard_pose_source_v6.swift" \
+            "${ROOT}/native/host/goldeneye_stage_portal_geometry_v7.swift" \
             "${ROOT}/native/host/goldeneye_ramrom_guard_door_pages_v6.swift" \
             "${ROOT}/native/tests/goldeneye_ramrom_guard_door_pages_v6_smoke.swift" \
             "${objects[@]}" -o "${binary}"
@@ -74,6 +75,7 @@ build_and_run() {
         "${ROOT}/native/host/goldeneye_ramrom_visible_dependency_catalog_v6.swift" \
         "${ROOT}/native/host/goldeneye_ramrom_guard_ai_source_v6.swift" \
         "${ROOT}/native/host/goldeneye_ramrom_guard_pose_source_v6.swift" \
+        "${ROOT}/native/host/goldeneye_stage_portal_geometry_v7.swift" \
         "${ROOT}/native/host/goldeneye_ramrom_guard_door_pages_v6.swift" \
         "${ROOT}/native/tests/goldeneye_ramrom_guard_door_pages_v6_smoke.swift" \
         "${objects[@]}" -o "${binary}"

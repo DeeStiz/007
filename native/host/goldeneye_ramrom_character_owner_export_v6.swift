@@ -337,9 +337,15 @@ extension GoldenEyeRamRomCharacterSceneAdapterV6 {
                     export.objectIndex, "object_index"
                 )
             }
+            let dependency = dependencies.dependencies.first {
+                $0.stage == stageName && $0.kind == "character" &&
+                    $0.setupOffset == object.sourceRecordOffset
+            }
+            let bodyMatches = dependency?.modelIndex == export.bodyModelIndex
+                || (dependency == nil && object.key0 == export.bodyModelIndex)
             guard object.type == 9,
                   object.key0 == export.characterID,
-                  object.key0 == export.bodyModelIndex,
+                  bodyMatches,
                   object.key1 == export.padID else {
                 throw GoldenEyeRamRomCharacterOwnerExportV6Error.setupMismatch(
                     export.objectIndex, "identity_or_pad"

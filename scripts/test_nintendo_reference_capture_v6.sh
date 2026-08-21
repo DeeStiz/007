@@ -51,6 +51,7 @@ SWIFT_FLAGS=(
     "${PROJECT_ROOT}/native/host/goldeneye_source_product_preparation_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_source_product_provider_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_source_model_v6.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_stage_fog_lowering_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_source_scene_snapshot_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_gbi_scene_builder_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_source_node_transform_v6.swift" \

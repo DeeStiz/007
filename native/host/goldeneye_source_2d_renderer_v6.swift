@@ -740,7 +740,12 @@ final class GoldenEyeSource2DMetalRendererV6: @unchecked Sendable {
                 // In an overlay pass suppress only the authored first black
                 // fill; later source fills remain visible (fades, selection
                 // bars, and other 2D state) in their original sequence.
-                if skipInitialSourceClear, !skippedInitialSourceClear {
+                // Source clears are the only fill with sequence zero.  Cast's
+                // black visibility overlay is its sole fill and carries the
+                // owner tick as its sequence; dropping it here made the 3D
+                // model appear oddly transparent while the name still faded.
+                if skipInitialSourceClear, !skippedInitialSourceClear,
+                   draw.sequence == 0 {
                     skippedInitialSourceClear = true
                     continue
                 }

@@ -135,6 +135,24 @@ static void fill_tile(GEPlayerCameraStanTileV6 *tile)
     tile->source_offset = UINT32_C(0x100);
 }
 
+static void fill_topology_tile(
+    GEPlayerCameraStanTileV6 *tile,
+    uint32_t room_id,
+    uint32_t source_offset,
+    int32_t min_z,
+    int32_t max_z)
+{
+    fill_tile(tile);
+    tile->tile_id = source_offset;
+    tile->room_id = room_id;
+    tile->source_offset = source_offset;
+    tile->source_hash ^= (uint64_t)room_id << 32;
+    tile->points_q16[0][2] = min_z;
+    tile->points_q16[1][2] = min_z;
+    tile->points_q16[2][2] = max_z;
+    tile->points_q16[3][2] = max_z;
+}
+
 static void fill_pad(GEPlayerCameraPadV6 *pad)
 {
     memset(pad, 0, sizeof(*pad));
@@ -304,6 +322,99 @@ static void test_owner_route(const char *recording_path)
     status = ge_player_camera_owner_begin_from_gameplay_pages(
         1u, &setup, &player, 1u, &source, &tile, 1u, &pad, 1u, state, &event);
     assert(status == GE_STATUS_MALFORMED_STREAM);
+
+    {
+        GERamRomGameplaySetupV6 topology_setup;
+        GERamRomGameplayEntityV6 topology_player;
+        GEPlayerCameraSourceV6 topology_source;
+        GEPlayerCameraStanTileV6 topology_tiles[2];
+        GEPlayerCameraPadV6 topology_pad;
+        GEPlayerCameraStanLinkV7 topology_link;
+        GEPlayerCameraEventV6 topology_event;
+        GEPlayerCameraOwnerStateV6 topology_state;
+        fill_setup(&topology_setup);
+        topology_setup.room_count = 2u;
+        topology_setup.stan_count = 2u;
+        topology_setup.initial_position_q16[2] = -32768;
+        fill_player(&topology_player);
+        topology_player.position_q16[2] = -32768;
+        fill_source(&topology_source);
+        topology_source.collision_radius_q16 = 6554;
+        fill_topology_tile(&topology_tiles[0], 0u, 0x100u, -131072, 0);
+        fill_topology_tile(&topology_tiles[1], 1u, 0x200u, 0, 131072);
+        fill_pad(&topology_pad);
+        topology_pad.room_id = 0u;
+        memset(&topology_link, 0, sizeof(topology_link));
+        topology_link.source_tile_offset = 0x100u;
+        topology_link.point_index = 2u;
+        topology_link.target_tile_offset = 0x200u;
+        topology_link.flags = GE_PLAYER_CAMERA_OWNER_V7_STAN_LINK_FLAG_SOURCE_DERIVED;
+        topology_link.raw_link = 0u;
+        topology_link.source_room_id = 0u;
+        topology_link.target_room_id = 1u;
+
+        status = ge_player_camera_owner_begin_from_gameplay_pages(
+            1u, &topology_setup, &topology_player, 1u, &topology_source,
+            topology_tiles, 2u, &topology_pad, 1u, &topology_state, &topology_event
+        );
+        assert(status == GE_STATUS_OK);
+        status = ge_player_camera_owner_step_with_stan_topology_v7(
+            0u, input_value(0, 70, 0u), &topology_link, 1u,
+            &topology_state, &topology_event
+        );
+        assert(status == GE_STATUS_OK);
+        assert(topology_state.current_room == 1u);
+        assert(topology_state.current_anchor.player_position_q16[2] > -32768);
+
+        topology_link.target_tile_offset = 0x100u;
+        status = ge_player_camera_owner_begin_from_gameplay_pages(
+            1u, &topology_setup, &topology_player, 1u, &topology_source,
+            topology_tiles, 2u, &topology_pad, 1u, &topology_state, &topology_event
+        );
+        assert(status == GE_STATUS_OK);
+        status = ge_player_camera_owner_step_with_stan_topology_v7(
+            0u, input_value(0, 70, 0u), &topology_link, 1u,
+            &topology_state, &topology_event
+        );
+        assert(status == GE_STATUS_OK);
+        assert(topology_state.current_room == 0u);
+        assert(topology_state.current_anchor.player_position_q16[2] == -32768);
+    }
+
+    {
+        GERamRomGameplaySetupV6 edge_setup;
+        GERamRomGameplayEntityV6 edge_player;
+        GEPlayerCameraSourceV6 edge_source;
+        GEPlayerCameraStanTileV6 edge_tile;
+        GEPlayerCameraPadV6 edge_pad;
+        GEPlayerCameraEventV6 edge_event;
+        GEPlayerCameraOwnerStateV6 edge_state;
+        const int32_t edge_start_z = 622592; /* 9.5 source units */
+        fill_setup(&edge_setup);
+        edge_setup.initial_position_q16[2] = edge_start_z;
+        edge_setup.initial_forward_q16[0] = -46341;
+        edge_setup.initial_forward_q16[2] = 46341;
+        fill_player(&edge_player);
+        edge_player.position_q16[2] = edge_start_z;
+        fill_source(&edge_source);
+        edge_source.collision_radius_q16 = 6554; /* 0.1 source units */
+        fill_tile(&edge_tile);
+        fill_pad(&edge_pad);
+        edge_pad.room_id = 0u;
+        status = ge_player_camera_owner_begin_from_gameplay_pages(
+            1u, &edge_setup, &edge_player, 1u, &edge_source, &edge_tile, 1u,
+            &edge_pad, 1u, &edge_state, &edge_event
+        );
+        assert(status == GE_STATUS_OK);
+        status = ge_player_camera_owner_step(
+            0u, input_value(0, 70, 0u), &edge_state, &edge_event
+        );
+        assert(status == GE_STATUS_OK);
+        assert(edge_state.current_room == 0u);
+        assert(edge_state.current_anchor.player_position_q16[0] < 0);
+        assert(edge_state.current_anchor.player_position_q16[2] == edge_start_z);
+        assert(edge_state.current_anchor.player_velocity_q16[2] == 0);
+    }
     free(state);
 }
 
@@ -311,6 +422,6 @@ int main(int argc, char **argv)
 {
     const char *recording_path = argc > 1 ? argv[1] : NULL;
     test_owner_route(recording_path);
-    puts("ge_player_camera_owner_v6_smoke: PASS source=Dam1 ticks=6 interpolant=1 weapon=1 abort=1");
+    puts("ge_player_camera_owner_v6_smoke: PASS source=Dam1 ticks=6 interpolant=1 weapon=1 abort=1 stanTopology=1 stanEdgeSlide=1");
     return 0;
 }

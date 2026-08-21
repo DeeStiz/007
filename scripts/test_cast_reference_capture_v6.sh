@@ -67,6 +67,7 @@ fi
     "${ROOT}/native/host/goldeneye_source_texture_coordinates_v6.swift" \
     "${ROOT}/native/host/goldeneye_source_texture_setup_v6.swift" \
     "${ROOT}/native/host/goldeneye_source_scene_snapshot_v6.swift" \
+    "${ROOT}/native/host/goldeneye_stage_fog_lowering_v6.swift" \
     "${ROOT}/native/host/goldeneye_source_scene_composer_v6.swift" \
     "${ROOT}/native/host/goldeneye_gbi_scene_builder_v6.swift" \
     "${ROOT}/native/host/goldeneye_source_node_transform_v6.swift" \

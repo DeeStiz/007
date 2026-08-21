@@ -74,6 +74,12 @@ private func exerciseDeterministicScheduler() {
     let pausedTelemetry = pausedScheduler.telemetry()
     require(pausedTelemetry.pauseCount == 1 && pausedTelemetry.resumeCount == 1, "pause/resume telemetry")
     require(pausedTelemetry.rebaseCount == 1, "resume rebase telemetry")
+
+    // Reset returns the logical clock to an authoritative tick-zero anchor
+    // without requiring a new owner thread.
+    try! pausedScheduler.resetGame(atNanoseconds: epoch + deadline(2_000))
+    let gameResetTick = try! pausedScheduler.poll(atNanoseconds: epoch + deadline(2_000))
+    require(gameResetTick.count == 1 && gameResetTick[0].nativeTick == 0, "game reset tick zero")
 }
 
 private func exerciseHeadlessOwnerSoak() {
@@ -124,6 +130,9 @@ struct GoldenEyeEngineOwnerSmoke {
                 resetHandlerCompleted += 1
                 resetHandlerCondition.broadcast()
                 resetHandlerCondition.unlock()
+            },
+            gameResetHandler: {
+                true
             }
         ) { tick in
             condition.lock()
@@ -191,6 +200,8 @@ struct GoldenEyeEngineOwnerSmoke {
             resetTelemetry.scheduler.measurementEpochNanoseconds
                 == resetTelemetry.measurementEpochNanoseconds
         )
+
+        precondition(owner.resetGame(timeout: 2.0), "game reset acknowledgement")
 
         owner.requestPaused(true)
         Thread.sleep(forTimeInterval: 0.03)

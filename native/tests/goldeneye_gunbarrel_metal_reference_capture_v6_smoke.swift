@@ -4,6 +4,7 @@ import GoldenEyeNative
 import Foundation
 import Metal
 import QuartzCore
+import CryptoKit
 
 private func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
     precondition(condition(), "goldeneye_gunbarrel_metal_reference_capture_v6_smoke: \(message)")
@@ -197,6 +198,23 @@ private func gunbarrelPixelBoundsV6(
         }
     }
     return result
+}
+
+private func rgbFingerprint(_ bytes: Data) -> (nonBlack: Int, maxRGB: UInt8, digest: String) {
+    var nonBlack = 0
+    var maximum: UInt8 = 0
+    var rgb = Data()
+    rgb.reserveCapacity(bytes.count / 4 * 3)
+    for offset in stride(from: 0, to: bytes.count, by: 4) {
+        let b = bytes[offset]
+        let g = bytes[offset + 1]
+        let r = bytes[offset + 2]
+        if b != 0 || g != 0 || r != 0 { nonBlack += 1 }
+        maximum = max(maximum, max(r, max(g, b)))
+        rgb.append(contentsOf: [b, g, r])
+    }
+    let digest = SHA256.hash(data: rgb).map { String(format: "%02x", $0) }.joined()
+    return (nonBlack, maximum, digest)
 }
 
 private func gunbarrelAggregateHashV6(_ values: [UInt64]) -> UInt64 {
@@ -523,6 +541,8 @@ struct GoldenEyeGunbarrelMetalReferenceCaptureV6Smoke {
         }
 
         var baselineHash: String?
+        var mode2RGBDigest: String?
+        var mode8RGBDigest: String?
         var captureCases: [(label: String, mode: Int, timer: UInt32, nativeTick: UInt64, hd: Bool)] =
             (2...9).map { mode in
                 let timer: UInt32 = mode == 2 ? 0 : (mode == 3 ? 137 : (mode == 4 ? 212 : (mode == 5 ? 230 : UInt32(mode * 32))))
@@ -775,7 +795,12 @@ struct GoldenEyeGunbarrelMetalReferenceCaptureV6Smoke {
             )
             let captureEnd = DispatchTime.now().uptimeNanoseconds
             expect(capture.width == 320 && capture.height == 240, "mode \(mode) dimensions")
-            expect(capture.bytes.contains(where: { $0 != 0 }), "mode \(mode) nonblack capture")
+            let rgb = rgbFingerprint(capture.bytes)
+            if mode != 8 {
+                expect(rgb.nonBlack > 0 && rgb.maxRGB > 0, "mode \(mode) nonblack RGB capture")
+            }
+            if mode == 2 { mode2RGBDigest = rgb.digest }
+            if mode == 8 { mode8RGBDigest = rgb.digest }
             if mode == 2 { baselineHash = capture.rawSHA256 }
             if ProcessInfo.processInfo.environment["GE_GUNBARREL_ISOLATED_EVIDENCE"] == "1",
                timer == 230 {
@@ -867,7 +892,10 @@ struct GoldenEyeGunbarrelMetalReferenceCaptureV6Smoke {
                 let hdEnd = DispatchTime.now().uptimeNanoseconds
                 faithfulHDWallMs = Double(hdEnd &- hdStart) / 1_000_000.0
                 expect(hdCapture.width == 1_280 && hdCapture.height == 960, "mode \(mode) faithful HD dimensions")
-                expect(hdCapture.bytes.contains(where: { $0 != 0 }), "mode \(mode) faithful HD nonblack capture")
+                let hdRGB = rgbFingerprint(hdCapture.bytes)
+                if mode != 8 {
+                    expect(hdRGB.nonBlack > 0 && hdRGB.maxRGB > 0, "mode \(mode) faithful HD nonblack RGB capture")
+                }
                 let hdRawURL = outputRoot.appendingPathComponent("gunbarrel-\(label)-1280x960.raw")
                 let hdPNGURL = outputRoot.appendingPathComponent("gunbarrel-\(label)-1280x960.png")
                 try hdCapture.bytes.write(to: hdRawURL, options: .atomic)
@@ -943,6 +971,10 @@ struct GoldenEyeGunbarrelMetalReferenceCaptureV6Smoke {
         hdRenderer.shutdown()
         sourceRenderer.shutdown()
         try? store.shutdown()
+        if let mode2RGBDigest, let mode8RGBDigest {
+            expect(mode2RGBDigest != mode8RGBDigest,
+                   "mode-2 RGB output must differ from clear-black mode 8")
+        }
         print("goldeneye_gunbarrel_metal_reference_capture_v6_smoke: PASS modes=2...9")
     }
 }

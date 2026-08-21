@@ -46,9 +46,9 @@ rg -q 'event=probeDeactivate' /tmp/goldeneye-m3-events.log
 rg -q 'event=probeActivate' /tmp/goldeneye-m3-events.log
 cat /tmp/goldeneye-m3-events.log
 
-if rg -q 'event=focusLost reset=1 paused=1' /tmp/goldeneye-m3-events.log && \
+if rg -q 'event=focusLost reset=1 paused=0' /tmp/goldeneye-m3-events.log && \
    rg -q 'event=focusGained paused=0' /tmp/goldeneye-m3-events.log; then
-    echo "M3 AppKit focus notification/reset validation: PASS"
+    echo "M3 AppKit focus notification/reset/always-active validation: PASS"
 else
     echo "M3 AppKit focus notification was not delivered by this headless session; pure-state reset remains covered by test_m3_input.sh" >&2
 fi

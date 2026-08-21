@@ -22,6 +22,8 @@ struct GoldenEyePlayerCameraOwnerV6Smoke {
         let cameraHash: UInt64
         let roomHash: UInt64
         let ownerHash: UInt64
+        let stanLinkCount: UInt32
+        let stanLinkHash: UInt64
         let aggregate: UInt64
     }
 
@@ -96,6 +98,29 @@ struct GoldenEyePlayerCameraOwnerV6Smoke {
                     stagePacket: packet, sourcePages: pages, ramromHeader: header,
                     optionState: options, demoID: route.demoID
                 )
+                guard let sourcePosition = Self.sourcePadPosition(
+                    setup: packet.setup, index: pages.setup.initial_pad
+                ), let scaledPad = pagesWithPlayer.pads.first(
+                    where: { $0.pad_id == pages.setup.initial_pad }
+                ) else {
+                    fatalError("missing source spawn pad for level-scale assertion")
+                }
+                let runtimeScale = Self.runtimeScale(stageID: route.stageID)
+                let expectedPosition = [
+                    Self.scaledQ16(Self.q16(sourcePosition.0), by: runtimeScale),
+                    Self.scaledQ16(Self.q16(sourcePosition.1), by: runtimeScale),
+                    Self.scaledQ16(Self.q16(sourcePosition.2), by: runtimeScale),
+                ]
+                guard scaledPad.position_q16.0 == expectedPosition[0],
+                      scaledPad.position_q16.1 == expectedPosition[1],
+                      scaledPad.position_q16.2 == expectedPosition[2] else {
+                    fatalError("source level-scale conversion mismatch for stage \(route.stageID)")
+                }
+                guard !pagesWithPlayer.stanLinks.isEmpty else {
+                    throw GoldenEyeRamRomPlayerCameraOwnerErrorV6.missingSourceEvidence(
+                        "source STAN topology links for stage \(route.stageID)"
+                    )
+                }
                 let result = try run(
                     route: route, pages: pagesWithPlayer, data: data, summary: summary
                 )
@@ -111,7 +136,8 @@ struct GoldenEyePlayerCameraOwnerV6Smoke {
                     "player-camera demo=\(route.demoID) stage=\(route.stageID) " +
                         "samples=\(result.samples) roomHash=\(result.roomHash) " +
                         "playerHash=\(result.playerHash) cameraHash=\(result.cameraHash) " +
-                        "ownerHash=\(result.ownerHash)"
+                        "ownerHash=\(result.ownerHash) stanLinks=\(result.stanLinkCount) " +
+                        "stanLinkHash=\(result.stanLinkHash)"
                 )
             }
         }
@@ -122,7 +148,8 @@ struct GoldenEyePlayerCameraOwnerV6Smoke {
             Self.mix(hash, [
                 UInt64(result.demoID), UInt64(result.samples), result.recordingHash,
                 UInt64(result.terminalChecksum), result.playerHash, result.cameraHash,
-                result.roomHash, result.ownerHash, result.aggregate,
+                result.roomHash, result.ownerHash, UInt64(result.stanLinkCount),
+                result.stanLinkHash, result.aggregate,
             ])
         }
         print(
@@ -241,6 +268,13 @@ struct GoldenEyePlayerCameraOwnerV6Smoke {
             recordingHash: UInt64(summary.recording_hash), terminalChecksum: terminalChecksum,
             playerHash: publication.playerHash, cameraHash: publication.cameraHash,
             roomHash: publication.roomHash, ownerHash: publication.ownerStateHash,
+            stanLinkCount: UInt32(pages.stanLinks.count),
+            stanLinkHash: pages.stanLinks.reduce(UInt64(1_469_598_103_934_665_603)) { hash, link in
+                Self.mix(hash, [UInt64(link.source_tile_offset), UInt64(link.point_index),
+                                UInt64(link.target_tile_offset), UInt64(link.flags),
+                                UInt64(link.raw_link), UInt64(link.source_room_id),
+                                UInt64(link.target_room_id), UInt64(link.reserved0)])
+            },
             aggregate: aggregate
         )
     }
@@ -266,6 +300,40 @@ struct GoldenEyePlayerCameraOwnerV6Smoke {
         value.controller_index = 0
         value.source_mask = UInt32(GE_RAMROM_GAMEPLAY_V6_INPUT_CONTROLLER)
         return value
+    }
+
+    private static func sourcePadPosition(
+        setup: GoldenEyeStageSetupPacket, index: UInt32
+    ) -> (UInt32, UInt32, UInt32)? {
+        if let pad = setup.pads.first(where: { $0.index == index }) {
+            return (pad.position.x, pad.position.y, pad.position.z)
+        }
+        if let pad = setup.boundPads.first(where: { $0.index == index }) {
+            return (pad.position.x, pad.position.y, pad.position.z)
+        }
+        return nil
+    }
+
+    private static func q16(_ bits: UInt32) -> Int32 {
+        let value = Double(Float(bitPattern: bits)) * 65_536.0
+        return Int32(clamping: Int64(value.rounded(.towardZero)))
+    }
+
+    private static func scaledQ16(_ value: Int32, by scale: Double) -> Int32 {
+        Int32(clamping: Int64((Double(value) * scale).rounded(.toNearestOrAwayFromZero)))
+    }
+
+    private static func runtimeScale(stageID: UInt32) -> Double {
+        switch stageID {
+        case 33: return 1.0 / 0.23363999
+        case 34: return 1.0 / 1.20648
+        case 35: return 1.0 / 0.089571431
+        case 9: return 1.0 / 0.53931433
+        case 20: return 1.0 / 0.47256002
+        case 26: return 1.0 / 0.44757429
+        case 25: return 1.0 / 0.15019713
+        default: fatalError("missing source levelscale for stage \(stageID)")
+        }
     }
 
     private static func u32Values<T>(_ tuple: T) -> [UInt32] {

@@ -228,6 +228,44 @@ struct GoldenEyeSourceDynamicRenderSetupContextV6: Sendable, Equatable {
         secondaryRawMode: 0xC410_49D8,
         depthEnabled: true
     )
+
+    /// Cast body/head packets use the authored Type-4 pair above, while some
+    /// source weapon Model.c packets carry their own render-mode pair (for
+    /// example chrfnp90). Keep the exact source words when they are present;
+    /// the guarded Cast defaults remain only the bounded fallback for packets
+    /// without an explicit render-mode command.
+    static func cast(
+        forModel model: GoldenEyeSourceModelV6,
+        scene: GESourceSceneV6
+    ) -> Self {
+        let visible = Set(scene.visibleNodeIDs)
+        let secondaryIDs = Set(model.nodes.compactMap { node -> UInt32? in
+            guard visible.contains(node.id),
+                  node.secondaryDisplayListID != GoldenEyeSourceModelV6.nullHandle else {
+                return nil
+            }
+            return node.secondaryDisplayListID
+        })
+        var primary: UInt32?
+        var secondary: UInt32?
+        for command in scene.commands where
+            command.macro == "gsDPSetRenderMode"
+                || command.macro == "gsSPSetOtherMode" {
+            guard command.word1 != 0,
+                  command.word1 & 0xC000_0000 == 0xC000_0000 else { continue }
+            if secondaryIDs.contains(command.displayListID)
+                || (primary != nil && command.word1 != primary) {
+                secondary = secondary ?? command.word1
+            } else {
+                primary = primary ?? command.word1
+            }
+        }
+        return Self(
+            primaryRawMode: primary ?? Self.cast.primaryRawMode,
+            secondaryRawMode: secondary ?? Self.cast.secondaryRawMode,
+            depthEnabled: Self.cast.depthEnabled
+        )
+    }
 }
 
 enum GoldenEyeGBISceneBuilderV6 {
@@ -245,7 +283,49 @@ enum GoldenEyeGBISceneBuilderV6 {
         let vertexResourceTotal: Int
         let vertexResourcePageCount: Int
         let vertexResourceManifestHash: UInt64
-        let textureAliases: [UInt32: UInt32]
+        let staticData: DecodedPacketStaticData
+    }
+
+    /// Immutable work derived solely from the source packet/decoder and its
+    /// material setup.  Dynamic builds still lower poses, matrices, and
+    /// transformed vertices every tick; this cache only removes repeated
+    /// source-command/state/texture/provenance walks from that path.
+    private struct DecodedPacketStaticData {
+        let textureByHandle: [UInt32: GoldenEyeSourceModelV6.Texture]
+        let resources: [GESourceResourceV6]
+        let draws: [DecodedDrawMetadata]
+    }
+
+    private struct DecodedTextureCoordinateCommands {
+        let texture: GEGBISourceCommandV6
+        let tile: GEGBISourceCommandV6
+        let tileSize: GEGBISourceCommandV6
+    }
+
+    private struct LoweredTextureCoordinate {
+        let localS: Int64
+        let localT: Int64
+        let levelWidth: UInt32
+        let levelHeight: UInt32
+    }
+
+    private struct LoweredStateKey: Hashable {
+        let stateIndex: UInt32
+        let setupHash: UInt64
+        let setupSequence: UInt32
+        let setupDisplayListID: UInt32
+        let setupOrdinal: UInt32
+    }
+
+    private struct DecodedDrawMetadata {
+        let draw: GEGBIDrawV6
+        let state: GEGBIStateV6
+        let sourceCommand: GESourceCompiledCommandV6?
+        let textureSetup: GoldenEyeSourceTextureSetupV6?
+        let loweredState: LoweredState
+        let coordinateCommands: DecodedTextureCoordinateCommands?
+        let textureCoordinates: [LoweredTextureCoordinate]?
+        let vertexLoadMatrixBySlot: [UInt32: UInt32]
     }
 
     private final class DecodedPacketCache: @unchecked Sendable {
@@ -382,9 +462,16 @@ enum GoldenEyeGBISceneBuilderV6 {
 
         try validateInputResources(matrices: matrices, viewports: viewports)
         try validateTextureSetups(textureSetups, modelName: modelName, model: model)
+        let sourceCommandHash = sourceCommandWordHash(scene)
+        let textureSetupHash = hashTextureSetups(textureSetups)
+        let additionalTextureHandles = resolvedScene?.additionalTextureHandles ?? []
         let cacheKey = modelName + ":" +
             model.header.packetHash.map { String(format: "%02x", $0) }.joined() + ":" +
-            String(scene.semanticHash, radix: 16) + ":" +
+            String(scene.semanticHash, radix: 16) + ":source=" +
+            String(sourceCommandHash, radix: 16) + ":setup=" +
+            String(textureSetupHash, radix: 16) + ":extra=" +
+            additionalTextureHandles.sorted().map { String($0, radix: 16) }.joined(separator: ",") + ":dims=" +
+            String(frame.logicalWidth, radix: 16) + "," + String(frame.logicalHeight, radix: 16) + ":" +
             String(effectiveRenderSetupContext?.primaryRawMode ?? 0, radix: 16) + ":" +
             String(effectiveRenderSetupContext?.secondaryRawMode ?? 0, radix: 16) + ":m=" +
             matrices.map(\.handle).sorted().map { String($0, radix: 16) }.joined(separator: ",") + ":v=" +
@@ -410,7 +497,6 @@ enum GoldenEyeGBISceneBuilderV6 {
         guard vertexResources.count <= Int(GE_SOURCE_GBI_V6_MAX_VERTEX_RESOURCE_TOTAL) else {
             throw GoldenEyeGBISceneBuilderV6Error.packetCapacity("vertex resource total")
         }
-        let sourceCommandHash = sourceCommandWordHash(scene)
 
         let packetPointer: UnsafeMutablePointer<GEGBISourcePacketV6>
         let decoderPointer: UnsafeMutablePointer<GEGBIResultV6>
@@ -418,7 +504,7 @@ enum GoldenEyeGBISceneBuilderV6 {
         let cachedVertexResources: [GEGBISourceVertexResourceV6]
         let cachedVertexPageCount: Int
         let cachedVertexManifestHash: UInt64
-        let cachedTextureAliases: [UInt32: UInt32]
+        let staticData: DecodedPacketStaticData
 
         if let cachedEntry = cachedEntryForBuild {
             packetPointer = cachedEntry.packet
@@ -427,7 +513,7 @@ enum GoldenEyeGBISceneBuilderV6 {
             cachedVertexResources = cachedEntry.vertexResources
             cachedVertexPageCount = cachedEntry.vertexResourcePageCount
             cachedVertexManifestHash = cachedEntry.vertexResourceManifestHash
-            cachedTextureAliases = cachedEntry.textureAliases
+            staticData = cachedEntry.staticData
         } else {
             // GEGBISourcePacketV6 and GEGBIResultV6 remain heap-owned for the
             // lifetime of this static topology cache.  The cached C decoder
@@ -435,6 +521,7 @@ enum GoldenEyeGBISceneBuilderV6 {
             // values and poses are supplied to `convert` below.
             packetPointer = try makePacket(
                 model: model,
+                modelName: modelName,
                 scene: scene,
                 matrices: matrices,
                 viewports: viewports,
@@ -508,6 +595,18 @@ enum GoldenEyeGBISceneBuilderV6 {
                 UnsafeBufferPointer(start: provenancePointer, count: Int(provenanceCount))
             )
             provenancePointer.deallocate()
+            let aliases = try textureAliases(scene: scene, modelName: modelName, model: model)
+            let staticDataValue = try makeDecodedPacketStaticData(
+                model: model,
+                scene: scene,
+                packetPointer: packetPointer,
+                decoderPointer: decoderPointer,
+                textureAliases: aliases,
+                textureSetups: textureSetups,
+                logicalWidth: frame.logicalWidth,
+                logicalHeight: frame.logicalHeight,
+                vertexLoadProvenance: provenance
+            )
             let value = DecodedPacketCacheEntry(
                 packet: packetPointer,
                 decoder: decoderPointer,
@@ -517,8 +616,9 @@ enum GoldenEyeGBISceneBuilderV6 {
                 vertexResourceTotal: vertexResources.count,
                 vertexResourcePageCount: vertexPages.count,
                 vertexResourceManifestHash: vertexManifestHash,
-                textureAliases: try textureAliases(scene: scene, model: model)
+                staticData: staticDataValue
             )
+            staticData = value.staticData
             decodedPacketCache.lock.lock()
             decodedPacketCache.values[cacheKey] = value
             decodedPacketCache.lock.unlock()
@@ -526,7 +626,6 @@ enum GoldenEyeGBISceneBuilderV6 {
             cachedVertexResources = vertexResources
             cachedVertexPageCount = vertexPages.count
             cachedVertexManifestHash = vertexManifestHash
-            cachedTextureAliases = value.textureAliases
         }
 
         let effectiveMatrixRoles = matrixRoles.isEmpty
@@ -542,7 +641,6 @@ enum GoldenEyeGBISceneBuilderV6 {
             vertexResourceTotal: cachedVertexResources.count,
             vertexResourcePageCount: cachedVertexPageCount,
             vertexResourceManifestHash: cachedVertexManifestHash,
-            textureAliases: cachedTextureAliases,
             matrices: matrices,
             viewports: viewports,
             matrixRoles: effectiveMatrixRoles,
@@ -551,7 +649,8 @@ enum GoldenEyeGBISceneBuilderV6 {
             vertexLoadProvenance: vertexLoadProvenance,
             transformContext: transformContext,
             renderSetupContext: effectiveRenderSetupContext,
-            textureSetups: textureSetups
+            textureSetups: textureSetups,
+            staticData: staticData
         )
         return converted
     }
@@ -573,7 +672,7 @@ enum GoldenEyeGBISceneBuilderV6 {
 
     /// Adds the source producer's outer Rareware setup to a private scene
     /// copy.  The guarded rarewarelogo.gesm remains the exact 389-command
-    /// segment; these five setup commands are the value-only title.c state
+    /// segment; these producer-owned setup commands are the value-only title.c state
     /// established before the segment's display lists are called.
     static func rarewareSceneWithOuterSetup(
         model: GoldenEyeSourceModelV6,
@@ -698,10 +797,68 @@ enum GoldenEyeGBISceneBuilderV6 {
             word1: 0x0800_0800,
             handle: 0x4E10_0003
         )
+        // title.c establishes these OtherMode-H values before calling the
+        // Rareware segment.  The guarded GESM starts at the display-list
+        // bodies, so omitting them silently selected point/no-perspective
+        // sampling and made the letter mips look blurrier than the source.
+        let texturePerspective = setup(
+            displayListID: 4,
+            ordinal: 3,
+            macro: "gsSPSetOtherMode",
+            arguments: [.integer(0xBA), .integer(19), .integer(1), .integer(1)],
+            word0: 0xBA00_1301,
+            word1: 1,
+            handle: 0x4E10_0004
+        )
+        let textureFilter = setup(
+            displayListID: 4,
+            ordinal: 4,
+            macro: "gsDPSetTextureFilter",
+            arguments: [.integer(2)],
+            word0: 0xBA00_0C02,
+            word1: 2,
+            handle: 0x4E10_0005
+        )
+        let textureConvert = setup(
+            displayListID: 4,
+            ordinal: 5,
+            macro: "gsSPSetOtherMode",
+            arguments: [.integer(0xBA), .integer(9), .integer(3), .integer(6)],
+            word0: 0xBA00_0903,
+            word1: 6,
+            handle: 0x4E10_0006
+        )
+        let textureDetail = setup(
+            displayListID: 4,
+            ordinal: 6,
+            macro: "gsDPSetTextureDetail",
+            arguments: [.integer(0)],
+            word0: 0xBA00_1102,
+            word1: 0,
+            handle: 0x4E10_0007
+        )
+        let textureLOD = setup(
+            displayListID: 4,
+            ordinal: 7,
+            macro: "gsDPSetTextureLOD",
+            arguments: [.integer(0)],
+            word0: 0xBA00_1001,
+            word1: 0,
+            handle: 0x4E10_0008
+        )
+        let textureLUT = setup(
+            displayListID: 4,
+            ordinal: 8,
+            macro: "gsSPSetOtherMode",
+            arguments: [.integer(0xBA), .integer(14), .integer(2), .integer(0)],
+            word0: 0xBA00_0E02,
+            word1: 0,
+            handle: 0x4E10_0009
+        )
         let body0 = bodySetup(
             displayListID: 4,
             textureHandle: model.textures[4].resourceHandle,
-            ordinalBase: 3,
+            ordinalBase: 9,
             handleBase: 0x4E10_0010
         )
         var body1 = bodySetup(
@@ -738,6 +895,12 @@ enum GoldenEyeGBISceneBuilderV6 {
         commands.append(matrixProjection)
         commands.append(matrixModel)
         commands.append(textureEnable)
+        commands.append(texturePerspective)
+        commands.append(textureFilter)
+        commands.append(textureConvert)
+        commands.append(textureDetail)
+        commands.append(textureLOD)
+        commands.append(textureLUT)
         commands.append(contentsOf: body0)
         commands.append(contentsOf: originalByList[4] ?? [])
         commands.append(contentsOf: originalByList[5] ?? [])
@@ -1004,6 +1167,7 @@ enum GoldenEyeGBISceneBuilderV6 {
 
     private static func makePacket(
         model: GoldenEyeSourceModelV6,
+        modelName: String,
         scene: GESourceSceneV6,
         matrices: [GoldenEyeGBIMatrixResourceV6],
         viewports: [GoldenEyeGBIViewportResourceV6],
@@ -1030,8 +1194,13 @@ enum GoldenEyeGBISceneBuilderV6 {
         packetPointer.pointee.matrix_count = UInt32(matrices.count)
         packetPointer.pointee.viewport_count = UInt32(viewports.count)
 
-        let textureAliases = try textureAliases(scene: scene, model: model)
-        let flattened = flattenCommands(scene: scene, textureAliases: textureAliases)
+        let textureAliases = try textureAliases(scene: scene, modelName: modelName, model: model)
+        let flattened = flattenCommands(
+            scene: scene,
+            modelName: modelName,
+            model: model,
+            textureAliases: textureAliases
+        )
         packetPointer.pointee.command_count = UInt32(flattened.commands.count)
         guard !flattened.commands.isEmpty, !scene.displayLists.isEmpty,
               flattened.commands.count <= Int(GE_SOURCE_GBI_V6_MAX_COMMANDS),
@@ -1069,6 +1238,7 @@ enum GoldenEyeGBISceneBuilderV6 {
 
         let imageValues = try makeImages(
             model: model,
+            modelName: modelName,
             scene: scene,
             textureAliases: textureAliases,
             additionalTextureHandles: additionalTextureHandles
@@ -1081,6 +1251,8 @@ enum GoldenEyeGBISceneBuilderV6 {
 
     private static func flattenCommands(
         scene: GESourceSceneV6,
+        modelName: String,
+        model: GoldenEyeSourceModelV6,
         textureAliases: [UInt32: UInt32]
     ) -> (commands: [GEGBISourceCommandV6], lists: [GEGBISourceListV6]) {
         var commands: [GEGBISourceCommandV6] = []
@@ -1120,7 +1292,12 @@ enum GoldenEyeGBISceneBuilderV6 {
                 } else if command.macro == "gsSPUseTexture", command.arguments.count >= 9 {
                     let rawHandle = compact(command.arguments[8])
                     let textureHandles = Set(textureAliases.keys)
-                    let fullHandle = resolveTextureHandle(rawHandle, textures: textureHandles) ?? rawHandle
+                    let fullHandle = resolveTextureHandle(
+                        rawHandle,
+                        modelName: modelName,
+                        model: model,
+                        textures: textureHandles
+                    ) ?? rawHandle
                     if let alias = textureAliases[fullHandle] {
                         value.w1 = (value.w1 & 0xffff_f000) | alias
                     }
@@ -1174,18 +1351,60 @@ enum GoldenEyeGBISceneBuilderV6 {
             }
             groupRun[run.groupHandle] = run
         }
+        func resolveGroupHandle(_ raw: UInt32) throws -> UInt32? {
+            guard raw != 0, raw != GoldenEyeSourceModelV6.nullHandle else { return nil }
+            if groupRun[raw] != nil { return raw }
+            let matches = groupRun.keys.filter { ($0 & 0x0000_0fff) == raw }
+            if matches.count == 1 { return matches[0] }
+            if matches.count > 1 {
+                throw GoldenEyeGBISceneBuilderV6Error.duplicateHandle(
+                    "vertex group alias", raw
+                )
+            }
+
+            // Dynamic character packets may retain the source listing's
+            // Vertex_0x value in node metadata while the GESM vertex table
+            // stores the prepared FNV handle. Resolve that source row only
+            // when it identifies one exact prepared run; never bind a
+            // guessed/default vertex array.
+            let rowCandidates = [
+                "Vertex_0x\(String(raw, radix: 16))",
+                "Vertex_0x\(raw)",
+            ]
+            let rowMatches = rowCandidates.flatMap { row in
+                groupRun.keys.filter {
+                    fnv32("\(modelName):vertex_group:\(row)") == $0
+                }
+            }
+            let uniqueRows = Array(Set(rowMatches))
+            if uniqueRows.count == 1 { return uniqueRows[0] }
+            if uniqueRows.count > 1 {
+                throw GoldenEyeGBISceneBuilderV6Error.duplicateHandle(
+                    "vertex group source row alias", raw
+                )
+            }
+            return nil
+        }
         var listMetadata: [UInt32: (groupHandle: UInt32, vertexCount: Int)] = [:]
         for node in model.nodes {
             guard node.scalarStart < UInt32(model.scalars.count) else { continue }
             let metadata = model.scalars[Int(node.scalarStart)].metadata
-            guard metadata.count > 4, metadata[4] != GoldenEyeSourceModelV6.nullHandle,
-                  let group = groupRun[metadata[4]] else { continue }
-            for listID in [node.primaryDisplayListID, node.secondaryDisplayListID] where listID != GoldenEyeSourceModelV6.nullHandle {
+            guard metadata.count > 4,
+                  metadata[4] != 0,
+                  metadata[4] != GoldenEyeSourceModelV6.nullHandle else { continue }
+            let listIDs = [node.primaryDisplayListID, node.secondaryDisplayListID]
+                .filter { $0 != GoldenEyeSourceModelV6.nullHandle }
+            guard !listIDs.isEmpty else { continue }
+            guard let groupHandle = try resolveGroupHandle(metadata[4]),
+                  let group = groupRun[groupHandle] else {
+                throw GoldenEyeGBISceneBuilderV6Error.missingVertexGroup(metadata[4])
+            }
+            for listID in listIDs {
                 // Some generated display-list records retain the explicit
                 // typed group handle while leaving the count field zero; the
                 // validated GESM vertex run is the authoritative count in
                 // that case.
-                let value = (groupHandle: metadata[4], vertexCount: metadata[2] > 0 ? Int(metadata[2]) : group.count)
+                let value = (groupHandle: groupHandle, vertexCount: metadata[2] > 0 ? Int(metadata[2]) : group.count)
                 if let prior = listMetadata[listID], prior.groupHandle != value.groupHandle || prior.vertexCount != value.vertexCount {
                     throw GoldenEyeGBISceneBuilderV6Error.duplicateHandle("display-list vertex metadata", listID)
                 }
@@ -1227,7 +1446,9 @@ enum GoldenEyeGBISceneBuilderV6 {
                 $0 >= start && $0 < end && model.commands[$0].semantic.hasPrefix("gsSPVertex")
             }
             guard !loads.isEmpty else { continue }
-            guard let metadata = listMetadata[list.id], let explicitRun = groupRun[metadata.groupHandle], explicitRun.count == metadata.vertexCount else {
+            guard let metadata = listMetadata[list.id],
+                  let explicitRun = groupRun[metadata.groupHandle],
+                  (explicitRun.count == metadata.vertexCount || preferListMetadataForDynamicModel) else {
                 throw GoldenEyeGBISceneBuilderV6Error.missingVertexGroup(list.id)
             }
             let requestedTotal = loads.reduce(0) { partial, index in
@@ -1569,26 +1790,50 @@ enum GoldenEyeGBISceneBuilderV6 {
 
     private static func textureAliases(
         scene: GESourceSceneV6,
+        modelName: String,
         model: GoldenEyeSourceModelV6
     ) throws -> [UInt32: UInt32] {
         let textures = Set(model.textures.map(\.resourceHandle))
-        let used = scene.commands.compactMap { command -> UInt32? in
-            guard command.macro == "gsSPUseTexture", command.arguments.count >= 9 else { return nil }
+        var used: [UInt32] = []
+        var rawToResolved: [UInt32: UInt32] = [:]
+        for command in scene.commands {
+            guard command.macro == "gsSPUseTexture", command.arguments.count >= 9 else { continue }
             let raw = compact(command.arguments[8])
-            if textures.contains(raw) { return raw }
-            let matches = textures.filter { ($0 & 0x0000_0fff) == raw }
-            return matches.count == 1 ? Array(matches)[0] : nil
+            guard let resolved = resolveTextureHandle(
+                raw,
+                modelName: modelName,
+                model: model,
+                textures: textures
+            ) else {
+                throw GoldenEyeGBISceneBuilderV6Error.missingTexture(raw)
+            }
+            used.append(resolved)
+            rawToResolved[raw] = resolved
         }
         var output: [UInt32: UInt32] = [:]
         for (index, handle) in Set(used).sorted().enumerated() {
             guard index < 0x0fff else { throw GoldenEyeGBISceneBuilderV6Error.packetCapacity("texture aliases") }
             output[handle] = UInt32(index + 1)
         }
+        for (raw, resolved) in rawToResolved {
+            guard let alias = output[resolved] else {
+                throw GoldenEyeGBISceneBuilderV6Error.missingTexture(resolved)
+            }
+            if let existing = output[raw], existing != alias {
+                throw GoldenEyeGBISceneBuilderV6Error.duplicateHandle("texture alias", raw)
+            }
+            output[raw] = alias
+        }
         // A source G_SETTEX command without a typed full-handle argument is
         // not a consumable image record; preserve the exact failure boundary.
         for command in scene.commands where command.macro == "gsSPUseTexture" {
             guard command.arguments.count >= 9,
-                  resolveTextureHandle(compact(command.arguments[8]), textures: textures) != nil else {
+                  resolveTextureHandle(
+                      compact(command.arguments[8]),
+                      modelName: modelName,
+                      model: model,
+                      textures: textures
+                  ) != nil else {
                 throw GoldenEyeGBISceneBuilderV6Error.missingTexture(command.word1 & 0xfff)
             }
         }
@@ -1597,15 +1842,23 @@ enum GoldenEyeGBISceneBuilderV6 {
 
     private static func resolveTextureHandle(
         _ raw: UInt32,
+        modelName: String,
+        model: GoldenEyeSourceModelV6,
         textures: Set<UInt32>
     ) -> UInt32? {
         if textures.contains(raw) { return raw }
         let matches = textures.filter { ($0 & 0x0000_0fff) == raw }
-        return matches.count == 1 ? Array(matches)[0] : nil
+        if matches.count == 1 { return Array(matches)[0] }
+        let rowMatches = model.textures.filter {
+            fnv32("\(modelName):texture_row:\(String(raw))") == $0.sourceRowHandle ||
+            fnv32("\(modelName):texture_row:IMAGE_\(raw)") == $0.sourceRowHandle
+        }
+        return rowMatches.count == 1 ? rowMatches[0].resourceHandle : nil
     }
 
     private static func makeImages(
         model: GoldenEyeSourceModelV6,
+        modelName: String,
         scene: GESourceSceneV6,
         textureAliases: [UInt32: UInt32],
         additionalTextureHandles: [UInt32] = []
@@ -1631,9 +1884,16 @@ enum GoldenEyeGBISceneBuilderV6 {
                 guard command.arguments.count >= 9 else {
                     throw GoldenEyeGBISceneBuilderV6Error.invalidSourceTexture(command.word1 & 0xfff)
                 }
-                let fullHandle = compact(command.arguments[8])
-                guard let handle = textureAliases[fullHandle] else {
-                    throw GoldenEyeGBISceneBuilderV6Error.missingTexture(fullHandle)
+                let rawHandle = compact(command.arguments[8])
+                let textureHandles = Set(textures.keys)
+                let fullHandle = resolveTextureHandle(
+                    rawHandle,
+                    modelName: modelName,
+                    model: model,
+                    textures: textureHandles
+                ) ?? rawHandle
+                guard let handle = textureAliases[fullHandle] ?? textureAliases[rawHandle] else {
+                    throw GoldenEyeGBISceneBuilderV6Error.missingTexture(rawHandle)
                 }
                 guard handle != 0 else { throw GoldenEyeGBISceneBuilderV6Error.invalidSourceTexture(handle) }
                 guard let texture = textures[fullHandle] else {
@@ -1712,28 +1972,213 @@ enum GoldenEyeGBISceneBuilderV6 {
         }
     }
 
-    private static func convert(
+    private static func makeDecodedPacketStaticData(
         model: GoldenEyeSourceModelV6,
-        modelName: String,
         scene: GESourceSceneV6,
         packetPointer: UnsafeMutablePointer<GEGBISourcePacketV6>,
         decoderPointer: UnsafeMutablePointer<GEGBIResultV6>,
-        sourceCommandWordHash: UInt64,
-        vertexResourceTotal: Int,
-        vertexResourcePageCount: Int,
-        vertexResourceManifestHash: UInt64,
         textureAliases: [UInt32: UInt32],
-        matrices: [GoldenEyeGBIMatrixResourceV6],
-        viewports: [GoldenEyeGBIViewportResourceV6],
-        matrixRoles: [GoldenEyeSourceMatrixRoleSidecarV6],
-        frame: GoldenEyeGBISceneFrameContextV6,
-        animationPoses: [GESourceAnimationPoseV6],
-        vertexLoadProvenance: [GEGBIVertexLoadProvenanceV6],
-        transformContext: GoldenEyeSourceNodeTransformContextV6?,
-        renderSetupContext: GoldenEyeSourceDynamicRenderSetupContextV6?,
-        textureSetups: [GoldenEyeSourceTextureSetupV6]
-    ) throws -> GoldenEyeGBISceneBuildResultV6 {
-        let textureByHandle = Dictionary(uniqueKeysWithValues: model.textures.map { ($0.resourceHandle, $0) })
+        textureSetups: [GoldenEyeSourceTextureSetupV6],
+        logicalWidth: UInt32,
+        logicalHeight: UInt32,
+        vertexLoadProvenance: [GEGBIVertexLoadProvenanceV6]
+    ) throws -> DecodedPacketStaticData {
+        let textureByHandle = Dictionary(uniqueKeysWithValues: model.textures.map {
+            ($0.resourceHandle, $0)
+        })
+        let imageToTexture = try makeImageToTextureMap(
+            model: model,
+            packetPointer: packetPointer,
+            textureAliases: textureAliases
+        )
+        let resources = try makeSceneResources(
+            model: model,
+            textureByHandle: textureByHandle,
+            imageToTexture: imageToTexture
+        )
+        let sourceCommands = packetSourceCommandTable(scene)
+        var sourceSequences: [String: UInt32] = [:]
+        sourceSequences.reserveCapacity(scene.commands.count)
+        var sourceSequence: UInt32 = 0
+        for command in scene.commands where command.ordinal & 0x8000_0000 == 0 {
+            let key = sourceCommandKey(command)
+            sourceSequences[key] = sourceSequences[key] ?? sourceSequence
+            sourceSequence &+= 1
+        }
+
+        // The C provenance records are source-ordered for the dynamic models.
+        // Preserve original order for equal offsets so the last cache-slot
+        // write has the same value as the previous per-draw reduction.
+        let orderedProvenance = vertexLoadProvenance.enumerated().sorted {
+            if $0.element.command_offset != $1.element.command_offset {
+                return $0.element.command_offset < $1.element.command_offset
+            }
+            return $0.offset < $1.offset
+        }.map(\.element)
+        var provenanceIndex = 0
+        var vertexLoadMatrixBySlot: [UInt32: UInt32] = [:]
+        var loweredByState: [LoweredStateKey: LoweredState] = [:]
+        let draws = readPointerArray(
+            decoderPointer,
+            fieldOffset: MemoryLayout<GEGBIResultV6>.offset(of: \.draws)!,
+            count: Int(decoderPointer.pointee.draw_count),
+            as: GEGBIDrawV6.self
+        )
+        let coordinateSourceCommandHash = sourceCommandWordHash(scene)
+        var output: [DecodedDrawMetadata] = []
+        output.reserveCapacity(draws.count)
+        for draw in draws {
+            while provenanceIndex < orderedProvenance.count,
+                  orderedProvenance[provenanceIndex].command_offset <= draw.source_command_offset {
+                let record = orderedProvenance[provenanceIndex]
+                vertexLoadMatrixBySlot[record.cache_slot] = record.modelview_handle
+                provenanceIndex += 1
+            }
+            let packetIndex = Int(draw.source_command_offset)
+                / MemoryLayout<GEGBISourceCommandV6>.size
+            let sourceCommand = packetIndex >= 0 && packetIndex < sourceCommands.count
+                ? sourceCommands[packetIndex]
+                : nil
+            let state = readPointerElement(
+                decoderPointer,
+                fieldOffset: MemoryLayout<GEGBIResultV6>.offset(of: \.states)!,
+                index: Int(draw.state_index),
+                as: GEGBIStateV6.self
+            )
+            let textureTile = (state.texture_enabled_level_tile >> 8) & 7
+            let resolvedTextureHandle = imageToTexture[state.texture_image_handle] ??
+                state.texture_image_handle
+            let commandTextureSetup = sourceCommand.flatMap { command in
+                textureSetupForCommand(
+                    command,
+                    setups: textureSetups,
+                    sourceSequence: sourceSequences[sourceCommandKey(command)],
+                    textureHandle: resolvedTextureHandle
+                )
+            }
+            let matchingCommandTextureSetup: GoldenEyeSourceTextureSetupV6?
+            if model.header.modelHandle == rarewareModelHandle {
+                matchingCommandTextureSetup = commandTextureSetup?.tile == textureTile
+                    ? commandTextureSetup
+                    : nil
+            } else {
+                matchingCommandTextureSetup = commandTextureSetup
+            }
+            let textureSetup = matchingCommandTextureSetup ?? (
+                model.header.modelHandle == rarewareModelHandle
+                    ? textureSetups.first(where: {
+                        $0.modelName == "rarewarelogo" &&
+                        $0.resourceHandle == resolvedTextureHandle &&
+                        $0.tile == textureTile
+                    })
+                    : nil
+            )
+            let loweredStateKey = LoweredStateKey(
+                stateIndex: draw.state_index,
+                setupHash: textureSetup?.setupHash ?? 0,
+                setupSequence: textureSetup?.sequence ?? 0,
+                setupDisplayListID: textureSetup?.displayListID ?? 0,
+                setupOrdinal: textureSetup?.ordinal ?? 0
+            )
+            let loweredState: LoweredState
+            if let cached = loweredByState[loweredStateKey] {
+                loweredState = cached
+            } else {
+                let lowered = try lowerState(
+                    state,
+                    stateIndex: draw.state_index,
+                    imageToTexture: imageToTexture,
+                    textureByHandle: textureByHandle,
+                    logicalWidth: logicalWidth,
+                    logicalHeight: logicalHeight,
+                    matrixKinds: [:],
+                    textureSetup: textureSetup
+                )
+                loweredByState[loweredStateKey] = lowered
+                loweredState = lowered
+            }
+            var coordinateCommands: DecodedTextureCoordinateCommands?
+            if loweredState.textureHandle != 0 {
+                guard let texture = textureByHandle[loweredState.textureHandle] else {
+                    throw GoldenEyeGBISceneBuilderV6Error.missingTexture(
+                        loweredState.textureHandle
+                    )
+                }
+                coordinateCommands = try makeTextureCoordinateCommands(
+                    packetPointer: packetPointer,
+                    draw: draw,
+                    state: state,
+                    texture: texture,
+                    textureHandle: loweredState.textureHandle,
+                    textureSetup: textureSetup
+                )
+            } else {
+                coordinateCommands = nil
+            }
+            let textureCoordinates: [LoweredTextureCoordinate]?
+            if loweredState.textureHandle != 0 {
+                guard let texture = textureByHandle[loweredState.textureHandle],
+                      let coordinateCommands else {
+                    throw GoldenEyeGBISceneBuilderV6Error.missingTexture(
+                        loweredState.textureHandle
+                    )
+                }
+                let sourceIndices = [
+                    draw.source_vertex_a,
+                    draw.source_vertex_b,
+                    draw.source_vertex_c,
+                ]
+                guard sourceIndices.allSatisfy({ $0 < UInt32(model.vertices.count) }) else {
+                    throw GoldenEyeGBISceneBuilderV6Error.invalidSourceVertex(
+                        sourceIndices.max() ?? 0
+                    )
+                }
+                textureCoordinates = try sourceIndices.map { sourceIndex in
+                    let coordinate = try lowerTextureCoordinate(
+                        packetPointer: packetPointer,
+                        draw: draw,
+                        state: state,
+                        sourceVertex: model.vertices[Int(sourceIndex)],
+                        texture: texture,
+                        textureHandle: loweredState.textureHandle,
+                        textureSetup: textureSetup,
+                        sourceStateHash: state.state_hash,
+                        sourceCommandHash: coordinateSourceCommandHash,
+                        coordinateCommands: coordinateCommands
+                    )
+                    return LoweredTextureCoordinate(
+                        localS: coordinate.result.local_s_q16,
+                        localT: coordinate.result.local_t_q16,
+                        levelWidth: coordinate.result.level_width,
+                        levelHeight: coordinate.result.level_height
+                    )
+                }
+            } else {
+                textureCoordinates = nil
+            }
+            output.append(DecodedDrawMetadata(
+                draw: draw,
+                state: state,
+                sourceCommand: sourceCommand,
+                textureSetup: textureSetup,
+                loweredState: loweredState,
+                coordinateCommands: coordinateCommands,
+                textureCoordinates: textureCoordinates,
+                vertexLoadMatrixBySlot: vertexLoadMatrixBySlot
+            ))
+        }
+        return DecodedPacketStaticData(
+            textureByHandle: textureByHandle,
+            resources: resources,
+            draws: output
+        )
+    }
+
+    private static func makeImageToTextureMap(
+        model: GoldenEyeSourceModelV6,
+        packetPointer: UnsafeMutablePointer<GEGBISourcePacketV6>,
+        textureAliases: [UInt32: UInt32]
+    ) throws -> [UInt32: UInt32] {
         var imageToTexture: [UInt32: UInt32] = [:]
         for image in readPointerArray(
             packetPointer,
@@ -1750,7 +2195,52 @@ enum GoldenEyeGBISceneBuilderV6 {
             }
             imageToTexture[image.handle] = texture.resourceHandle
         }
+        return imageToTexture
+    }
 
+    private static func packetSourceCommandTable(
+        _ scene: GESourceSceneV6
+    ) -> [GESourceCompiledCommandV6?] {
+        var output: [GESourceCompiledCommandV6?] = Array(
+            repeating: nil,
+            count: scene.displayLists.count + 1
+        )
+        output.reserveCapacity(scene.displayLists.count + scene.commands.count + 1)
+        for list in scene.displayLists {
+            output.append(contentsOf: scene.commands
+                .filter { $0.displayListID == list.id }
+                .map(Optional.some))
+        }
+        return output
+    }
+
+    private static func sourceCommandKey(
+        _ command: GESourceCompiledCommandV6
+    ) -> String {
+        "\(command.displayListID):\(command.ordinal):\(command.macro)"
+    }
+
+    private static func convert(
+        model: GoldenEyeSourceModelV6,
+        modelName: String,
+        scene: GESourceSceneV6,
+        packetPointer: UnsafeMutablePointer<GEGBISourcePacketV6>,
+        decoderPointer: UnsafeMutablePointer<GEGBIResultV6>,
+        sourceCommandWordHash: UInt64,
+        vertexResourceTotal: Int,
+        vertexResourcePageCount: Int,
+        vertexResourceManifestHash: UInt64,
+        matrices: [GoldenEyeGBIMatrixResourceV6],
+        viewports: [GoldenEyeGBIViewportResourceV6],
+        matrixRoles: [GoldenEyeSourceMatrixRoleSidecarV6],
+        frame: GoldenEyeGBISceneFrameContextV6,
+        animationPoses: [GESourceAnimationPoseV6],
+        vertexLoadProvenance: [GEGBIVertexLoadProvenanceV6],
+        transformContext: GoldenEyeSourceNodeTransformContextV6?,
+        renderSetupContext: GoldenEyeSourceDynamicRenderSetupContextV6?,
+        textureSetups: [GoldenEyeSourceTextureSetupV6],
+        staticData: DecodedPacketStaticData
+    ) throws -> GoldenEyeGBISceneBuildResultV6 {
         let matrixKinds = try matrixRolesByHandle(
             scene: scene,
             supplied: matrixRoles,
@@ -1793,11 +2283,7 @@ enum GoldenEyeGBISceneBuilderV6 {
         var clipTransformByHandle = Dictionary(uniqueKeysWithValues: transformBundle.map {
             ($0.handle, $0)
         })
-        let resources = try makeSceneResources(
-            model: model,
-            textureByHandle: textureByHandle,
-            imageToTexture: imageToTexture
-        )
+        let resources = staticData.resources
 
         var vertices: [GESourceVertexV6] = []
         var indices: [GESourceIndexV6] = []
@@ -1821,13 +2307,9 @@ enum GoldenEyeGBISceneBuilderV6 {
         var consumedViewportHandles = Set<UInt32>()
         var exactNodeTransformDrawCount: UInt32 = 0
         var fallbackNodeTransformDrawCount: UInt32 = 0
+        var relativeMatrixByKey: [RelativeMatrixKey: [Int32]] = [:]
 
-        let draws = readPointerArray(
-            decoderPointer,
-            fieldOffset: MemoryLayout<GEGBIResultV6>.offset(of: \.draws)!,
-            count: Int(decoderPointer.pointee.draw_count),
-            as: GEGBIDrawV6.self
-        )
+        let draws = staticData.draws
         // A source triangle can mix vertices captured by different
         // gsSPVertex loads.  The C decoder records that immutable provenance
         // at load time; do not reconstruct it from the post-setup Swift scene
@@ -1842,59 +2324,14 @@ enum GoldenEyeGBISceneBuilderV6 {
                 )
             }
         }
-        let vertexLoadMatrixByDrawIndex = draws.map { draw in
-            vertexLoadProvenance
-                .filter { $0.command_offset <= draw.source_command_offset }
-                .reduce(into: [UInt32: UInt32]()) { result, record in
-                    result[record.cache_slot] = record.modelview_handle
-                }
-        }
         let transformValuesByHandle = Dictionary(uniqueKeysWithValues: transformBundle.map {
             ($0.handle, Self.matrixValues($0.matrix_q16))
         })
         let matrixValuesByHandle = Dictionary(uniqueKeysWithValues: matrices.map { ($0.handle, $0.values) })
-        for (drawIndex, draw) in draws.enumerated() {
-            let sourceCommand = sourceCommandForPacketOffset(
-                draw.source_command_offset,
-                scene: scene
-            )
-            let state = readPointerElement(
-                decoderPointer,
-                fieldOffset: MemoryLayout<GEGBIResultV6>.offset(of: \.states)!,
-                index: Int(draw.state_index),
-                as: GEGBIStateV6.self
-            )
-            let textureTile = (state.texture_enabled_level_tile >> 8) & 7
-            let resolvedTextureHandle = imageToTexture[state.texture_image_handle] ??
-                state.texture_image_handle
-            let sourceSequence = sourceCommand.flatMap {
-                sourceSequenceForCommand($0, scene: scene)
-            }
-            let commandTextureSetup = sourceCommand.flatMap {
-                textureSetupForCommand(
-                    $0,
-                    setups: textureSetups,
-                    sourceSequence: sourceSequence,
-                    textureHandle: resolvedTextureHandle
-                )
-            }
-            let matchingCommandTextureSetup: GoldenEyeSourceTextureSetupV6?
-            if model.header.modelHandle == rarewareModelHandle {
-                matchingCommandTextureSetup = commandTextureSetup?.tile == textureTile
-                    ? commandTextureSetup
-                    : nil
-            } else {
-                matchingCommandTextureSetup = commandTextureSetup
-            }
-            let textureSetup = matchingCommandTextureSetup ?? (
-                model.header.modelHandle == rarewareModelHandle
-                    ? textureSetups.first(where: {
-                        $0.modelName == "rarewarelogo" &&
-                        $0.resourceHandle == resolvedTextureHandle &&
-                        $0.tile == textureTile
-                    })
-                    : nil
-            )
+        for drawMetadata in draws {
+            let draw = drawMetadata.draw
+            let sourceCommand = drawMetadata.sourceCommand
+            let state = drawMetadata.state
             let copiedStateHandle = stateHandle(draw.state_index)
             geometryModesByState[copiedStateHandle] = state.geometry_mode
             if let modelView = matrixValuesByHandle[state.modelview_handle] {
@@ -1916,16 +2353,7 @@ enum GoldenEyeGBISceneBuilderV6 {
                 }
                 consumedProjectionHandles.insert(clip.projectionHandle)
                 consumedViewportHandles.insert(clip.viewportHandle)
-                let lowered = try lowerState(
-                    state,
-                    stateIndex: draw.state_index,
-                    imageToTexture: imageToTexture,
-                    textureByHandle: textureByHandle,
-                    logicalWidth: frame.logicalWidth,
-                    logicalHeight: frame.logicalHeight,
-                    matrixKinds: matrixKinds,
-                    textureSetup: textureSetup
-                )
+                let lowered = drawMetadata.loweredState
                 if let setupContext = renderSetupContext {
                     let rawMode = lowered.state.raw_othermode_l
                     guard rawMode == setupContext.primaryRawMode
@@ -2050,10 +2478,12 @@ enum GoldenEyeGBISceneBuilderV6 {
                 let drawBoneValues = stateBoneTransformHandle.flatMap {
                     transformValuesByHandle[$0]
                 }
-                for (sourceIndex, sourceSlot) in zip(sourceIndices, sourceSlots) {
+                for (vertexOffset, pair) in zip(sourceIndices, sourceSlots).enumerated() {
+                    let sourceIndex = pair.0
+                    let sourceSlot = pair.1
                     var value = makeSceneVertex(model.vertices[Int(sourceIndex)], handle: vertexHandle(vertices.count))
                     if requiresExactNodeTransforms {
-                        guard let sourceMatrixHandle = vertexLoadMatrixByDrawIndex[drawIndex][sourceSlot],
+                        guard let sourceMatrixHandle = drawMetadata.vertexLoadMatrixBySlot[sourceSlot],
                               let loadedTransformHandle = nodeTransformLowering.matrixTransformHandles[sourceMatrixHandle],
                               let loadedValues = transformValuesByHandle[loadedTransformHandle] else {
                             throw GoldenEyeGBISceneBuilderV6Error.sceneValidation(
@@ -2061,13 +2491,29 @@ enum GoldenEyeGBISceneBuilderV6 {
                             )
                         }
                         guard let drawBoneValues,
-                              let correction = Self.relativeMatrix(
-                                  from: drawBoneValues,
-                                  to: loadedValues
-                              ) else {
+                              let drawBoneHandle = stateBoneTransformHandle else {
                             throw GoldenEyeGBISceneBuilderV6Error.sceneValidation(
                                 "missing dynamic draw matrix for vertex-load correction draw=0x\(String(draw.source_command_offset, radix: 16)) slot=\(sourceSlot)"
                             )
+                        }
+                        let correctionKey = RelativeMatrixKey(
+                            drawBoneHandle: drawBoneHandle,
+                            loadedBoneHandle: loadedTransformHandle
+                        )
+                        let correction: [Int32]
+                        if let cachedCorrection = relativeMatrixByKey[correctionKey] {
+                            correction = cachedCorrection
+                        } else {
+                            guard let computedCorrection = Self.relativeMatrix(
+                                from: drawBoneValues,
+                                to: loadedValues
+                            ) else {
+                                throw GoldenEyeGBISceneBuilderV6Error.sceneValidation(
+                                    "missing dynamic draw matrix for vertex-load correction draw=0x\(String(draw.source_command_offset, radix: 16)) slot=\(sourceSlot)"
+                                )
+                            }
+                            relativeMatrixByKey[correctionKey] = computedCorrection
+                            correction = computedCorrection
                         }
                         Self.applyPositionCorrection(&value, matrix: correction)
                         guard Self.applyNormalCorrection(&value, matrix: correction) else {
@@ -2076,35 +2522,21 @@ enum GoldenEyeGBISceneBuilderV6 {
                             )
                         }
                     }
-                    if lowered.textureHandle != 0,
-                       let texture = textureByHandle[lowered.textureHandle] {
-                        let coordinate: GoldenEyeSourceTextureCoordinateV6
-                        do {
-                            coordinate = try lowerTextureCoordinate(
-                                packetPointer: packetPointer,
-                                draw: draw,
-                                state: state,
-                                sourceVertex: model.vertices[Int(sourceIndex)],
-                                texture: texture,
-                                textureHandle: lowered.textureHandle,
-                                textureSetup: textureSetup,
-                                sourceStateHash: state.state_hash,
-                                sourceCommandHash: sourceCommandWordHash
-                            )
-                        } catch {
+                    if lowered.textureHandle != 0 {
+                        guard let coordinate = drawMetadata.textureCoordinates?[vertexOffset] else {
                             throw GoldenEyeGBISceneBuilderV6Error.invalidState(
                                 draw.state_index,
-                                "texture-coordinate lowering: \(error) texture=0x\(String(lowered.textureHandle, radix: 16)) draw=0x\(String(draw.source_command_offset, radix: 16)) vertex=\(sourceIndex) setup=\(textureSetup.map { "\($0.displayListID):\($0.ordinal):\($0.resourceHandle):\($0.maxLOD):\($0.levels.count):\($0.tileState.bounds.lrsQ2):\($0.tileState.bounds.lrtQ2)" } ?? "nil")"
+                                "missing cached texture coordinate texture=0x\(String(lowered.textureHandle, radix: 16)) draw=0x\(String(draw.source_command_offset, radix: 16)) vertex=\(sourceIndex)"
                             )
                         }
                         let samplerS = try unaddressedSamplerQ16(
-                            coordinate.result.local_s_q16,
-                            dimension: coordinate.result.level_width,
+                            coordinate.localS,
+                            dimension: coordinate.levelWidth,
                             state: draw.state_index
                         )
                         let samplerT = try unaddressedSamplerQ16(
-                            coordinate.result.local_t_q16,
-                            dimension: coordinate.result.level_height,
+                            coordinate.localT,
+                            dimension: coordinate.levelHeight,
                             state: draw.state_index
                         )
                         guard samplerS >= Int64(Int32.min),
@@ -2431,6 +2863,15 @@ enum GoldenEyeGBISceneBuilderV6 {
         let boneHandle: UInt32
     }
 
+    /// The vertex-load correction depends only on the pair of immutable
+    /// source matrices for a converted frame.  Keep it value-only and local
+    /// to `convert`: poses can change on every tick, while each pair is reused
+    /// by all vertices that share the same source load/model node.
+    private struct RelativeMatrixKey: Hashable {
+        let drawBoneHandle: UInt32
+        let loadedBoneHandle: UInt32
+    }
+
     private static func lowerState(
         _ source: GEGBIStateV6,
         stateIndex: UInt32,
@@ -2466,9 +2907,19 @@ enum GoldenEyeGBISceneBuilderV6 {
         guard let combiner else {
             throw GoldenEyeGBISceneBuilderV6Error.unsupportedState(stateIndex, "combiner selector w0=0x\(String(source.combine_w0, radix: 16)) w1=0x\(String(source.combine_w1, radix: 16)) cycle=\(cycleCount)")
         }
-        let rawH = source.other_mode_h
+        var rawH = source.other_mode_h
         let rawL = source.other_mode_l
-        let filterRaw = (rawH >> 12) & 3
+        var filterRaw = (rawH >> 12) & 3
+        // The Rareware segment is invoked after title.c establishes the
+        // producer-owned perspective/BILERP/FILT state.  Some guarded source
+        // lists retain the decoder's initial point/LOD word in their copied
+        // state snapshots, so apply the typed outer state at the lowering
+        // boundary as well as retaining the synthetic provenance commands.
+        if textureSetup?.modelName == "rarewarelogo",
+           rawL == 0x0f0a_4000 {
+            rawH = 0x0019_2c00
+            filterRaw = 2
+        }
         let filter: UInt32
         switch filterRaw {
         case 0: filter = UInt32(GE_SOURCE_FILTER_V6_POINT)
@@ -2852,23 +3303,26 @@ enum GoldenEyeGBISceneBuilderV6 {
         matrix: [Int32]
     ) {
         guard matrix.count == 16 else { return }
-        let source = [
-            Int64(vertex.position_q16.0),
-            Int64(vertex.position_q16.1),
-            Int64(vertex.position_q16.2),
-            Int64(65_536),
-        ]
-        var output = [Int32](repeating: 0, count: 4)
-        for row in 0..<4 {
-            var value: Int64 = 0
-            for column in 0..<4 {
-                value += Int64(matrix[column * 4 + row]) * source[column]
-            }
-            output[row] = Int32(clamping: value >> 16)
-        }
-        vertex.position_q16.0 = output[0]
-        vertex.position_q16.1 = output[1]
-        vertex.position_q16.2 = output[2]
+        // The homogeneous row is intentionally not materialized: the source
+        // vertex ABI carries xyz only, and the prior loop's row-3 result was
+        // discarded. Keep the exact column-major Q16 accumulation for the
+        // three consumed rows without allocating temporary arrays per vertex.
+        let x = Int64(vertex.position_q16.0)
+        let y = Int64(vertex.position_q16.1)
+        let z = Int64(vertex.position_q16.2)
+        let one = Int64(65_536)
+        vertex.position_q16.0 = Int32(clamping:
+            (Int64(matrix[0]) * x + Int64(matrix[4]) * y
+                + Int64(matrix[8]) * z + Int64(matrix[12]) * one) >> 16
+        )
+        vertex.position_q16.1 = Int32(clamping:
+            (Int64(matrix[1]) * x + Int64(matrix[5]) * y
+                + Int64(matrix[9]) * z + Int64(matrix[13]) * one) >> 16
+        )
+        vertex.position_q16.2 = Int32(clamping:
+            (Int64(matrix[2]) * x + Int64(matrix[6]) * y
+                + Int64(matrix[10]) * z + Int64(matrix[14]) * one) >> 16
+        )
     }
 
     private static func applyNormalCorrection(
@@ -2876,68 +3330,26 @@ enum GoldenEyeGBISceneBuilderV6 {
         matrix: [Int32]
     ) -> Bool {
         guard matrix.count == 16 else { return false }
-        let source = [
-            Int64(vertex.normal_q16.0),
-            Int64(vertex.normal_q16.1),
-            Int64(vertex.normal_q16.2),
-        ]
-        if source.allSatisfy({ $0 == 0 }) { return true }
-        var output = [Int32](repeating: 0, count: 3)
-        for row in 0..<3 {
-            var value: Int64 = 0
-            for column in 0..<3 {
-                value += Int64(matrix[column * 4 + row]) * source[column]
-            }
-            let shifted = value >> 16
-            guard shifted >= Int64(Int32.min), shifted <= Int64(Int32.max) else {
-                return false
-            }
-            output[row] = Int32(shifted)
+        let x = Int64(vertex.normal_q16.0)
+        let y = Int64(vertex.normal_q16.1)
+        let z = Int64(vertex.normal_q16.2)
+        if x == 0, y == 0, z == 0 { return true }
+        let shifted0 = (Int64(matrix[0]) * x + Int64(matrix[4]) * y
+            + Int64(matrix[8]) * z) >> 16
+        let shifted1 = (Int64(matrix[1]) * x + Int64(matrix[5]) * y
+            + Int64(matrix[9]) * z) >> 16
+        let shifted2 = (Int64(matrix[2]) * x + Int64(matrix[6]) * y
+            + Int64(matrix[10]) * z) >> 16
+        guard shifted0 >= Int64(Int32.min), shifted0 <= Int64(Int32.max),
+              shifted1 >= Int64(Int32.min), shifted1 <= Int64(Int32.max),
+              shifted2 >= Int64(Int32.min), shifted2 <= Int64(Int32.max) else {
+            return false
         }
-        guard output.contains(where: { $0 != 0 }) else { return false }
-        vertex.normal_q16.0 = output[0]
-        vertex.normal_q16.1 = output[1]
-        vertex.normal_q16.2 = output[2]
+        guard shifted0 != 0 || shifted1 != 0 || shifted2 != 0 else { return false }
+        vertex.normal_q16.0 = Int32(shifted0)
+        vertex.normal_q16.1 = Int32(shifted1)
+        vertex.normal_q16.2 = Int32(shifted2)
         return true
-    }
-
-    private static func sourceCommandForPacketOffset(
-        _ offset: UInt32,
-        scene: GESourceSceneV6
-    ) -> GESourceCompiledCommandV6? {
-        let packetIndex = Int(offset) / MemoryLayout<GEGBISourceCommandV6>.size
-        // The synthetic root occupies one DL call per selected list followed
-        // by ENDDL.  The remaining packet commands are copied in selected
-        // display-list order, exactly as flattenCommands emits them.
-        var cursor = scene.displayLists.count + 1
-        for list in scene.displayLists {
-            for command in scene.commands where command.displayListID == list.id {
-                if cursor == packetIndex { return command }
-                cursor += 1
-            }
-        }
-        return nil
-    }
-
-    /// Return the resolver's source-command sequence for a command copied into
-    /// a dynamic scene. Synthetic Type-4 setup words use the high ordinal bit
-    /// and are intentionally excluded; source texture state may legally be
-    /// established in a caller display list and consumed by a callee list.
-    private static func sourceSequenceForCommand(
-        _ command: GESourceCompiledCommandV6,
-        scene: GESourceSceneV6
-    ) -> UInt32? {
-        var sequence: UInt32 = 0
-        for candidate in scene.commands {
-            guard candidate.ordinal & 0x8000_0000 == 0 else { continue }
-            if candidate.displayListID == command.displayListID,
-               candidate.ordinal == command.ordinal,
-               candidate.macro == command.macro {
-                return sequence
-            }
-            sequence &+= 1
-        }
-        return nil
     }
 
     private static func textureSetupForCommand(
@@ -2968,19 +3380,17 @@ enum GoldenEyeGBISceneBuilderV6 {
             }
     }
 
-    private static func lowerTextureCoordinate(
+    private static func makeTextureCoordinateCommands(
         packetPointer: UnsafeMutablePointer<GEGBISourcePacketV6>,
         draw: GEGBIDrawV6,
         state: GEGBIStateV6,
-        sourceVertex: GoldenEyeSourceModelV6.Vertex,
         texture: GoldenEyeSourceModelV6.Texture,
         textureHandle: UInt32,
-        textureSetup: GoldenEyeSourceTextureSetupV6?,
-        sourceStateHash: UInt64,
-        sourceCommandHash: UInt64
-    ) throws -> GoldenEyeSourceTextureCoordinateV6 {
+        textureSetup: GoldenEyeSourceTextureSetupV6?
+    ) throws -> DecodedTextureCoordinateCommands {
         let commandCount = Int(packetPointer.pointee.command_count)
-        let drawIndex = Int(draw.source_command_offset) / MemoryLayout<GEGBISourceCommandV6>.size
+        let drawIndex = Int(draw.source_command_offset)
+            / MemoryLayout<GEGBISourceCommandV6>.size
         let end = min(max(drawIndex, 0), commandCount)
         var textureCommand: GEGBISourceCommandV6?
         var tileCommand: GEGBISourceCommandV6?
@@ -3040,6 +3450,36 @@ enum GoldenEyeGBISceneBuilderV6 {
                 "texture setup expansion did not produce complete coordinate state"
             )
         }
+        return DecodedTextureCoordinateCommands(
+            texture: textureCommand,
+            tile: tileCommand,
+            tileSize: tileSizeCommand
+        )
+    }
+
+    private static func lowerTextureCoordinate(
+        packetPointer: UnsafeMutablePointer<GEGBISourcePacketV6>,
+        draw: GEGBIDrawV6,
+        state: GEGBIStateV6,
+        sourceVertex: GoldenEyeSourceModelV6.Vertex,
+        texture: GoldenEyeSourceModelV6.Texture,
+        textureHandle: UInt32,
+        textureSetup: GoldenEyeSourceTextureSetupV6?,
+        sourceStateHash: UInt64,
+        sourceCommandHash: UInt64,
+        coordinateCommands: DecodedTextureCoordinateCommands?
+    ) throws -> GoldenEyeSourceTextureCoordinateV6 {
+        let commands = try coordinateCommands ?? makeTextureCoordinateCommands(
+            packetPointer: packetPointer,
+            draw: draw,
+            state: state,
+            texture: texture,
+            textureHandle: textureHandle,
+            textureSetup: textureSetup
+        )
+        let textureCommand = commands.texture
+        let tileCommand = commands.tile
+        let tileSizeCommand = commands.tileSize
         let flags = UInt32(GE_SOURCE_TEXTURE_COORDINATES_V6_FLAG_TEXTURE_ENABLED)
             | UInt32(GE_SOURCE_TEXTURE_COORDINATES_V6_FLAG_TILE_CONFIGURED)
             | UInt32(GE_SOURCE_TEXTURE_COORDINATES_V6_FLAG_TILE_BOUNDS)

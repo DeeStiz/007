@@ -320,6 +320,7 @@ enum GoldenEyeCastSceneComposerV6 {
         "chrkalash", "chrm16", "chrfnp90", "chrautoshot", "chrgrenadelaunch",
         "chrsniperrifle", "chrwppk", "chrwppksil", "chrskorpion", "chruzi",
         "chrruger", "chrlaser", "chrgolden",
+        "spicebond",
     ]
 
     static func selectIdentity(randomWord: UInt32) throws -> GoldenEyeCastIdentityV6 {
@@ -364,7 +365,14 @@ enum GoldenEyeCastSceneComposerV6 {
         guard identity.sourceIndex < 30 else {
             throw GoldenEyeCastSceneComposerV6Error.invalidIdentity(identity.sourceIndex)
         }
-        guard let body = bodyName(for: identity.bodyID),
+        // front.c consumes one additional random word for Natalya's alternate
+        // jungle-fatigues body. Keep the roster row immutable while resolving
+        // the selected model packet from that same random bit.
+        let resolvedBodyID: UInt16 =
+            identity.sourceIndex == 2 && identity.bodyID == 16 && (randomWord & 1) != 0
+                ? 79
+                : identity.bodyID
+        guard let body = bodyName(for: resolvedBodyID),
               availableModelNames.contains(body) else {
             throw GoldenEyeCastSceneComposerV6Error.missingModel(identity.sourceIndex, "body")
         }
@@ -410,6 +418,7 @@ enum GoldenEyeCastSceneComposerV6 {
             28: "techwoman", 29: "jeanwoman", 30: "greyman", 31: "blueman",
             32: "redman", 33: "cardiman", 35: "techman", 36: "pilot",
             38: "bluecamguard", 39: "moonguard", 40: "moonfemale",
+            79: "spicebond",
         ]
         return names[UInt32(bodyID)]
     }
@@ -425,7 +434,7 @@ enum GoldenEyeCastSceneComposerV6 {
         let embeddedHeadBodies: Set<String> = [
             "boris", "orumov", "trevelyan", "boilertrev", "valentin", "xenia",
             "baronsamedi", "jaws", "mayday", "oddjob", "natalya", "snowguard",
-            "pilot",
+            "pilot", "spicebond",
         ]
         if embeddedHeadBodies.contains(bodyName) || identity.headID == GoldenEyeCastIdentityV6.headFixed && identity.sourceIndex != 0 && identity.sourceIndex != 1 && identity.sourceIndex != 8 {
             return ""

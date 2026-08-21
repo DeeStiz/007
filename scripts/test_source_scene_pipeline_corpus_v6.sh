@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/.." && pwd -P)
 BUILD_DIR="${PROJECT_ROOT}/build/native/source-scene-pipeline-corpus-v6"
-mkdir -p "${BUILD_DIR}"
+mkdir -p "${BUILD_DIR}/module-cache"
 
 SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
 CC=$(xcrun --sdk macosx --find clang)
@@ -43,7 +43,8 @@ ASAN_OPTIONS=halt_on_error=1 \
     | tee "${BUILD_DIR}/asan.log"
 grep -Fq 'goldeneye_source_scene_pipeline_corpus_v6_smoke: PASS' "${BUILD_DIR}/asan.log"
 
-"${GE_METAL}" -mmacosx-version-min=27.0 \
+"${GE_METAL}" -Xclang "-fmodules-cache-path=${BUILD_DIR}/module-cache" \
+    -mmacosx-version-min=27.0 \
     -c "${PROJECT_ROOT}/native/shaders/GoldenEyeSourceSceneV6.metal" \
     -o "${BUILD_DIR}/GoldenEyeSourceSceneV6.air"
 "${GE_METALLIB}" "${BUILD_DIR}/GoldenEyeSourceSceneV6.air" \

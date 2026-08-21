@@ -51,6 +51,7 @@ SWIFT_FLAGS=(-swift-version 6 -warnings-as-errors -O -parse-as-library -D GE_SOU
     "${ROOT}/native/host/goldeneye_source_frontend_catalog_v6.swift" \
     "${ROOT}/native/host/goldeneye_source_frontend_matrices_v6.swift" \
     "${ROOT}/native/host/goldeneye_source_scene_snapshot_v6.swift" \
+    "${ROOT}/native/host/goldeneye_stage_fog_lowering_v6.swift" \
     "${ROOT}/native/host/goldeneye_source_scene_composer_v6.swift" \
     "${ROOT}/native/host/goldeneye_source_node_transform_v6.swift" \
     "${ROOT}/native/host/goldeneye_source_projection_binding_v6.swift" \

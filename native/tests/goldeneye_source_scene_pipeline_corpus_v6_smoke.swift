@@ -85,13 +85,15 @@ private func expectUnsupported(
     flags: UInt32,
     _ message: String,
     hasTexture: Bool = true,
+    textureMipLevels: UInt32? = nil,
     _ predicate: (GoldenEyeSourceScenePipelineV6Error) -> Bool
 ) throws {
     do {
         try GoldenEyeSourceScenePipelineV6.validateSupportedState(
             state,
             drawFlags: flags,
-            hasTexture: hasTexture
+            hasTexture: hasTexture,
+            textureMipLevels: textureMipLevels
         )
         preconditionFailure("pipeline corpus accepted unsupported \(message)")
     } catch let error as GoldenEyeSourceScenePipelineV6Error {
@@ -106,6 +108,8 @@ struct GoldenEyeSourceScenePipelineCorpusV6Smoke {
         let opaque = UInt32(GE_SOURCE_DRAW_V6_FLAG_OPAQUE) |
             UInt32(GE_SOURCE_DRAW_V6_FLAG_SOURCE_ORDERED)
         let texel0 = GoldenEyeSourceSceneCombinerSelectorV6.texel0
+        let texel1 = GoldenEyeSourceSceneCombinerSelectorV6.texel1
+        let lodFraction = GoldenEyeSourceSceneCombinerSelectorV6.lodFraction
         let shade = GoldenEyeSourceSceneCombinerSelectorV6.shade
         let zero = GoldenEyeSourceSceneCombinerSelectorV6.zero
         let one = GoldenEyeSourceSceneCombinerSelectorV6.one
@@ -242,12 +246,118 @@ struct GoldenEyeSourceScenePipelineCorpusV6Smoke {
         }
         print("pipeline corpus RarewareTwo: rawH=0x\(String(rarewareTwoH, radix: 16)) rawL=0x\(String(rarewareTwoL, radix: 16)) typed-gap PASS")
 
+        // GoldenEye's logo uses a distinct two-cycle LOD equation from the
+        // Rareware segment.  The exact source tuple is
+        // (OtherMode.H=0x00112000, OtherMode.L=0x0C182048,
+        //  combine=0x26A004/0x1F1093FF), represented here by the normalized
+        // selectors preserved in GESourceRenderStateV6.  Both the six-level
+        // logo texture and its one-level auxiliary texture are source-valid.
+        let goldenEyeLOD = makeState(
+            rawH: goldenEyeH,
+            rawL: goldenEyeL,
+            colors0: [texel1, texel0, lodFraction, texel0],
+            alphas0: [texel1, texel0, lodFraction, texel0],
+            colors1: [combined, zero, shade, zero],
+            alphas1: [combined, zero, shade, zero],
+            lodMax: 5 << 16
+        )
+        try GoldenEyeSourceScenePipelineV6.validateSupportedState(
+            goldenEyeLOD,
+            drawFlags: opaque,
+            hasTexture: true,
+            textureMipLevels: 6
+        )
+        print("pipeline corpus GoldenEyeLOD: rawH=0x\(String(goldenEyeH, radix: 16)) rawL=0x\(String(goldenEyeL, radix: 16)) mipLevels=6 PASS")
+
+        var goldenEyeAuxiliary = goldenEyeLOD
+        goldenEyeAuxiliary.lod_max_q16 = 0
+        try GoldenEyeSourceScenePipelineV6.validateSupportedState(
+            goldenEyeAuxiliary,
+            drawFlags: opaque,
+            hasTexture: true,
+            textureMipLevels: 1
+        )
+        print("pipeline corpus GoldenEyeLOD auxiliary: rawH=0x\(String(goldenEyeH, radix: 16)) rawL=0x\(String(goldenEyeL, radix: 16)) mipLevels=1 maxLOD=0 PASS")
+
+        var goldenEyeWrongH = goldenEyeLOD
+        goldenEyeWrongH.raw_othermode_h = 0x0011_0000
+        try expectUnsupported(goldenEyeWrongH, flags: opaque, "GoldenEye LOD wrong OtherMode.H", hasTexture: true, textureMipLevels: 6) {
+            switch $0 {
+            case .unsupportedCombiner, .unsupportedRasterState: return true
+            default: return false
+            }
+        }
+        var goldenEyeWrongL = goldenEyeLOD
+        goldenEyeWrongL.raw_othermode_l = 0x0c18_4340
+        goldenEyeWrongL.raw_render_mode = 0x0c18_4340
+        goldenEyeWrongL.raw_blender_a = packBlender(goldenEyeWrongL.raw_render_mode, 30, 28)
+        goldenEyeWrongL.raw_blender_b = packBlender(goldenEyeWrongL.raw_render_mode, 26, 24)
+        goldenEyeWrongL.raw_blender_c = packBlender(goldenEyeWrongL.raw_render_mode, 22, 20)
+        goldenEyeWrongL.raw_blender_d = packBlender(goldenEyeWrongL.raw_render_mode, 18, 16)
+        try expectUnsupported(goldenEyeWrongL, flags: opaque, "GoldenEye LOD wrong OtherMode.L", hasTexture: true, textureMipLevels: 6) {
+            switch $0 {
+            case .unsupportedCombiner, .unsupportedRasterState: return true
+            default: return false
+            }
+        }
+        var goldenEyeAuxiliaryOverflow = goldenEyeAuxiliary
+        goldenEyeAuxiliaryOverflow.lod_max_q16 = 65_536
+        try expectUnsupported(goldenEyeAuxiliaryOverflow, flags: opaque, "GoldenEye one-level auxiliary maxLOD", hasTexture: true, textureMipLevels: 1) {
+            switch $0 {
+            case .unsupportedCombiner, .unsupportedRasterState: return true
+            default: return false
+            }
+        }
+
         var unsupportedSelector = cases[2].1
         unsupportedSelector.cycle0_color_c = 9 // LOD_FRACTION needs a source LOD payload.
         try expectUnsupported(unsupportedSelector, flags: opaque, "LOD_FRACTION") {
             if case .unsupportedCombiner = $0 { return true }
             return false
         }
+
+        // Geometry fog is admitted only for G_FOG plus the exact
+        // G_RM_FOG_SHADE_A first-cycle blender tuple.  The fragment shader
+        // supplies the source fm/fo/color payload; G_RM_FOG_PRIM_A and a
+        // fog render word without G_FOG remain fail-closed.
+        var fogShadeState = cases[0].1
+        let fogShadeMode: UInt32 = 0xc800_0000 // G_RM_FOG_SHADE_A
+        fogShadeState.flags = UInt32(GE_SOURCE_RENDER_STATE_V6_FLAG_FOG)
+        fogShadeState.depth_mode = UInt32(GE_SOURCE_DEPTH_V6_DISABLED)
+        fogShadeState.coverage_mode = UInt32(GE_SOURCE_COVERAGE_V6_CLAMP)
+        fogShadeState.alpha_mode = UInt32(GE_SOURCE_ALPHA_V6_DISABLED)
+        // G_SETFOGCOLOR carries an authored alpha byte; the stage renderer
+        // supplies the EnvironmentRecord color and exact fm/fo payload.
+        fogShadeState.fog_rgba = 0x1020_30ff
+        fogShadeState.raw_othermode_l = fogShadeMode
+        fogShadeState.raw_render_mode = fogShadeMode
+        fogShadeState.raw_blender_a = packBlender(fogShadeMode, 30, 28)
+        fogShadeState.raw_blender_b = packBlender(fogShadeMode, 26, 24)
+        fogShadeState.raw_blender_c = packBlender(fogShadeMode, 22, 20)
+        fogShadeState.raw_blender_d = packBlender(fogShadeMode, 18, 16)
+        precondition(GoldenEyeSourceScenePipelineV6.isFogShadeGeometryState(fogShadeState))
+        try GoldenEyeSourceScenePipelineV6.validateSupportedState(
+            fogShadeState, drawFlags: opaque, hasTexture: true
+        )
+        var fogPrimState = fogShadeState
+        let fogPrimMode: UInt32 = 0xc400_0000 // G_RM_FOG_PRIM_A
+        fogPrimState.raw_othermode_l = fogPrimMode
+        fogPrimState.raw_render_mode = fogPrimMode
+        fogPrimState.raw_blender_a = packBlender(fogPrimMode, 30, 28)
+        fogPrimState.raw_blender_b = packBlender(fogPrimMode, 26, 24)
+        fogPrimState.raw_blender_c = packBlender(fogPrimMode, 22, 20)
+        fogPrimState.raw_blender_d = packBlender(fogPrimMode, 18, 16)
+        try expectUnsupported(fogPrimState, flags: opaque, "G_RM_FOG_PRIM_A", hasTexture: true) {
+            if case .unsupportedRasterState = $0 { return true }
+            return false
+        }
+        var fogWithoutGeometry = fogShadeState
+        fogWithoutGeometry.flags = 0
+        try expectUnsupported(fogWithoutGeometry, flags: opaque, "fog blender without G_FOG", hasTexture: true) {
+            if case .unsupportedRasterState = $0 { return true }
+            return false
+        }
+        print("pipeline corpus G_FOG/G_RM_FOG_SHADE_A exact tuple PASS")
         var invalidWrap = cases[0].1
         invalidWrap.wrap_s = 99
         try expectUnsupported(invalidWrap, flags: opaque, "unknown wrap") {

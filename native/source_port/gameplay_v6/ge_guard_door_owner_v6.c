@@ -877,7 +877,15 @@ GEStatusV1 ge_guard_door_owner_v6_step_source_authority(
         }
         door->source.next_open_position_q16 = door->source.open_position_q16;
         door->source.next_speed_q16 = door->source.speed_q16;
-        door->source.portal_active = door->source.open_position_q16 > 0 ? 1u : 0u;
+        /* Source propobj.c toggles the linked portal at doorStartOpen(),
+           before the first movement fraction is applied, and leaves it
+           active until the close operation reaches its terminal position.
+           Use the lifecycle state as the authority so an opening door with
+           zero displacement is already traversable and a closing door does
+           not re-block the portal one tick early. */
+        door->source.portal_active =
+            (door->source.open_state != GE_GUARD_DOOR_OWNER_V6_DOOR_STATE_STATIONARY ||
+             door->source.open_position_q16 > 0) ? 1u : 0u;
         gd_door_transform(&door->source, door->source.open_position_q16, door->transform_q16);
         memcpy(door->next_transform_q16, door->transform_q16, sizeof(door->transform_q16));
         door->source_anchor = 1u;

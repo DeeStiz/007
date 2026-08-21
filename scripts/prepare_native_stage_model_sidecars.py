@@ -2,8 +2,8 @@
 """Emit guarded GESM/resource sidecars for setup-reachable stage models.
 
 This is an additive stage catalog. It reuses the checked-in source model
-parser and GESM writer, but scopes the input set to the 206 unique prop and
-character rows already proven by ``stage-setup-model-dependencies-manifest``.
+parser and GESM writer, but scopes the input set to the corrected unique prop
+and character rows already proven by ``stage-setup-model-dependencies-manifest``.
 No MIPS, ROM access, or source pointer is introduced into the sidecar.
 """
 

@@ -28,8 +28,9 @@ struct GoldenEyeCastReferenceCaptureV6Smoke {
         let sourceIndex = UInt16(
             ProcessInfo.processInfo.environment["GE_CAST_SOURCE_INDEX"] ?? "1"
         ) ?? 1
+        let randomWord = UInt32(sourceIndex)
         let identity = try GoldenEyeCastSourceTableV6.identity(sourceIndex: sourceIndex)
-        let animation = try GoldenEyeCastSceneComposerV6.animation(randomWord: UInt32(sourceIndex))
+        let animation = try GoldenEyeCastSceneComposerV6.animation(randomWord: randomWord)
         let handles = preparation.models.reduce(into: [String: UInt32]()) { result, entry in
             result[entry.key] = entry.value.header.modelHandle
         }
@@ -37,7 +38,8 @@ struct GoldenEyeCastReferenceCaptureV6Smoke {
             identity: identity,
             animation: animation,
             availableModelNames: Set(preparation.models.keys),
-            availableHandles: handles
+            availableHandles: handles,
+            randomWord: randomWord
         )
         let catalog = preparation.catalog
         let sourceTimer = UInt32(

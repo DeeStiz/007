@@ -37,12 +37,19 @@ struct GoldenEyeSourceSceneV6Draw {
     uint4 textureLevel4;
     uint4 textureLevel5;
     uint4 textureLevel6;
+    // x = source fog mode (1 = G_RM_FOG_SHADE_A geometry fog),
+    // y/z = signed gSPFogPosition fm/fo bit patterns, w = RGBA8 fog color.
+    uint4 fogInfo;
+    // x = presentation treatment, y = profile, z = LOD bias, w = profile gain.
+    float4 presentationInfo;
 };
 
 struct GoldenEyeSourceSceneV6Varyings {
     float4 position [[position]];
     float2 texcoord;
+    float fogCoordinate [[center_no_perspective]];
     float4 color;
+    float4 ambientColor;
     float4 normal;
     float4 primitiveColor;
     float4 environmentColor;
@@ -60,6 +67,8 @@ struct GoldenEyeSourceSceneV6Varyings {
     uint4 textureLevel4 [[flat]];
     uint4 textureLevel5 [[flat]];
     uint4 textureLevel6 [[flat]];
+    uint4 fogInfo [[flat]];
+    float4 presentationInfo [[flat]];
 };
 
 // OtherMode.H bit 19 selects the source texture-perspective mode. Keep both
@@ -68,7 +77,9 @@ struct GoldenEyeSourceSceneV6Varyings {
 struct GoldenEyeSourceSceneV6NoPerspectiveVaryings {
     float4 position [[position]];
     float2 texcoord [[center_no_perspective]];
+    float fogCoordinate [[center_no_perspective]];
     float4 color;
+    float4 ambientColor;
     float4 normal;
     float4 primitiveColor;
     float4 environmentColor;
@@ -86,6 +97,8 @@ struct GoldenEyeSourceSceneV6NoPerspectiveVaryings {
     uint4 textureLevel4 [[flat]];
     uint4 textureLevel5 [[flat]];
     uint4 textureLevel6 [[flat]];
+    uint4 fogInfo [[flat]];
+    float4 presentationInfo [[flat]];
 };
 
 #define GOLDENEYE_SOURCE_SCENE_GEOMETRY_LIGHTING 0x00020000u
@@ -99,7 +112,9 @@ static float3 goldeneye_source_scene_v6_normal(
     float4 sourceNormal,
     float4x4 normalTransform)
 {
-    const float3 transformed = (normalTransform * sourceNormal).xyz;
+    // The fourth texture lane carries an optional source fog coordinate. It
+    // is metadata, not a homogeneous normal component.
+    const float3 transformed = (normalTransform * float4(sourceNormal.xyz, 0.0f)).xyz;
     const float lengthSquared = dot(transformed, transformed);
     if (!isfinite(lengthSquared) || lengthSquared <= 0.0000001f) {
         return float3(0.0f, 0.0f, 1.0f);
@@ -161,7 +176,9 @@ vertex GoldenEyeSourceSceneV6Varyings goldeneye_source_scene_v6_vertex(
     GoldenEyeSourceSceneV6Varyings output;
     output.position = draw.transform * sourceVertex.position;
     output.texcoord = texcoord;
+    output.fogCoordinate = sourceVertex.texcoord.w;
     output.color = shade;
+    output.ambientColor = draw.ambientColor;
     output.normal = float4(normal, 0.0f);
     output.primitiveColor = draw.primitiveColor;
     output.environmentColor = draw.environmentColor;
@@ -179,6 +196,8 @@ vertex GoldenEyeSourceSceneV6Varyings goldeneye_source_scene_v6_vertex(
     output.textureLevel4 = draw.textureLevel4;
     output.textureLevel5 = draw.textureLevel5;
     output.textureLevel6 = draw.textureLevel6;
+    output.fogInfo = draw.fogInfo;
+    output.presentationInfo = draw.presentationInfo;
     return output;
 }
 
@@ -219,7 +238,12 @@ vertex GoldenEyeSourceSceneV6NoPerspectiveVaryings goldeneye_source_scene_v6_ver
     GoldenEyeSourceSceneV6NoPerspectiveVaryings output;
     output.position = draw.transform * sourceVertex.position;
     output.texcoord = texcoord;
+    output.fogCoordinate = sourceVertex.texcoord.w;
     output.color = shade;
+    output.ambientColor = draw.ambientColor;
+    // The copied source clip-Z/clip-W fog coordinate travels in the existing
+    // fourth texture lane; the historical 64-byte GPU vertex stride remains
+    // unchanged.
     output.normal = float4(normal, 0.0f);
     output.primitiveColor = draw.primitiveColor;
     output.environmentColor = draw.environmentColor;
@@ -237,6 +261,8 @@ vertex GoldenEyeSourceSceneV6NoPerspectiveVaryings goldeneye_source_scene_v6_ver
     output.textureLevel4 = draw.textureLevel4;
     output.textureLevel5 = draw.textureLevel5;
     output.textureLevel6 = draw.textureLevel6;
+    output.fogInfo = draw.fogInfo;
+    output.presentationInfo = draw.presentationInfo;
     return output;
 }
 
@@ -519,7 +545,9 @@ static float4 goldeneye_source_scene_v6_sample_level(
 
 static float4 goldeneye_source_scene_v6_fragment_body(
     float4 color,
+    float4 ambientColor,
     float4 normal,
+    float fogCoordinate,
     float4 primitiveColor,
     float4 environmentColor,
     uint4 cycle0Color,
@@ -528,6 +556,8 @@ static float4 goldeneye_source_scene_v6_fragment_body(
     uint4 cycle1Alpha,
     uint4 selectors,
     uint4 lightingInfo,
+    uint4 fogInfo,
+    float4 presentationInfo,
     float4 texel0,
     float4 texel1,
     float lodFraction)
@@ -564,7 +594,32 @@ static float4 goldeneye_source_scene_v6_fragment_body(
     if (needsTexture && selectors.z == 0u) {
         discard_fragment();
     }
-    const float4 shade = color;
+    float fogAlpha = 0.0f;
+    float3 fogColor = float3(0.0f);
+    if (fogInfo.x == 1u) {
+        const int fogMultiplier = as_type<int>(fogInfo.y);
+        const int fogOffset = as_type<int>(fogInfo.z);
+        const float fogValue = fogCoordinate * float(fogMultiplier) + float(fogOffset);
+        if (!isfinite(fogValue)) discard_fragment();
+        fogAlpha = clamp(fogValue, 0.0f, 255.0f) / 255.0f;
+        fogColor = float3(
+            float((fogInfo.w >> 24) & 0xffu),
+            float((fogInfo.w >> 16) & 0xffu),
+            float((fogInfo.w >> 8) & 0xffu)
+        ) / 255.0f;
+    } else if (fogInfo.x != 0u) {
+        // No other source fog blender is represented by this shader. Keep the
+        // CPU/provider fail-closed contract meaningful if a malformed record
+        // reaches the GPU.
+        discard_fragment();
+    }
+
+    // G_FOG writes the computed alpha into the source shade register before
+    // the combiner runs. Preserve that input as well as the later
+    // G_RM_FOG_SHADE_A color blend.
+    const float4 shade = fogInfo.x == 1u
+        ? float4(color.rgb, fogAlpha)
+        : color;
     const float4 primitive = primitiveColor;
     const float4 environment = environmentColor;
     float4 combined = float4(0.0f);
@@ -611,6 +666,51 @@ static float4 goldeneye_source_scene_v6_fragment_body(
         discard_fragment();
     }
 
+    // bg.c patches room render modes to G_RM_FOG_SHADE_A when
+    // fogSetRenderFogColor() has enabled G_FOG. The source blender then
+    // mixes the copied fog color over the source pixel using the RSP fog
+    // alpha. `fogCoordinate` is the copied clip-Z/clip-W coordinate; the
+    // signed fm/fo pair is the exact gSPFogPosition register payload.
+    if (fogInfo.x == 1u) {
+        result.rgb = mix(result.rgb, fogColor, fogAlpha);
+    }
+
+    if (presentationInfo.x > 0.5f) {
+        const uint profile = uint(presentationInfo.y + 0.5f);
+        if (profile == 1u) {
+            // Nintendo is an I8 reflectance texture under a source ambient
+            // fade. Lift the low silver toe while multiplying the authored
+            // ambient back in so the fade still reaches black at its source
+            // boundary.
+            const float authoredAmbient = max(ambientColor.r, 0.0001f);
+            float3 base = clamp(result.rgb / authoredAmbient, 0.0f, 1.0f);
+            base = mix(base, pow(max(base, float3(0.0f)), float3(0.72f)), 0.70f);
+            base = max(base, float3(0.12f));
+            result.rgb = base * authoredAmbient;
+        } else if (profile == 2u) {
+            // Rareware's source fade is RGB brightness, not model alpha. A
+            // bounded max-channel curve improves HD visibility without
+            // changing hue, alpha, or the source black endpoint.
+            const float maximum = max(max(result.r, result.g), result.b);
+            if (maximum > 0.0001f) {
+                result.rgb *= pow(maximum, presentationInfo.w) / maximum;
+            }
+        } else if (profile == 3u) {
+            // Cast HD lift preserves white highlights and black while raising
+            // the low-mid texture values that otherwise read as translucency.
+            const float gain = max(presentationInfo.w, 1.0f);
+            result.rgb = (gain * result.rgb) /
+                (1.0f + (gain - 1.0f) * result.rgb);
+        }
+        if ((selectors.w & (1u << 0)) != 0u) {
+            result.a = 1.0f;
+        }
+    } else if ((selectors.w & (1u << 0)) != 0u) {
+        // Opaque source draws never carry material alpha into the drawable;
+        // coverage/alpha belongs to the explicitly typed raster state.
+        result.a = 1.0f;
+    }
+
     return saturate(result);
 }
 
@@ -635,7 +735,8 @@ fragment float4 goldeneye_source_scene_v6_fragment_array(
         const float2 dx = dfdx(input.texcoord * baseSize);
         const float2 dy = dfdy(input.texcoord * baseSize);
         const float rhoSquared = max(dot(dx, dx), dot(dy, dy));
-        const float rawLOD = 0.5f * log2(max(rhoSquared, 0.000001f));
+        const float rawLOD = 0.5f * log2(max(rhoSquared, 0.000001f))
+            + input.presentationInfo.z;
         const float maxLOD = max(
             0.0f,
             float(goldeneye_source_scene_v6_level_count(input.textureInfo) - 1u)
@@ -654,11 +755,10 @@ fragment float4 goldeneye_source_scene_v6_fragment_array(
             input.textureLevel0, input.textureLevel1, input.textureLevel2,
             input.textureLevel3, input.textureLevel4, input.textureLevel5,
             input.textureLevel6);
-        // Rareware's source TEXEL0 slots are paired with the LOD_FRACTION
-        // register. Present the adjacent mip samples as the interpolated
-        // source texel while retaining the copied scalar register.
-        texel0 = mix(texel0, texel1, lodFraction);
-        texel1 = texel0;
+        // Keep the two authored mip samples distinct.  The copied RDP
+        // combiner owns the LOD_FRACTION equation; pre-mixing here would add
+        // an extra cross-level filter to Rareware's
+        // (TEXEL0-TEXEL0)*LOD_FRACTION+TEXEL0 tuple and visibly blur the logo.
     } else if (goldeneye_source_scene_v6_uses_texel1(
             input.cycle0Color, input.cycle0Alpha,
             input.cycle1Color, input.cycle1Alpha) &&
@@ -674,10 +774,11 @@ fragment float4 goldeneye_source_scene_v6_fragment_array(
             input.textureLevel5, input.textureLevel6);
     }
     return goldeneye_source_scene_v6_fragment_body(
-        input.color, input.normal, input.primitiveColor,
+        input.color, input.ambientColor, input.normal, input.fogCoordinate, input.primitiveColor,
         input.environmentColor, input.cycle0Color, input.cycle0Alpha,
         input.cycle1Color, input.cycle1Alpha, input.selectors,
-        input.lightingInfo, texel0, texel1, lodFraction);
+        input.lightingInfo, input.fogInfo, input.presentationInfo,
+        texel0, texel1, lodFraction);
 }
 
 fragment float4 goldeneye_source_scene_v6_fragment_array_no_perspective(
@@ -701,7 +802,8 @@ fragment float4 goldeneye_source_scene_v6_fragment_array_no_perspective(
         const float2 dx = dfdx(input.texcoord * baseSize);
         const float2 dy = dfdy(input.texcoord * baseSize);
         const float rhoSquared = max(dot(dx, dx), dot(dy, dy));
-        const float rawLOD = 0.5f * log2(max(rhoSquared, 0.000001f));
+        const float rawLOD = 0.5f * log2(max(rhoSquared, 0.000001f))
+            + input.presentationInfo.z;
         const float maxLOD = max(
             0.0f,
             float(goldeneye_source_scene_v6_level_count(input.textureInfo) - 1u)
@@ -720,8 +822,8 @@ fragment float4 goldeneye_source_scene_v6_fragment_array_no_perspective(
             input.textureLevel0, input.textureLevel1, input.textureLevel2,
             input.textureLevel3, input.textureLevel4, input.textureLevel5,
             input.textureLevel6);
-        texel0 = mix(texel0, texel1, lodFraction);
-        texel1 = texel0;
+        // The combiner, rather than this sampler helper, performs the one
+        // source-authorized LOD interpolation.
     } else if (goldeneye_source_scene_v6_uses_texel1(
             input.cycle0Color, input.cycle0Alpha,
             input.cycle1Color, input.cycle1Alpha) &&
@@ -734,10 +836,11 @@ fragment float4 goldeneye_source_scene_v6_fragment_array_no_perspective(
             input.textureLevel5, input.textureLevel6);
     }
     return goldeneye_source_scene_v6_fragment_body(
-        input.color, input.normal, input.primitiveColor,
+        input.color, input.ambientColor, input.normal, input.fogCoordinate, input.primitiveColor,
         input.environmentColor, input.cycle0Color, input.cycle0Alpha,
         input.cycle1Color, input.cycle1Alpha, input.selectors,
-        input.lightingInfo, texel0, texel1, lodFraction);
+        input.lightingInfo, input.fogInfo, input.presentationInfo,
+        texel0, texel1, lodFraction);
 }
 
 // Ordinary embedded/power-of-two textures retain the original single 2D
@@ -762,7 +865,8 @@ fragment float4 goldeneye_source_scene_v6_fragment(
         const float2 dx = dfdx(input.texcoord * baseSize);
         const float2 dy = dfdy(input.texcoord * baseSize);
         const float rhoSquared = max(dot(dx, dx), dot(dy, dy));
-        const float rawLOD = 0.5f * log2(max(rhoSquared, 0.000001f));
+        const float rawLOD = 0.5f * log2(max(rhoSquared, 0.000001f))
+            + input.presentationInfo.z;
         const float maxLOD = max(0.0f, float(sourceTexture.get_num_mip_levels() - 1));
         const float lod = clamp(rawLOD, 0.0f, maxLOD);
         const float lod0 = floor(lod);
@@ -773,8 +877,9 @@ fragment float4 goldeneye_source_scene_v6_fragment(
             input.texcoord,
             level(min(lod0 + 1.0f, maxLOD))
         );
-        texel0 = mix(texel0, texel1, lodFraction);
-        texel1 = texel0;
+        // Keep adjacent source levels available to the copied combiner.  Do
+        // not pre-mix them here; otherwise a source PASS/LOD tuple is filtered
+        // twice before it reaches the RDP equation.
     } else if (goldeneye_source_scene_v6_uses_texel1(
             input.cycle0Color, input.cycle0Alpha,
             input.cycle1Color, input.cycle1Alpha) &&
@@ -787,10 +892,11 @@ fragment float4 goldeneye_source_scene_v6_fragment(
         );
     }
     return goldeneye_source_scene_v6_fragment_body(
-        input.color, input.normal, input.primitiveColor,
+        input.color, input.ambientColor, input.normal, input.fogCoordinate, input.primitiveColor,
         input.environmentColor, input.cycle0Color, input.cycle0Alpha,
         input.cycle1Color, input.cycle1Alpha, input.selectors,
-        input.lightingInfo, texel0, texel1, lodFraction);
+        input.lightingInfo, input.fogInfo, input.presentationInfo,
+        texel0, texel1, lodFraction);
 }
 
 fragment float4 goldeneye_source_scene_v6_fragment_no_perspective(
@@ -811,7 +917,8 @@ fragment float4 goldeneye_source_scene_v6_fragment_no_perspective(
         const float2 dx = dfdx(input.texcoord * baseSize);
         const float2 dy = dfdy(input.texcoord * baseSize);
         const float rhoSquared = max(dot(dx, dx), dot(dy, dy));
-        const float rawLOD = 0.5f * log2(max(rhoSquared, 0.000001f));
+        const float rawLOD = 0.5f * log2(max(rhoSquared, 0.000001f))
+            + input.presentationInfo.z;
         const float maxLOD = max(0.0f, float(sourceTexture.get_num_mip_levels() - 1));
         const float lod = clamp(rawLOD, 0.0f, maxLOD);
         const float lod0 = floor(lod);
@@ -822,8 +929,8 @@ fragment float4 goldeneye_source_scene_v6_fragment_no_perspective(
             input.texcoord,
             level(min(lod0 + 1.0f, maxLOD))
         );
-        texel0 = mix(texel0, texel1, lodFraction);
-        texel1 = texel0;
+        // LOD_FRACTION is consumed by the source combiner, not by this
+        // sampler helper.
     } else if (goldeneye_source_scene_v6_uses_texel1(
             input.cycle0Color, input.cycle0Alpha,
             input.cycle1Color, input.cycle1Alpha) &&
@@ -836,20 +943,23 @@ fragment float4 goldeneye_source_scene_v6_fragment_no_perspective(
         );
     }
     return goldeneye_source_scene_v6_fragment_body(
-        input.color, input.normal, input.primitiveColor,
+        input.color, input.ambientColor, input.normal, input.fogCoordinate, input.primitiveColor,
         input.environmentColor, input.cycle0Color, input.cycle0Alpha,
         input.cycle1Color, input.cycle1Alpha, input.selectors,
-        input.lightingInfo, texel0, texel1, lodFraction);
+        input.lightingInfo, input.fogInfo, input.presentationInfo,
+        texel0, texel1, lodFraction);
 }
 
 fragment float4 goldeneye_source_scene_v6_fragment_no_texture(
     GoldenEyeSourceSceneV6Varyings input [[stage_in]])
 {
     return goldeneye_source_scene_v6_fragment_body(
-        input.color, input.normal, input.primitiveColor,
+        input.color, input.ambientColor, input.normal, input.fogCoordinate, input.primitiveColor,
         input.environmentColor, input.cycle0Color, input.cycle0Alpha,
         input.cycle1Color, input.cycle1Alpha, input.selectors,
         input.lightingInfo,
+        input.fogInfo,
+        input.presentationInfo,
         float4(0.0f), float4(0.0f), 0.0f);
 }
 
@@ -857,10 +967,12 @@ fragment float4 goldeneye_source_scene_v6_fragment_no_texture_no_perspective(
     GoldenEyeSourceSceneV6NoPerspectiveVaryings input [[stage_in]])
 {
     return goldeneye_source_scene_v6_fragment_body(
-        input.color, input.normal, input.primitiveColor,
+        input.color, input.ambientColor, input.normal, input.fogCoordinate, input.primitiveColor,
         input.environmentColor, input.cycle0Color, input.cycle0Alpha,
         input.cycle1Color, input.cycle1Alpha, input.selectors,
         input.lightingInfo,
+        input.fogInfo,
+        input.presentationInfo,
         float4(0.0f), float4(0.0f), 0.0f);
 }
 
@@ -896,23 +1008,11 @@ vertex GoldenEyeGunbarrelPassVaryings goldeneye_gunbarrel_pass_vertex(
     constant GoldenEyeGunbarrelPassUniforms &uniforms [[buffer(1)]])
 {
     const GoldenEyeGunbarrelPassVertex source = vertices[vertexID];
-    float2 sourcePosition = source.position;
-    if (uniforms.kind == 1u) {
-        // The first Gunbarrel phase is the source's two-ring dot sweep.  It
-        // uses the 1280x960 orthographic space directly (g_TitleX and
-        // titleTransitionX), while the later sight/backdrop phase adds the
-        // authored +768/+442 offsets and enlarges the mesh.
-        const bool dotSweep = uniforms.mode == 2u;
-        const float centerX = (dotSweep ? 0.0f : 768.0f)
-            + float(uniforms.titleXQ16) / 65536.0f * (440.0f / 1280.0f);
-        const float centerY = (dotSweep ? 482.0f : 442.0f) / 960.0f * 330.0f;
-        const float xScale = (dotSweep ? 1.0f : 2.7f) / (1280.0f / 440.0f);
-        const float yScale = (dotSweep ? 1.0f : 2.57f) / (960.0f / 330.0f);
-        sourcePosition = float2(
-            centerX + source.position.x * xScale,
-            centerY + source.position.y * yScale
-        );
-    }
+    // The hole is rasterized procedurally from the logical fullscreen quad.
+    // Keeping this source-position domain intact lets the fragment stage clip
+    // the 64-unit sight disk explicitly; the old overlapping gSPVertex
+    // windows could otherwise escape as a viewport-sized triangle on Metal.
+    const float2 sourcePosition = source.position;
     const float2 ndc = float2(
         sourcePosition.x / 440.0f * 2.0f - 1.0f,
         1.0f - sourcePosition.y / 330.0f * 2.0f
@@ -932,7 +1032,12 @@ fragment float4 goldeneye_gunbarrel_pass_fragment(
     sampler payloadSampler [[sampler(0)]])
 {
     if (uniforms.kind == 0u) { // source 440x299 I8 rows + vertical gradient
-        const float xOffset = float(uniforms.titleXQ16) / 65536.0f * (440.0f / 1280.0f);
+        // Once the sight reaches its settled phase the source backdrop is
+        // presentation-aligned to the same centered logical viewport as the
+        // model. Modes 2/3 retain the authored right-to-left travel.
+        const float xOffset = (uniforms.mode >= 4u && uniforms.mode <= 7u)
+            ? 0.0f
+            : float(uniforms.titleXQ16) / 65536.0f * (440.0f / 1280.0f);
         const float sourceX = input.sourcePosition.x - xOffset;
         if (sourceX < 0.0f || sourceX >= 440.0f) {
             return float4(0.0f);
@@ -943,18 +1048,72 @@ fragment float4 goldeneye_gunbarrel_pass_fragment(
         return float4(intensity * float3(gradient), 1.0f);
     }
     if (uniforms.kind == 1u) { // source circular sight/hole geometry
-        return float4(input.color.rgb, input.color.a);
+        const bool dotSweep = uniforms.mode == 2u;
+        const bool settledCenter = uniforms.mode >= 4u && uniforms.mode <= 7u;
+        // `g_TitleX` and the authored +768 backdrop offset are in the
+        // source 1280-wide orthographic space. Convert the complete
+        // translation before entering the 440x330 presentation space.
+        const float sourceCenterX = settledCenter
+            ? 640.0f
+            : (dotSweep ? 0.0f : 768.0f)
+                + float(uniforms.titleXQ16) / 65536.0f;
+        const float centerX = sourceCenterX * (440.0f / 1280.0f);
+        const float centerY = (dotSweep ? 482.0f : (settledCenter ? 480.0f : 442.0f))
+            / 960.0f * 330.0f;
+        const float radiusX = 64.0f
+            * (dotSweep ? 1.0f : 2.7f) / (1280.0f / 440.0f);
+        const float radiusY = 64.0f
+            * (dotSweep ? 1.0f : 2.57f) / (960.0f / 330.0f);
+        const float2 delta = float2(
+            (input.sourcePosition.x - centerX) / radiusX,
+            (input.sourcePosition.y - centerY) / radiusY
+        );
+        const float distance = length(delta);
+        const float edgeWidth = max(fwidth(distance), 0.0001f);
+        if (distance > 1.0f + edgeWidth) {
+            discard_fragment();
+            // MSL's discard is a side effect rather than a control-flow
+            // terminator on every compiler path. Return transparent as well
+            // so a conservative backend cannot paint the fullscreen quad
+            // black over the authored backdrop.
+            return float4(0.0f);
+        }
+        if (dotSweep) {
+            // title.c switches to G_CC_PRIMITIVE/G_RM_AA_OPA_SURF for the
+            // sweep.  The generated vertex shade ramp belongs to the later
+            // settled sight and must not make the dots look translucent or
+            // gradient-filled.  Keep only analytic edge coverage here; the
+            // interior is the authored opaque 0xE6 primitive colour.
+            const float coverage = clamp(
+                (1.0f + edgeWidth - distance) / (2.0f * edgeWidth),
+                0.0f,
+                1.0f
+            );
+            return float4(float3(230.0f / 255.0f), coverage);
+        }
+        // title3.c uses 143 - cos(angle) * -111 with the perimeter's
+        // y-coordinate equal to -cos(angle) * 64. This is the exact linear
+        // top-to-bottom gradient in the clipped disk.
+        const float brightness = clamp(
+            (143.0f - 111.0f * delta.y) / 255.0f,
+            0.0f,
+            1.0f
+        );
+        return float4(float3(brightness), 1.0f);
     }
     if (uniforms.kind == 2u) { // source I4 blood frame, prim 0x96/0xb4
         const float intensity = payload.sample(payloadSampler, input.uv).r;
         return float4(float3(0.5882353f, 0.0f, 0.0f), intensity * (180.0f / 255.0f));
     }
-    if (uniforms.kind == 3u) { // source sub_GAME_7F01CA18 fade rectangle
+    if (uniforms.kind == 3u) { // source sub_GAME_7F01CA18 red wash
         const float alpha = float(uniforms.fadeAlphaQ8) / 255.0f;
-        const float3 color = uniforms.mode == 8u
-            ? float3(0.0f)
-            : float3(150.0f / 255.0f, 0.0f, 0.0f);
-        return float4(color, alpha);
+        return float4(float3(150.0f / 255.0f, 0.0f, 0.0f), alpha);
+    }
+    if (uniforms.kind == 4u) { // source mode-7 black fade rectangle
+        return float4(float3(0.0f), float(uniforms.fadeAlphaQ8) / 255.0f);
+    }
+    if (uniforms.kind == 5u) { // source mode-8 opaque clear-black rectangle
+        return float4(float3(0.0f), 1.0f);
     }
     return float4(0.0f);
 }

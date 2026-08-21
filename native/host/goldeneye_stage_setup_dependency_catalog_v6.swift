@@ -50,7 +50,7 @@ struct GoldenEyeStageSetupDependencyCatalogV6: Sendable, Equatable {
 
     static let manifestFileName = "stage-setup-model-dependencies-manifest.txt"
     static let expectedReferenceCount = 1_783
-    static let expectedUniqueCount = 206
+    static let expectedUniqueCount = 141
 
     let rootURL: URL
     let manifestURL: URL

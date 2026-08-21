@@ -281,6 +281,30 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
         )
     }
 
+    /// Drop any music/SFX timeline left by the previous game session while
+    /// keeping the prepared AVAudioEngine graph alive for the next title
+    /// frame. This is called only by the native owner thread during Reset.
+    func resetForGame() {
+        guard started else {
+            sourceAudioBinding.reset()
+            return
+        }
+        stopSourceMusic(at: 0, nativeTick: 0)
+        sfxPlayer.stop()
+        try? sfxPlayer.playAudio()
+        lock.lock()
+        sourceAudioBinding.reset()
+        scheduledSFX.removeAll(keepingCapacity: false)
+        sfxNodeSampleOrigin = nil
+        audioPaused = false
+        lock.unlock()
+        try? "event=gameReset routeGeneration=\(routeGeneration)\n".write(
+            toFile: "/tmp/goldeneye-native-audio-binding.log",
+            atomically: false,
+            encoding: .utf8
+        )
+    }
+
     var pauseTelemetry: (paused: Bool, pauseCount: UInt64, resumeCount: UInt64) {
         lock.lock()
         defer { lock.unlock() }

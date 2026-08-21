@@ -41,6 +41,7 @@ extern "C" {
 
 #define GE_PLAYER_CAMERA_OWNER_V6_MAX_STAN_TILES ((uint32_t)4096u)
 #define GE_PLAYER_CAMERA_OWNER_V6_MAX_PADS ((uint32_t)2048u)
+#define GE_PLAYER_CAMERA_OWNER_V7_MAX_STAN_LINKS ((uint32_t)262144u)
 #define GE_PLAYER_CAMERA_OWNER_V6_UNKNOWN_U32 UINT32_MAX
 #define GE_PLAYER_CAMERA_OWNER_V6_UNKNOWN_Q16 INT32_MIN
 
@@ -160,6 +161,25 @@ typedef struct GEPlayerCameraStanTileV6 {
     uint32_t reserved0;
     uint32_t reserved1;
 } GEPlayerCameraStanTileV6;
+
+/* Additive source topology sidecar. The frozen V6 STAN tile record remains
+   unchanged; these records preserve the source StandTilePoint.link edge as a
+   file-local tile offset (the source value is link << 3 relative to
+   firstTile - 0x80). */
+typedef struct GEPlayerCameraStanLinkV7 {
+    uint32_t source_tile_offset;
+    uint32_t point_index;
+    uint32_t target_tile_offset;
+    uint32_t flags;
+    uint32_t raw_link;
+    uint32_t source_room_id;
+    uint32_t target_room_id;
+    uint32_t reserved0;
+} GEPlayerCameraStanLinkV7;
+
+#define GE_PLAYER_CAMERA_OWNER_V7_STAN_LINK_FLAG_SOURCE_DERIVED ((uint32_t)1u << 0)
+#define GE_PLAYER_CAMERA_OWNER_V7_STAN_LINK_FLAG_PORTAL ((uint32_t)1u << 1)
+#define GE_PLAYER_CAMERA_OWNER_V7_STAN_LINK_FLAG_MASK ((uint32_t)0x03u)
 
 typedef struct GEPlayerCameraPadV6 {
     GEAbiHeaderV1 header;
@@ -291,6 +311,18 @@ GEStatusV1 ge_player_camera_owner_step(
     GEPlayerCameraOwnerStateV6 *inout_state,
     GEPlayerCameraEventV6 *out_event);
 
+/* Additive topology-aware source step. The borrowed V7 sidecar constrains a
+   room change to a linked STAN edge; all V6 owner/state layouts and hashes
+   remain the authority. A null/empty sidecar is rejected rather than treated
+   as an implicit fallback. */
+GEStatusV1 ge_player_camera_owner_step_with_stan_topology_v7(
+    uint64_t native_tick,
+    GERamRomGameplayInputV6 input,
+    const GEPlayerCameraStanLinkV7 *links,
+    uint32_t link_count,
+    GEPlayerCameraOwnerStateV6 *inout_state,
+    GEPlayerCameraEventV6 *out_event);
+
 GEStatusV1 ge_player_camera_owner_copy_snapshot(
     const GEPlayerCameraOwnerStateV6 *state,
     GEPlayerCameraSnapshotV6 *out_snapshot);
@@ -309,6 +341,8 @@ GE_PLAYER_CAMERA_OWNER_V6_STATIC_ASSERT(sizeof(GEPlayerCameraSourceV6) == 136u,
                                          "player camera source layout drift");
 GE_PLAYER_CAMERA_OWNER_V6_STATIC_ASSERT(sizeof(GEPlayerCameraStanTileV6) == 176u,
                                          "player camera STAN tile layout drift");
+GE_PLAYER_CAMERA_OWNER_V6_STATIC_ASSERT(sizeof(GEPlayerCameraStanLinkV7) == 32u,
+                                         "player camera STAN link V7 layout drift");
 GE_PLAYER_CAMERA_OWNER_V6_STATIC_ASSERT(sizeof(GEPlayerCameraPadV6) == 60u,
                                          "player camera pad layout drift");
 GE_PLAYER_CAMERA_OWNER_V6_STATIC_ASSERT(sizeof(GEPlayerCameraSnapshotV6) == 176u,

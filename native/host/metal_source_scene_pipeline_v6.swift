@@ -469,6 +469,23 @@ final class GoldenEyeSourceScenePipelineV6 {
         )
     }
 
+    /// The only geometry-fog blender admitted by the source shader is
+    /// G_RM_FOG_SHADE_A: FOG color selected by the first blender color lane,
+    /// SHADE alpha as its factor, and IN/1MA for the destination.  The
+    /// fragment lowerer supplies the exact fog alpha/color; every other fog
+    /// blender (including G_RM_FOG_PRIM_A) remains fail-closed.
+    static func isFogShadeGeometryState(_ sourceState: GESourceRenderStateV6) -> Bool {
+        sourceState.flags & UInt32(GE_SOURCE_RENDER_STATE_V6_FLAG_FOG) != 0 &&
+            isFogShadeBlender(sourceState.raw_render_mode)
+    }
+
+    private static func isFogShadeBlender(_ rawMode: UInt32) -> Bool {
+        ((rawMode >> 30) & 3) == 3 && // G_BL_CLR_FOG
+            ((rawMode >> 26) & 3) == 2 && // G_BL_A_SHADE
+            ((rawMode >> 22) & 3) == 0 && // G_BL_CLR_IN
+            ((rawMode >> 18) & 3) == 0    // G_BL_1MA
+    }
+
     private static func lowerRasterState(
         _ sourceState: GESourceRenderStateV6,
         drawFlags: UInt32,
@@ -568,12 +585,13 @@ final class GoldenEyeSourceScenePipelineV6 {
         default: throw GoldenEyeSourceScenePipelineV6Error.unsupportedRasterState("unknown texture filter")
         }
         let texturePerspective = ((rawH >> 19) & 1) != 0
+        let rawTextureConvert = (rawH >> 9) & 7
         guard rawCycleType == expectedCycleType,
               ((rawH >> 23) & 1) == 0,
               ((rawH >> 17) & 3) == 0,
               ((rawH >> 14) & 3) == 0,
               filterMatches,
-              ((rawH >> 9) & 7) == 0,
+              (rawTextureConvert == 0 || rawTextureConvert == 6),
               ((rawH >> 8) & 1) == 0,
               ((rawH >> 6) & 3) == 0,
               ((rawH >> 4) & 3) == 0 else {
@@ -584,17 +602,54 @@ final class GoldenEyeSourceScenePipelineV6 {
             GoldenEyeSourceSceneCombinerSelectorV6.lodFraction
         )
         if usesLOD {
-            guard rawH == 0x0011_0000 && rawL == 0x0f0a_4000,
-                  sourceState.cycle0_alpha_c ==
-                    GoldenEyeSourceSceneCombinerSelectorV6.lodFraction else {
+            let goldenEyeLODCombiner =
+                sourceState.combiner_cycle_count == 2 &&
+                sourceState.cycle0_color_a == GoldenEyeSourceSceneCombinerSelectorV6.texel1 &&
+                sourceState.cycle0_color_b == GoldenEyeSourceSceneCombinerSelectorV6.texel0 &&
+                sourceState.cycle0_color_c == GoldenEyeSourceSceneCombinerSelectorV6.lodFraction &&
+                sourceState.cycle0_color_d == GoldenEyeSourceSceneCombinerSelectorV6.texel0 &&
+                sourceState.cycle0_alpha_a == GoldenEyeSourceSceneCombinerSelectorV6.texel1 &&
+                sourceState.cycle0_alpha_b == GoldenEyeSourceSceneCombinerSelectorV6.texel0 &&
+                sourceState.cycle0_alpha_c == GoldenEyeSourceSceneCombinerSelectorV6.lodFraction &&
+                sourceState.cycle0_alpha_d == GoldenEyeSourceSceneCombinerSelectorV6.texel0 &&
+                sourceState.cycle1_color_a == GoldenEyeSourceSceneCombinerSelectorV6.combined &&
+                sourceState.cycle1_color_b == GoldenEyeSourceSceneCombinerSelectorV6.zero &&
+                sourceState.cycle1_color_c == GoldenEyeSourceSceneCombinerSelectorV6.shade &&
+                sourceState.cycle1_color_d == GoldenEyeSourceSceneCombinerSelectorV6.zero &&
+                sourceState.cycle1_alpha_a == GoldenEyeSourceSceneCombinerSelectorV6.combined &&
+                sourceState.cycle1_alpha_b == GoldenEyeSourceSceneCombinerSelectorV6.zero &&
+                sourceState.cycle1_alpha_c == GoldenEyeSourceSceneCombinerSelectorV6.shade &&
+                sourceState.cycle1_alpha_d == GoldenEyeSourceSceneCombinerSelectorV6.zero
+            let rarewareLODCombiner =
+                sourceState.cycle0_alpha_c == GoldenEyeSourceSceneCombinerSelectorV6.lodFraction
+            guard (rawH == 0x0019_2c00 && rawL == 0x0f0a_4000 && rarewareLODCombiner) ||
+                  (rawH == 0x0011_2000 && rawL == 0x0c18_2048 && goldenEyeLODCombiner) else {
                 throw GoldenEyeSourceScenePipelineV6Error.unsupportedCombiner(
-                    "LOD_FRACTION is only lowered for the canonical Rareware pass"
+                    "LOD_FRACTION requires the canonical Rareware or GoldenEye source tuple rawH=0x\(String(rawH, radix: 16)) rawL=0x\(String(rawL, radix: 16)) filter=\(sourceState.filter_mode)"
                 )
             }
-            guard lodEnabled, sourceState.lod_max_q16 > 0 else {
+            guard lodEnabled else {
                 throw GoldenEyeSourceScenePipelineV6Error.unsupportedRasterState(
-                    "LOD_FRACTION requires source texture LOD and a resident mip chain"
+                    "LOD_FRACTION requires source texture LOD"
                 )
+            }
+            guard let textureMipLevels, textureMipLevels > 0 else {
+                throw GoldenEyeSourceScenePipelineV6Error.unsupportedRasterState(
+                    "LOD_FRACTION requires typed texture setup evidence"
+                )
+            }
+            let lastResidentLOD = UInt32(textureMipLevels - 1) << 16
+            guard sourceState.lod_max_q16 <= lastResidentLOD else {
+                throw GoldenEyeSourceScenePipelineV6Error.unsupportedRasterState(
+                    "LOD_FRACTION exceeds resident mip chain"
+                )
+            }
+            if textureMipLevels == 1 {
+                guard sourceState.lod_max_q16 == 0 else {
+                    throw GoldenEyeSourceScenePipelineV6Error.unsupportedRasterState(
+                        "one-level GoldenEye auxiliary texture requires maxLOD zero"
+                    )
+                }
             }
         }
         if sourceState.filter_mode == UInt32(GE_SOURCE_FILTER_V6_TRILINEAR),
@@ -648,19 +703,30 @@ final class GoldenEyeSourceScenePipelineV6 {
               (sourceState.flags & UInt32(GE_SOURCE_RENDER_STATE_V6_FLAG_COVERAGE) != 0) == (coverageDestination != 0) else {
             throw GoldenEyeSourceScenePipelineV6Error.unsupportedRasterState("render-mode/decoded depth or coverage mismatch")
         }
-        // The source Gunbarrel/cast Type-4 setup emits the fog register as
-        // opaque white RGB with zero alpha (0xFFFFFF00).  In that authored
-        // mode fog contributes no pixels; accept that exact typed payload
-        // while retaining the fail-closed path for a visible fog factor or
-        // any nonzero fog alpha that would require shader fog coordinates.
+        let fogEnabled = sourceState.flags & UInt32(GE_SOURCE_RENDER_STATE_V6_FLAG_FOG) != 0
         let fogAlpha = sourceState.fog_rgba & 0xff
         let typedNoOpFog = fogAlpha == 0
-        guard (sourceState.fog_rgba == 0
-               && sourceState.flags & UInt32(GE_SOURCE_RENDER_STATE_V6_FLAG_FOG) == 0)
-              || typedNoOpFog else {
-            throw GoldenEyeSourceScenePipelineV6Error.unsupportedRasterState(
-                "fog requires a shader fog payload flags=0x\(String(sourceState.flags, radix: 16)) fog=0x\(String(sourceState.fog_rgba, radix: 16))"
-            )
+        if fogEnabled {
+            // G_FOG + G_RM_FOG_SHADE_A is the exact geometry-fog path.  The
+            // source G_SETFOGCOLOR register carries an authored alpha byte
+            // (normally 0xff); the renderer binds the stage EnvironmentRecord
+            // color and the typed fm/fo pair, so a nonzero source fog-register
+            // alpha is not a reason to reject this exact mode.
+            guard Self.isFogShadeGeometryState(sourceState) else {
+                throw GoldenEyeSourceScenePipelineV6Error.unsupportedRasterState(
+                    "G_FOG requires the exact G_RM_FOG_SHADE_A blender tuple"
+                )
+            }
+        } else {
+            // The source Gunbarrel/cast Type-4 setup emits the fog register as
+            // opaque white RGB with zero alpha (0xFFFFFF00). It is a typed
+            // no-op until a per-fragment prop factor is available.
+            guard !Self.isFogShadeBlender(mode),
+                  sourceState.fog_rgba == 0 || typedNoOpFog else {
+                throw GoldenEyeSourceScenePipelineV6Error.unsupportedRasterState(
+                    "fog requires a shader fog payload flags=0x\(String(sourceState.flags, radix: 16)) fog=0x\(String(sourceState.fog_rgba, radix: 16))"
+                )
+            }
         }
         let rarewareForcedPass = mode == 0x0f0a_4000 && sourceState.combiner_cycle_count == 2
         let coverageSave = coverageDestination == 3 &&
@@ -725,6 +791,17 @@ final class GoldenEyeSourceScenePipelineV6 {
         rawMode: UInt32,
         cycleCount: UInt32
     ) throws -> GoldenEyeSourceSceneBlendMappingV6 {
+        if cycleCount == 1 && isFogShadeBlender(rawMode) {
+            // The source geometry fog is lowered in the fragment equation;
+            // no Metal attachment blend remains for a one-cycle fog pass.
+            return GoldenEyeSourceSceneBlendMappingV6(
+                enabled: false,
+                sourceRGB: .one,
+                destinationRGB: .zero,
+                sourceAlpha: .one,
+                destinationAlpha: .zero
+            )
+        }
         if rawMode == 0x0c18_49d8 || rawMode == 0x0c18_4dd8 ||
             rawMode == 0x0c19_2d58 || rawMode == 0x0c18_4e50 ||
             rawMode == 0x0050_49d8 || rawMode == 0x0050_4dd8 || rawMode == 0x0050_4e50 {
@@ -819,7 +896,12 @@ final class GoldenEyeSourceScenePipelineV6 {
         guard m2a == 1 else {
             throw GoldenEyeSourceScenePipelineV6Error.unsupportedRasterState("blender m2a is not memory color")
         }
-        func factor(_ selector: UInt32) throws -> MTLBlendFactor {
+        // N64's m1b and m2b fields use the same two-bit encoding but they
+        // describe different coefficient namespaces.  In particular m2b=0
+        // is G_BL_1MA (one-minus-source-alpha), not source alpha.  Sharing one
+        // lookup table made otherwise opaque title/cast tuples look washed out
+        // and produced the wrong destination equation for future XLU draws.
+        func sourceFactor(_ selector: UInt32) throws -> MTLBlendFactor {
             switch selector {
             case 0: return .sourceAlpha
             case 1: return .destinationAlpha
@@ -828,12 +910,21 @@ final class GoldenEyeSourceScenePipelineV6 {
             default: throw GoldenEyeSourceScenePipelineV6Error.unsupportedRasterState("unknown blender alpha selector")
             }
         }
+        func destinationFactor(_ selector: UInt32) throws -> MTLBlendFactor {
+            switch selector {
+            case 0: return .oneMinusSourceAlpha
+            case 1: return .destinationAlpha
+            case 2: return .one
+            case 3: return .zero
+            default: throw GoldenEyeSourceScenePipelineV6Error.unsupportedRasterState("unknown blender destination selector")
+            }
+        }
         return GoldenEyeSourceSceneBlendMappingV6(
             enabled: true,
-            sourceRGB: try factor(m1b),
-            destinationRGB: try factor(m2b),
-            sourceAlpha: try factor(m1b),
-            destinationAlpha: try factor(m2b)
+            sourceRGB: try sourceFactor(m1b),
+            destinationRGB: try destinationFactor(m2b),
+            sourceAlpha: try sourceFactor(m1b),
+            destinationAlpha: try destinationFactor(m2b)
         )
     }
 

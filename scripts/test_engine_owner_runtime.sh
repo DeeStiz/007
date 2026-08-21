@@ -78,6 +78,13 @@ rg -q 'GOLDENEYE_NATIVE_SOURCE_FRONTEND_ROOT=' \
     "${PROJECT_ROOT}/scripts/measure_native_runtime.sh"
 rg -q 'audioService\?\.setPaused\(paused\)' \
     "${PROJECT_ROOT}/native/host/native_title_owner.swift"
+rg -q 'event=focusLost reset=1 paused=0' \
+    "${PROJECT_ROOT}/native/host/main.swift"
+if sed -n '/private func setFocusState/,/^    }/p' \
+    "${PROJECT_ROOT}/native/host/main.swift" | rg -n 'setPaused|requestPaused'; then
+    echo "focus transitions must reset input without pausing the owner/audio" >&2
+    exit 1
+fi
 rg -q 'func setPaused\(_ paused: Bool\)' \
     "${PROJECT_ROOT}/native/host/native_audio_service.swift"
 rg -q 'engine\.pause\(\)' \

@@ -283,6 +283,7 @@ struct GoldenEyeSourceSceneLightingProviderV6: Sendable {
     static let screenRareware: UInt32 = 2
     static let screenGunbarrel: UInt32 = 3
     static let screenGoldenEye: UInt32 = 4
+    static let screenCast: UInt32 = 7
 
     private let records: [UInt32: GoldenEyeSourceSceneLightingBindingV6]
     private let useTitleDefaults: Bool
@@ -350,7 +351,7 @@ struct GoldenEyeSourceSceneLightingProviderV6: Sendable {
             )
         }
         guard screen == Self.screenNintendo || screen == Self.screenGoldenEye ||
-            screen == Self.screenRareware else {
+            screen == Self.screenRareware || screen == Self.screenCast else {
             throw GoldenEyeSourceSceneLightingV6Error.unsupportedScreen(screen)
         }
         let ambient: SIMD4<Float>
@@ -368,19 +369,17 @@ struct GoldenEyeSourceSceneLightingProviderV6: Sendable {
             directional = SIMD4(0, 0, 0, 1)
             direction = SIMD4(0, 0, 1, 0)
         } else if screen == Self.screenRareware {
-            // title.c's Rareware path reuses gunbarrelLights.  The source
-            // writes the fade alpha into both the ambient and directional
-            // light colors before the three display-list passes, while the
-            // light direction remains (0, 0x7f, 0).  Keep the paired midpoint
-            // in Q16 so odd native renders are visibly between source
-            // anchors without changing the source comparator boundary.
+            // title.c's Rareware path reuses gunbarrelLights.  Its outer
+            // setup changes the ambient component for the RGB fade; the
+            // authored directional light remains white.  Keep the paired
+            // midpoint in Q16 without changing the source comparator.
             let fadeQ16 = Self.rarewareFadeQ16(
                 sourceTimer: context.sourceTimer,
                 pairPhase: context.pairPhase
             )
             let value = Float(fadeQ16) / Float(255 * 65_536)
             ambient = SIMD4(value, value, value, 1)
-            directional = SIMD4(value, value, value, 1)
+            directional = SIMD4(1, 1, 1, 1)
             direction = SIMD4(0, 1, 0, 0)
         } else {
             ambient = SIMD4(repeating: 150.0 / 255.0)

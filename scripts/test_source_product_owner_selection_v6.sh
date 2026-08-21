@@ -41,6 +41,9 @@ grep -Fq 'GoldenEyeCastSourceSceneFrameRendererV6' "${PRODUCT}"
 grep -Fq 'submit(castSceneRequest' "${PRODUCT}"
 grep -Fq 'serviceSourceCast' "${OWNER}"
 grep -Fq 'textureBindingAdapter: textureBindingAdapter' "${PRODUCT}"
+grep -Fq 'V7 gameplay-camera route did not submit a scoped frame' "${OWNER}"
+grep -Fq 'if gameplayCameraSubmissionEnabled {' "${OWNER}"
+grep -Fq 'if !gameplayCameraSubmissionEnabled, let environmentPacket' "${OWNER}"
 
 SWIFTC=$(xcrun --sdk macosx --find swiftc)
 SDKROOT=$(xcrun --sdk macosx --show-sdk-path)

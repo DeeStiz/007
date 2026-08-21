@@ -4,6 +4,12 @@ import Foundation
 import GoldenEyeNative
 #endif
 
+struct GoldenEyeRamRomDoorOnlyOwnerAllocationV7 {
+    let pointer: UnsafeMutablePointer<GEGuardDoorOwnerStateV6>
+    let doors: [GEGuardDoorOwnerDoorSourceV6]
+    let skippedDoorCount: Int
+}
+
 /// Prepared source pages for the RAMROM guard/door owner.  The records are
 /// copied values only; no setup payload, ROM path, source pointer, or model
 /// graph is retained.  A page may describe valid static placement while still
@@ -96,12 +102,34 @@ public struct GoldenEyeRamRomGuardDoorPagesV6: @unchecked Sendable {
         let animationData = loadAnimationTableData(root: visibleDependencies.rootURL)
         let animationEntries = loadAnimationTableEntries(root: visibleDependencies.rootURL)
         let stanData = stagePacket.resources.first(where: { $0.kind == .stan })?.payload
+        let stage = stagePacket.stageID
         var missing = [String]()
+        var portalCatalog: GoldenEyeStagePortalGeometryCatalogV7?
+        var stanRoomCatalog: GoldenEyeStageStanRoomCatalogV7?
+        if let background = stagePacket.resources.first(where: { $0.kind == .background })?.payload,
+           let stanData {
+            do {
+                portalCatalog = try GoldenEyeStagePortalGeometryCatalogV7.make(
+                    stageID: stage, setup: stagePacket.setup, backgroundData: background
+                )
+                stanRoomCatalog = try GoldenEyeStageStanRoomCatalogV7.make(
+                    data: stanData,
+                    sourceHash: stagePacket.resources.first(where: { $0.kind == .stan })?.payloadHash ?? 0
+                )
+            } catch {
+                portalCatalog = nil
+                stanRoomCatalog = nil
+                missing.append("door_portal_geometry_catalog")
+            }
+        } else {
+            portalCatalog = nil
+            stanRoomCatalog = nil
+            missing.append("door_portal_geometry_catalog")
+        }
         var guards = [GEGuardDoorOwnerGuardSourceV6]()
         var doors = [GEGuardDoorOwnerDoorSourceV6]()
         var poses = [GESourceAnimationPoseV6]()
         let attachments = [GEGuardDoorOwnerAttachmentV6]()
-        let stage = stagePacket.stageID
 
         let objectGuardRows = stagePacket.setup.objects.filter { $0.type == 9 }
         let objectDoorRows = stagePacket.setup.objects.filter { $0.type == 1 }
@@ -130,6 +158,7 @@ public struct GoldenEyeRamRomGuardDoorPagesV6: @unchecked Sendable {
                 object: object, setup: stagePacket.setup, setupData: setupData,
                 dependencies: dependencies, sidecars: sidecars,
                 visibleDependencies: visibleDependencies, stageID: stage,
+                portalCatalog: portalCatalog, stanRoomCatalog: stanRoomCatalog,
                 missing: &missing
             )
             doors.append(result)
@@ -251,6 +280,57 @@ public struct GoldenEyeRamRomGuardDoorPagesV6: @unchecked Sendable {
             throw Error.malformedSetup(pages.stageID, "owner status " + String(status))
         }
         return state
+    }
+
+    /// Allocate a zero-guard door owner on the heap. The C state is large and
+    /// must never cross this API by Swift value return; callers own and must
+    /// deallocate the returned pointer. Guard readiness is intentionally not
+    /// changed by this door-only page.
+    static func makeDoorOnlyOwnerPointer(
+        from pages: Self,
+        rngSeed: UInt64
+    ) throws -> GoldenEyeRamRomDoorOnlyOwnerAllocationV7 {
+        let validDoors = pages.doors.filter { door in
+            var copy = door
+            return ge_guard_door_owner_v6_validate_door(&copy) == UInt32(GE_STATUS_OK)
+        }
+        guard !validDoors.isEmpty else {
+            throw Error.malformedSetup(pages.stageID, "door-only page has no doors")
+        }
+        var setup = pages.setup
+        setup.guard_count = 0
+        setup.door_count = UInt32(validDoors.count)
+        setup.flags &= ~UInt32(
+            GE_GUARD_DOOR_OWNER_V6_SETUP_FLAG_POSES |
+            GE_GUARD_DOOR_OWNER_V6_SETUP_FLAG_AI |
+            GE_GUARD_DOOR_OWNER_V6_SETUP_FLAG_SOURCE_READY
+        )
+        let rawPointer = UnsafeMutableRawPointer.allocate(
+            byteCount: MemoryLayout<GEGuardDoorOwnerStateV6>.stride,
+            alignment: MemoryLayout<GEGuardDoorOwnerStateV6>.alignment
+        )
+        let pointer = rawPointer.assumingMemoryBound(to: GEGuardDoorOwnerStateV6.self)
+        var event = GEGuardDoorOwnerEventV6()
+        let status: UInt32 = validDoors.withUnsafeBufferPointer { doorBuffer in
+            withUnsafePointer(to: &setup) { setupPointer in
+                withUnsafeMutablePointer(to: &event) { eventPointer in
+                    ge_guard_door_owner_v6_begin(
+                        setupPointer, nil, 0,
+                        doorBuffer.baseAddress, UInt32(doorBuffer.count),
+                        nil, 0, nil, 0, rngSeed, pointer, eventPointer
+                    )
+                }
+            }
+        }
+        guard status == UInt32(GE_STATUS_OK) else {
+            rawPointer.deallocate()
+            throw Error.malformedSetup(pages.stageID, "door-only owner status \(status)")
+        }
+        return GoldenEyeRamRomDoorOnlyOwnerAllocationV7(
+            pointer: pointer,
+            doors: validDoors,
+            skippedDoorCount: pages.doors.count - validDoors.count
+        )
     }
 
     private static func makeGuard(
@@ -518,6 +598,8 @@ public struct GoldenEyeRamRomGuardDoorPagesV6: @unchecked Sendable {
         sidecars: GoldenEyeStageModelSidecarCatalogV6,
         visibleDependencies: GoldenEyeRamRomVisibleDependencyCatalogV6,
         stageID: UInt32,
+        portalCatalog: GoldenEyeStagePortalGeometryCatalogV7?,
+        stanRoomCatalog: GoldenEyeStageStanRoomCatalogV7?,
         missing: inout [String]
     ) throws -> GEGuardDoorOwnerDoorSourceV6 {
         let offset = Int(object.sourceRecordOffset)
@@ -546,6 +628,14 @@ public struct GoldenEyeRamRomGuardDoorPagesV6: @unchecked Sendable {
         if movement.isEmpty { missing.append("door_displacement.object" + String(object.index)) }
         let center = doorCenter(boundPad: boundPad)
         if center.isEmpty { missing.append("door_center.object" + String(object.index)) }
+        let derivedPortal = derivedDoorPortalNumber(
+            boundPad: boundPad, centerQ16: center,
+            portalCatalog: portalCatalog, stanRoomCatalog: stanRoomCatalog
+        )
+        let effectivePortal = derivedPortal ?? portal
+        if derivedPortal == nil && (flags & 0x1000_0000) != 0 {
+            missing.append("door_portal_mapping.geometry.object" + String(object.index))
+        }
         var value = GEGuardDoorOwnerDoorSourceV6()
         value.header.abi_version = GE_NATIVE_ABI_VERSION
         value.header.struct_size = UInt32(MemoryLayout<GEGuardDoorOwnerDoorSourceV6>.size)
@@ -560,7 +650,7 @@ public struct GoldenEyeRamRomGuardDoorPagesV6: @unchecked Sendable {
         value.door_type = doorMode & 0xffff
         value.key_flags = keyFlags
         value.auto_close_frames = autoClose
-        value.portal_number = portal
+        value.portal_number = effectivePortal
         value.open_state = GE_GUARD_DOOR_OWNER_V6_DOOR_STATE_STATIONARY
         value.visibility_state = transform.isEmpty ? 0 : 1
         value.model_handle = modelHandleValue
@@ -582,8 +672,43 @@ public struct GoldenEyeRamRomGuardDoorPagesV6: @unchecked Sendable {
         value.source_hash = UInt32(truncatingIfNeeded: mixHashes([UInt64(object.sourceRecordOffset), UInt64(firstWord(object, setupData) ?? 0)]))
         value.source_hash64 = mixHashes([UInt64(object.sourceRecordOffset), UInt64(modelHandleValue), UInt64(doorMode)])
         value.source_event_hash = mixHashes([value.source_hash64, UInt64(value.portal_number), UInt64(value.open_state)])
-        if (flags & 0x1000_0000) != 0 && portal == UInt32.max { missing.append("door_portal_mapping.object" + String(object.index)) }
+        if (flags & 0x1000_0000) != 0 && effectivePortal == UInt32.max { missing.append("door_portal_mapping.object" + String(object.index)) }
         return value
+    }
+
+    private static func derivedDoorPortalNumber(
+        boundPad: GoldenEyeStageSetupBoundPadPacket?,
+        centerQ16: [Int32],
+        portalCatalog: GoldenEyeStagePortalGeometryCatalogV7?,
+        stanRoomCatalog: GoldenEyeStageStanRoomCatalogV7?
+    ) -> UInt32? {
+        guard let pad = boundPad, centerQ16.count == 3,
+              let up = vector(pad.up), let look = vector(pad.look),
+              let portalCatalog, let stanRoomCatalog else { return nil }
+        let normalRaw = [
+            up[1] * look[2] - up[2] * look[1],
+            up[2] * look[0] - up[0] * look[2],
+            up[0] * look[1] - up[1] * look[0],
+        ]
+        let length = sqrt(normalRaw.reduce(0) { $0 + $1 * $1 })
+        guard length.isFinite, length > 0.000001 else { return nil }
+        let normal = normalRaw.map { $0 / length }
+        let center = centerQ16.map { Double($0) / 65_536.0 }
+        let start = normal.enumerated().map { center[$0.offset] + $0.element * 50.0 }
+        let end = normal.enumerated().map { center[$0.offset] - $0.element * 50.0 }
+        let startQ16 = (
+            q16(start[0]), q16(start[1]), q16(start[2])
+        )
+        let endQ16 = (
+            q16(end[0]), q16(end[1]), q16(end[2])
+        )
+        guard let roomA = stanRoomCatalog.room(forPositionQ16: startQ16),
+              let roomB = stanRoomCatalog.room(forPositionQ16: endQ16), roomA != roomB else {
+            return nil
+        }
+        return portalCatalog.portalIntersectingSegment(
+            startQ16: startQ16, endQ16: endQ16, roomA: roomA, roomB: roomB
+        )?.index
     }
 
     private static func modelHandle(

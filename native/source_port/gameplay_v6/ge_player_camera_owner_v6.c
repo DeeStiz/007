@@ -523,6 +523,219 @@ static uint32_t ge_player_camera_room_for_position(
     return selected_room;
 }
 
+static const GEPlayerCameraStanTileV6 *ge_player_camera_find_tile(
+    const GEPlayerCameraOwnerStateV6 *state,
+    uint32_t source_offset)
+{
+    uint32_t index;
+    if (state == NULL) {
+        return NULL;
+    }
+    for (index = 0u; index < state->tile_count; index++) {
+        if (state->stan[index].tile_id == source_offset ||
+            state->stan[index].source_offset == source_offset) {
+            return &state->stan[index];
+        }
+    }
+    return NULL;
+}
+
+/* Keep the existing V6 global floor query intact for old callers. The V7
+   source topology sidecar narrows only room changes: a candidate already in
+   the current room remains valid, while a candidate in another room must be
+   near a target tile reached by a source StandTilePoint.link edge. */
+static uint32_t ge_player_camera_room_for_position_with_topology(
+    const GEPlayerCameraOwnerStateV6 *state,
+    const int32_t position_q16[3],
+    const GEPlayerCameraStanLinkV7 *links,
+    uint32_t link_count)
+{
+    uint32_t unrestricted;
+    uint32_t index;
+    double x;
+    double z;
+    double radius;
+    if (links == NULL || link_count == 0u) {
+        return GE_PLAYER_CAMERA_OWNER_V6_UNKNOWN_U32;
+    }
+    unrestricted = ge_player_camera_room_for_position(state, position_q16);
+    if (unrestricted == GE_PLAYER_CAMERA_OWNER_V6_UNKNOWN_U32 ||
+        unrestricted == state->current_room) {
+        return unrestricted;
+    }
+    x = ge_player_camera_double_from_q16(position_q16[0]);
+    z = ge_player_camera_double_from_q16(position_q16[2]);
+    radius = ge_player_camera_double_from_q16(state->source.collision_radius_q16);
+    for (index = 0u; index < link_count; index++) {
+        const GEPlayerCameraStanLinkV7 *link = &links[index];
+        const GEPlayerCameraStanTileV6 *source_tile;
+        const GEPlayerCameraStanTileV6 *target_tile;
+        if (link->source_tile_offset == GE_PLAYER_CAMERA_OWNER_V6_UNKNOWN_U32 ||
+            link->target_tile_offset == GE_PLAYER_CAMERA_OWNER_V6_UNKNOWN_U32 ||
+            link->raw_link > UINT32_C(0xffff) ||
+            link->source_room_id == GE_PLAYER_CAMERA_OWNER_V6_UNKNOWN_U32 ||
+            link->target_room_id == GE_PLAYER_CAMERA_OWNER_V6_UNKNOWN_U32 ||
+            link->reserved0 != 0u ||
+            (link->flags & ~GE_PLAYER_CAMERA_OWNER_V7_STAN_LINK_FLAG_MASK) != 0u) {
+            continue;
+        }
+        source_tile = ge_player_camera_find_tile(state, link->source_tile_offset);
+        target_tile = ge_player_camera_find_tile(state, link->target_tile_offset);
+        if (source_tile == NULL || target_tile == NULL ||
+            source_tile->room_id != state->current_room ||
+            source_tile->room_id != link->source_room_id ||
+            target_tile->room_id != link->target_room_id ||
+            target_tile->room_id != unrestricted ||
+            (link->flags & GE_PLAYER_CAMERA_OWNER_V7_STAN_LINK_FLAG_SOURCE_DERIVED) == 0u) {
+            continue;
+        }
+        if (ge_player_camera_point_near_tile(target_tile, x, z, radius)) {
+            return target_tile->room_id;
+        }
+    }
+    return GE_PLAYER_CAMERA_OWNER_V6_UNKNOWN_U32;
+}
+
+static int ge_player_camera_inside_world(
+    const GERamRomGameplaySetupV6 *setup,
+    const int32_t position_q16[3]);
+
+static int ge_player_camera_edge_has_authored_link(
+    uint32_t tile_offset,
+    uint32_t point_index,
+    const GEPlayerCameraStanLinkV7 *links,
+    uint32_t link_count)
+{
+    uint32_t index;
+    if (links == NULL) {
+        return 0;
+    }
+    for (index = 0u; index < link_count; index++) {
+        const GEPlayerCameraStanLinkV7 *link = &links[index];
+        if (link->source_tile_offset == tile_offset &&
+            link->point_index == point_index &&
+            (link->flags & GE_PLAYER_CAMERA_OWNER_V7_STAN_LINK_FLAG_SOURCE_DERIVED) != 0u) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Source bondviewTryEdgeMovePlayerCollision projects the requested delta onto
+   the collision edge and retries the resulting position. The C owner does
+   not retain stanSavedColl_tile, so derive the nearest current-room STAN
+   boundary from the copied value-only rows. Authored link edges are traversed
+   by the topology room query and are not treated as blocking walls. */
+static int ge_player_camera_try_edge_slide(
+    const GEPlayerCameraOwnerStateV6 *state,
+    const int32_t base_position[3],
+    const int32_t attempted_position[3],
+    const GEPlayerCameraStanLinkV7 *links,
+    uint32_t link_count,
+    int32_t out_position[3],
+    uint32_t *out_room)
+{
+    double attempted_x;
+    double attempted_z;
+    double best_distance = HUGE_VAL;
+    double best_ax = 0.0;
+    double best_az = 0.0;
+    double best_bx = 0.0;
+    double best_bz = 0.0;
+    uint32_t tile_index;
+    int found_edge = 0;
+    if (state == NULL || base_position == NULL || attempted_position == NULL ||
+        out_position == NULL || out_room == NULL) {
+        return 0;
+    }
+    attempted_x = ge_player_camera_double_from_q16(attempted_position[0]);
+    attempted_z = ge_player_camera_double_from_q16(attempted_position[2]);
+    for (tile_index = 0u; tile_index < state->tile_count; tile_index++) {
+        const GEPlayerCameraStanTileV6 *tile = &state->stan[tile_index];
+        uint32_t edge_index;
+        if (tile->room_id != state->current_room) {
+            continue;
+        }
+        for (edge_index = 0u; edge_index < tile->point_count; edge_index++) {
+            uint32_t next_index = (edge_index + 1u) % tile->point_count;
+            double ax;
+            double az;
+            double bx;
+            double bz;
+            double dx;
+            double dz;
+            double length_squared;
+            double distance_squared;
+            if (ge_player_camera_edge_has_authored_link(
+                    tile->source_offset, edge_index, links, link_count)) {
+                continue;
+            }
+            ax = ge_player_camera_double_from_q16(tile->points_q16[edge_index][0]);
+            az = ge_player_camera_double_from_q16(tile->points_q16[edge_index][2]);
+            bx = ge_player_camera_double_from_q16(tile->points_q16[next_index][0]);
+            bz = ge_player_camera_double_from_q16(tile->points_q16[next_index][2]);
+            dx = bx - ax;
+            dz = bz - az;
+            length_squared = (dx * dx) + (dz * dz);
+            if (length_squared <= 0.000001) {
+                continue;
+            }
+            distance_squared = ge_player_camera_segment_distance_squared(
+                attempted_x, attempted_z, ax, az, bx, bz);
+            if (distance_squared < best_distance) {
+                best_distance = distance_squared;
+                best_ax = ax;
+                best_az = az;
+                best_bx = bx;
+                best_bz = bz;
+                found_edge = 1;
+            }
+        }
+    }
+    if (!found_edge) {
+        return 0;
+    }
+    {
+        double edge_x = best_bx - best_ax;
+        double edge_z = best_bz - best_az;
+        double edge_length = hypot(edge_x, edge_z);
+        double delta_x = ge_player_camera_double_from_q16(attempted_position[0]) -
+            ge_player_camera_double_from_q16(base_position[0]);
+        double delta_z = ge_player_camera_double_from_q16(attempted_position[2]) -
+            ge_player_camera_double_from_q16(base_position[2]);
+        double along;
+        int32_t candidate[3];
+        if (edge_length <= 0.000001) {
+            return 0;
+        }
+        edge_x /= edge_length;
+        edge_z /= edge_length;
+        along = (delta_x * edge_x) + (delta_z * edge_z);
+        candidate[0] = ge_player_camera_clamp_i32(
+            (int64_t)base_position[0] +
+            (int64_t)llround(along * edge_x * (double)GE_PLAYER_CAMERA_Q16_ONE));
+        candidate[1] = base_position[1];
+        candidate[2] = ge_player_camera_clamp_i32(
+            (int64_t)base_position[2] +
+            (int64_t)llround(along * edge_z * (double)GE_PLAYER_CAMERA_Q16_ONE));
+        if (candidate[0] == base_position[0] && candidate[2] == base_position[2]) {
+            return 0;
+        }
+        *out_room = links != NULL
+            ? ge_player_camera_room_for_position_with_topology(
+                state, candidate, links, link_count)
+            : ge_player_camera_room_for_position(state, candidate);
+        if (*out_room == GE_PLAYER_CAMERA_OWNER_V6_UNKNOWN_U32 ||
+            !ge_player_camera_inside_world(&state->setup, candidate)) {
+            return 0;
+        }
+        out_position[0] = candidate[0];
+        out_position[1] = candidate[1];
+        out_position[2] = candidate[2];
+        return 1;
+    }
+}
+
 static int ge_player_camera_inside_world(const GERamRomGameplaySetupV6 *setup,
                                          const int32_t position_q16[3])
 {
@@ -673,7 +886,9 @@ static void ge_player_camera_anchor_copy_interpolated(GEPlayerCameraOwnerStateV6
 }
 
 static void ge_player_camera_update_source_anchor(GEPlayerCameraOwnerStateV6 *state,
-                                                   GERamRomGameplayInputV6 input)
+                                                   GERamRomGameplayInputV6 input,
+                                                   const GEPlayerCameraStanLinkV7 *links,
+                                                   uint32_t link_count)
 {
     GEPlayerCameraSnapshotV6 *snapshot = &state->current_anchor;
     int32_t x_axis = ge_player_camera_input_axis(input.stick_x);
@@ -755,26 +970,43 @@ static void ge_player_camera_update_source_anchor(GEPlayerCameraOwnerStateV6 *st
     /* The original collision owner first tests the candidate against STAN
        and only then updates Bond's current tile/position.  Keep the same
        fail-closed ordering; there is no broad host/world clamp here. */
-    next_room = ge_player_camera_room_for_position(state, next_position);
+    next_room = links != NULL
+        ? ge_player_camera_room_for_position_with_topology(state, next_position, links, link_count)
+        : ge_player_camera_room_for_position(state, next_position);
     if (next_room != GE_PLAYER_CAMERA_OWNER_V6_UNKNOWN_U32 &&
         ge_player_camera_inside_world(&state->setup, next_position)) {
         accepted = 1;
     } else {
+        int32_t slide_position[3];
+        if (ge_player_camera_try_edge_slide(
+                state, base_position, next_position, links, link_count,
+                slide_position, &next_room)) {
+            next_position[0] = slide_position[0];
+            next_position[1] = slide_position[1];
+            next_position[2] = slide_position[2];
+            accepted = 1;
+        }
         /* bondviewCalcUpdatePlayerCollision first tries the complete offset,
            then permits a bounded edge/scoot component when a STAN edge blocks
            the diagonal candidate. This keeps source movement responsive
            without inventing a world clamp or bypassing STAN. */
-        next_position[0] = base_position[0];
-        next_position[2] = base_position[2];
-        next_room = ge_player_camera_room_for_position(state, next_position);
-        if (next_room != GE_PLAYER_CAMERA_OWNER_V6_UNKNOWN_U32) {
-            next_position[0] = ge_player_camera_clamp_i32(
-                (int64_t)base_position[0] +
-                (int64_t)llround(theta_x * ge_player_camera_double_from_q16(movement_forward) *
-                                  (double)GE_PLAYER_CAMERA_Q16_ONE));
-            next_room = ge_player_camera_room_for_position(state, next_position);
-            accepted = next_room != GE_PLAYER_CAMERA_OWNER_V6_UNKNOWN_U32 &&
-                       ge_player_camera_inside_world(&state->setup, next_position);
+        if (!accepted) {
+            next_position[0] = base_position[0];
+            next_position[2] = base_position[2];
+            next_room = links != NULL
+                ? ge_player_camera_room_for_position_with_topology(state, next_position, links, link_count)
+                : ge_player_camera_room_for_position(state, next_position);
+            if (next_room != GE_PLAYER_CAMERA_OWNER_V6_UNKNOWN_U32) {
+                next_position[0] = ge_player_camera_clamp_i32(
+                    (int64_t)base_position[0] +
+                    (int64_t)llround(theta_x * ge_player_camera_double_from_q16(movement_forward) *
+                                      (double)GE_PLAYER_CAMERA_Q16_ONE));
+                next_room = links != NULL
+                    ? ge_player_camera_room_for_position_with_topology(state, next_position, links, link_count)
+                    : ge_player_camera_room_for_position(state, next_position);
+                accepted = next_room != GE_PLAYER_CAMERA_OWNER_V6_UNKNOWN_U32 &&
+                           ge_player_camera_inside_world(&state->setup, next_position);
+            }
         }
         if (!accepted) {
             next_position[0] = base_position[0];
@@ -782,7 +1014,9 @@ static void ge_player_camera_update_source_anchor(GEPlayerCameraOwnerStateV6 *st
                 (int64_t)base_position[2] +
                 (int64_t)llround(theta_z * ge_player_camera_double_from_q16(movement_forward) *
                                   (double)GE_PLAYER_CAMERA_Q16_ONE));
-            next_room = ge_player_camera_room_for_position(state, next_position);
+            next_room = links != NULL
+                ? ge_player_camera_room_for_position_with_topology(state, next_position, links, link_count)
+                : ge_player_camera_room_for_position(state, next_position);
             accepted = next_room != GE_PLAYER_CAMERA_OWNER_V6_UNKNOWN_U32 &&
                        ge_player_camera_inside_world(&state->setup, next_position);
         }
@@ -1004,9 +1238,11 @@ GEStatusV1 ge_player_camera_owner_begin_from_gameplay_pages(
     return GE_STATUS_OK;
 }
 
-GEStatusV1 ge_player_camera_owner_step(
+static GEStatusV1 ge_player_camera_owner_step_internal(
     uint64_t native_tick,
     GERamRomGameplayInputV6 input,
+    const GEPlayerCameraStanLinkV7 *links,
+    uint32_t link_count,
     GEPlayerCameraOwnerStateV6 *inout_state,
     GEPlayerCameraEventV6 *out_event)
 {
@@ -1022,6 +1258,10 @@ GEStatusV1 ge_player_camera_owner_step(
     status = ge_ramrom_gameplay_v6_validate_input(&input);
     if (status != GE_STATUS_OK) {
         return status;
+    }
+    if (links != NULL &&
+        (link_count == 0u || link_count > GE_PLAYER_CAMERA_OWNER_V7_MAX_STAN_LINKS)) {
+        return GE_STATUS_REPLAY_BUDGET;
     }
     expected_tick = inout_state->native_tick == UINT64_MAX ? 0u : inout_state->native_tick + 1u;
     if (native_tick != expected_tick) {
@@ -1066,7 +1306,7 @@ GEStatusV1 ge_player_camera_owner_step(
             inout_state->weapon_sequence++;
             inout_state->flags |= GE_PLAYER_CAMERA_OWNER_V6_STATE_WEAPON_ACTION;
         }
-        ge_player_camera_update_source_anchor(inout_state, input);
+        ge_player_camera_update_source_anchor(inout_state, input, links, link_count);
         inout_state->current_anchor.flags = GE_PLAYER_CAMERA_OWNER_V6_STATE_SOURCE_ANCHOR |
                                              (inout_state->weapon_action != 0u ?
                                               GE_PLAYER_CAMERA_OWNER_V6_STATE_WEAPON_ACTION : 0u);
@@ -1095,6 +1335,33 @@ GEStatusV1 ge_player_camera_owner_step(
     out_event->state_hash = inout_state->render_snapshot.state_hash;
     out_event->event_hash = ge_player_camera_owner_hash_event(out_event);
     return GE_STATUS_OK;
+}
+
+GEStatusV1 ge_player_camera_owner_step(
+    uint64_t native_tick,
+    GERamRomGameplayInputV6 input,
+    GEPlayerCameraOwnerStateV6 *inout_state,
+    GEPlayerCameraEventV6 *out_event)
+{
+    return ge_player_camera_owner_step_internal(
+        native_tick, input, NULL, 0u, inout_state, out_event
+    );
+}
+
+GEStatusV1 ge_player_camera_owner_step_with_stan_topology_v7(
+    uint64_t native_tick,
+    GERamRomGameplayInputV6 input,
+    const GEPlayerCameraStanLinkV7 *links,
+    uint32_t link_count,
+    GEPlayerCameraOwnerStateV6 *inout_state,
+    GEPlayerCameraEventV6 *out_event)
+{
+    if (links == NULL || link_count == 0u) {
+        return GE_STATUS_INVALID_ARGUMENT;
+    }
+    return ge_player_camera_owner_step_internal(
+        native_tick, input, links, link_count, inout_state, out_event
+    );
 }
 
 GEStatusV1 ge_player_camera_owner_copy_snapshot(

@@ -14,6 +14,7 @@ public enum GoldenEyeRamRomCharacterSceneV6Error: Error, Sendable, Equatable,
     case invalidAnimationState(UInt32, String)
     case duplicateAnimationState(UInt32)
     case duplicateAttachment(UInt32, UInt32)
+    case invalidHeadSelection(UInt32, String)
 
     public var description: String {
         switch self {
@@ -27,6 +28,8 @@ public enum GoldenEyeRamRomCharacterSceneV6Error: Error, Sendable, Equatable,
             return "RAMROM character \(objectIndex) has duplicate animation state"
         case let .duplicateAttachment(objectIndex, switchIndex):
             return "RAMROM character \(objectIndex) has duplicate attachment switch \(switchIndex)"
+        case let .invalidHeadSelection(objectIndex, field):
+            return "RAMROM character \(objectIndex) head selection is invalid: \(field)"
         }
     }
 }
@@ -277,6 +280,7 @@ public struct GoldenEyeRamRomCharacterSourceSnapshotV6: Sendable, Equatable {
     public let headResolution: GoldenEyeRamRomCharacterHeadResolutionV6
     public let headTableIndex: UInt32?
     public let resolvedHeadModelName: String?
+    public let headSelection: GoldenEyeRamRomCharacterHeadSelectionV6?
     public let headCandidates: [GoldenEyeRamRomCharacterHeadCandidateV6]
     public let animation: GoldenEyeRamRomCharacterAnimationStateV6?
     public let renderContext: GoldenEyeRamRomCharacterRenderContextV6?
@@ -313,6 +317,7 @@ public struct GoldenEyeRamRomCharacterSourceSnapshotV6: Sendable, Equatable {
         headResolution: GoldenEyeRamRomCharacterHeadResolutionV6,
         headTableIndex: UInt32?,
         resolvedHeadModelName: String?,
+        headSelection: GoldenEyeRamRomCharacterHeadSelectionV6? = nil,
         headCandidates: [GoldenEyeRamRomCharacterHeadCandidateV6],
         animation: GoldenEyeRamRomCharacterAnimationStateV6?,
         renderContext: GoldenEyeRamRomCharacterRenderContextV6?,
@@ -337,6 +342,7 @@ public struct GoldenEyeRamRomCharacterSourceSnapshotV6: Sendable, Equatable {
         self.headResolution = headResolution
         self.headTableIndex = headTableIndex
         self.resolvedHeadModelName = resolvedHeadModelName
+        self.headSelection = headSelection
         self.headCandidates = headCandidates
         self.animation = animation
         self.renderContext = renderContext
@@ -461,6 +467,7 @@ public enum GoldenEyeRamRomCharacterSceneAdapterV6 {
         visibleDependencies: GoldenEyeRamRomVisibleDependencyCatalogV6,
         sidecars: GoldenEyeStageModelSidecarCatalogV6,
         animationStates: [UInt32: GoldenEyeRamRomCharacterAnimationStateV6] = [:],
+        headSelections: [UInt32: GoldenEyeRamRomCharacterHeadSelectionV6] = [:],
         placementOverrides: [UInt32: [Int32]] = [:]
     ) throws -> GoldenEyeRamRomCharacterSceneSnapshotV6 {
         guard sourceRoutes.contains(where: { $0.demoID == demoID && $0.stageID == stageID && $0.stageName == stageName }) else {
@@ -483,14 +490,18 @@ public enum GoldenEyeRamRomCharacterSceneAdapterV6 {
         var characters: [GoldenEyeRamRomCharacterSourceSnapshotV6] = []
         characters.reserveCapacity(objects.count)
         for object in objects {
+            // Type-9 setup key0 is chrnum, not the body model index. Join the
+            // corrected GuardRecord dependency by its source record offset;
+            // the preparation lane derives the body ID from bodyAI at +0x08.
             let dependency = dependencies.dependencies.first {
                 $0.stage == stageName && $0.kind == "character" &&
-                    $0.modelIndex == object.key0
+                    $0.setupOffset == object.sourceRecordOffset
             }
             let bodyName = dependency?.modelName ?? ""
+            let bodyModelIndex = dependency?.modelIndex ?? object.key0
             let bodySidecarName = bodyName.isEmpty
                 ? ""
-                : "stage_character_\(String(format: "%03u", object.key0))_\(bodyName)"
+                : "stage_character_\(String(format: "%03u", bodyModelIndex))_\(bodyName)"
             let model = sidecars.models[bodySidecarName]
             let bodyReady = model != nil
             var missing: [String] = []
@@ -514,7 +525,23 @@ public enum GoldenEyeRamRomCharacterSceneAdapterV6 {
             )
             let embeddedHead = model?.nodes.contains(where: { $0.opcodeHandle == 0xEB6D_7B14 }) == true
             let state = animationStates[object.index]
-            let headIndex = state?.headTableIndex
+            let selection = headSelections[object.index]
+            if embeddedHead, selection != nil {
+                throw GoldenEyeRamRomCharacterSceneV6Error.invalidHeadSelection(
+                    object.index, "body embeds its source head"
+                )
+            }
+            if let selection {
+                guard selection.stageID == stageID,
+                      selection.demoID == demoID,
+                      selection.objectIndex == object.index,
+                      selection.bodyID == bodyModelIndex else {
+                    throw GoldenEyeRamRomCharacterSceneV6Error.invalidHeadSelection(
+                        object.index, "source boundary"
+                    )
+                }
+            }
+            let headIndex = state?.headTableIndex ?? selection?.sourceHeadID
             let resolvedHead: String?
             let headResolution: GoldenEyeRamRomCharacterHeadResolutionV6
             if embeddedHead {
@@ -529,6 +556,8 @@ public enum GoldenEyeRamRomCharacterSceneAdapterV6 {
                 headResolution = candidates.isEmpty ? .missing : .sourceRandomizedPending
                 if candidates.isEmpty {
                     missing.append("head.source_table")
+                } else if selection != nil {
+                    missing.append("head_selection.visible_dependency")
                 } else {
                     missing.append("head_selection.table_index")
                 }
@@ -582,21 +611,22 @@ public enum GoldenEyeRamRomCharacterSceneAdapterV6 {
                 stageID: stageID, demoID: demoID, object: object,
                 bodyName: bodyName, placement: placement,
                 headResolution: headResolution, headIndex: headIndex,
-                resolvedHead: resolvedHead, state: state,
+                resolvedHead: resolvedHead, headSelection: selection, state: state,
                 missing: uniqueMissing
             )
             characters.append(
                 GoldenEyeRamRomCharacterSourceSnapshotV6(
                     stageID: stageID, demoID: demoID, stageName: stageName,
                     objectIndex: object.index, sourceRecordOffset: object.sourceRecordOffset,
-                    characterID: object.key0, modelIndex: object.key0,
+                    characterID: object.key0, modelIndex: bodyModelIndex,
                     padID: object.key1,
                     bodyModelName: bodyName, bodySidecarName: bodySidecarName,
-                    bodySidecarReady: bodyReady, placementMatrixQ16: placement,
-                    placementProvenance: placementProvenance,
-                    headResolution: headResolution, headTableIndex: headIndex,
-                    resolvedHeadModelName: resolvedHead,
-                    headCandidates: candidates, animation: state,
+                bodySidecarReady: bodyReady, placementMatrixQ16: placement,
+                placementProvenance: placementProvenance,
+                headResolution: headResolution, headTableIndex: headIndex,
+                resolvedHeadModelName: resolvedHead,
+                headSelection: selection,
+                headCandidates: candidates, animation: state,
                     renderContext: state?.renderContext,
                     missingFields: uniqueMissing,
                     unsupportedVisibleCommandCount: unsupported,
@@ -637,7 +667,8 @@ public enum GoldenEyeRamRomCharacterSceneAdapterV6 {
         visibleDependencies: GoldenEyeRamRomVisibleDependencyCatalogV6,
         sidecars: GoldenEyeStageModelSidecarCatalogV6,
         nativeTick: UInt64 = 2,
-        animationStatesByDemo: [UInt8: [UInt32: GoldenEyeRamRomCharacterAnimationStateV6]] = [:]
+        animationStatesByDemo: [UInt8: [UInt32: GoldenEyeRamRomCharacterAnimationStateV6]] = [:],
+        headSelectionsByDemo: [UInt8: [UInt32: GoldenEyeRamRomCharacterHeadSelectionV6]] = [:]
     ) throws -> [GoldenEyeRamRomCharacterSceneSnapshotV6] {
         try sourceRoutes.map { route in
             guard let stage = setupsByStage[route.stageID] else {
@@ -648,7 +679,8 @@ public enum GoldenEyeRamRomCharacterSceneAdapterV6 {
                 nativeTick: nativeTick, setup: stage.packet,
                 dependencies: dependencies, visibleDependencies: visibleDependencies,
                 sidecars: sidecars,
-                animationStates: animationStatesByDemo[route.demoID] ?? [:]
+                animationStates: animationStatesByDemo[route.demoID] ?? [:],
+                headSelections: headSelectionsByDemo[route.demoID] ?? [:]
             )
         }
     }
@@ -827,6 +859,7 @@ public enum GoldenEyeRamRomCharacterSceneAdapterV6 {
         headResolution: GoldenEyeRamRomCharacterHeadResolutionV6,
         headIndex: UInt32?,
         resolvedHead: String?,
+        headSelection: GoldenEyeRamRomCharacterHeadSelectionV6?,
         state: GoldenEyeRamRomCharacterAnimationStateV6?,
         missing: [String]
     ) -> UInt64 {
@@ -840,6 +873,11 @@ public enum GoldenEyeRamRomCharacterSceneAdapterV6 {
         hash = fnvWord(UInt64(headResolution.rawValue), into: hash)
         hash = fnvWord(UInt64(headIndex ?? UInt32.max), into: hash)
         hash = fnvString(resolvedHead ?? "", into: hash)
+        if let headSelection {
+            hash = fnvWord(headSelection.sourceHash, into: hash)
+            hash = fnvWord(headSelection.randomSeedBefore, into: hash)
+            hash = fnvWord(headSelection.randomSeedAfter, into: hash)
+        }
         if let state {
             hash = fnvWord(UInt64(state.animationID), into: hash)
             hash = fnvWord(UInt64(bitPattern: Int64(state.sourceFrameQ16)), into: hash)

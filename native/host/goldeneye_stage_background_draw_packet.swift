@@ -206,6 +206,16 @@ public struct GoldenEyeStageBackgroundDrawPacket: Sendable, Equatable {
     public let scenePacketHash: UInt64
     public let packetHash: UInt64
     public let vertices: [GoldenEyeStageBackgroundDrawVertex]
+    /// Additive source eye-space Z values parallel to `vertices`.  This is
+    /// optional so the historical M27 marker packet retains its frozen hash
+    /// and contract; source-environment packets populate it before the clip
+    /// divide, where the exact fog equation still has the source depth.
+    public let eyeSpaceZQ16: [Int32]?
+    /// Optional source-symmetric fog coordinate (2 * Metal depth - 1 in
+    /// Q16.16), parallel to `vertices`. It is computed before the generic
+    /// snapshot discards clip-W and is separate from the historical
+    /// UV/reserved word.
+    public let fogCoordinateQ16: [Int32]?
     public let commands: [GoldenEyeStageBackgroundDrawCommand]
     public let diagnostics: [GoldenEyeStageBackgroundDrawDiagnostic]
 
@@ -220,6 +230,8 @@ public struct GoldenEyeStageBackgroundDrawPacket: Sendable, Equatable {
         scenePacketHash: UInt64,
         unsupportedMask: UInt32,
         vertices: [GoldenEyeStageBackgroundDrawVertex],
+        eyeSpaceZQ16: [Int32]? = nil,
+        fogCoordinateQ16: [Int32]? = nil,
         commands: [GoldenEyeStageBackgroundDrawCommand],
         diagnostics: [GoldenEyeStageBackgroundDrawDiagnostic]
     ) {
@@ -236,6 +248,14 @@ public struct GoldenEyeStageBackgroundDrawPacket: Sendable, Equatable {
         self.sourceHash = sourceHash
         self.scenePacketHash = scenePacketHash
         self.vertices = vertices
+        if let eyeSpaceZQ16 {
+            precondition(eyeSpaceZQ16.count == vertices.count)
+        }
+        self.eyeSpaceZQ16 = eyeSpaceZQ16
+        if let fogCoordinateQ16 {
+            precondition(fogCoordinateQ16.count == vertices.count)
+        }
+        self.fogCoordinateQ16 = fogCoordinateQ16
         self.commands = commands
         self.diagnostics = diagnostics
 
@@ -261,6 +281,18 @@ public struct GoldenEyeStageBackgroundDrawPacket: Sendable, Equatable {
             hash = StageBackgroundDrawHash.append(hash, vertex.roomIndex)
             hash = StageBackgroundDrawHash.append(hash, vertex.flags)
             hash = StageBackgroundDrawHash.append(hash, vertex.reserved)
+        }
+        if let eyeSpaceZQ16 {
+            hash = StageBackgroundDrawHash.append(hash, UInt32(0x4559_455a))
+            for value in eyeSpaceZQ16 {
+                hash = StageBackgroundDrawHash.append(hash, UInt32(bitPattern: value))
+            }
+        }
+        if let fogCoordinateQ16 {
+            hash = StageBackgroundDrawHash.append(hash, UInt32(0x464f_4751))
+            for value in fogCoordinateQ16 {
+                hash = StageBackgroundDrawHash.append(hash, UInt32(bitPattern: value))
+            }
         }
         for command in commands {
             hash = StageBackgroundDrawHash.append(hash, command.primitive.rawValue)
@@ -289,7 +321,9 @@ public struct GoldenEyeStageBackgroundDrawPacket: Sendable, Equatable {
     /// gameplay camera adapter never needs a pointer or source address.
     func replacingGeometry(
         vertices: [GoldenEyeStageBackgroundDrawVertex],
-        commands: [GoldenEyeStageBackgroundDrawCommand]
+        commands: [GoldenEyeStageBackgroundDrawCommand],
+        eyeSpaceZQ16: [Int32]? = nil,
+        fogCoordinateQ16: [Int32]? = nil
     ) -> Self {
         Self(
             stageID: stageID,
@@ -300,6 +334,8 @@ public struct GoldenEyeStageBackgroundDrawPacket: Sendable, Equatable {
             scenePacketHash: scenePacketHash,
             unsupportedMask: unsupportedMask,
             vertices: vertices,
+            eyeSpaceZQ16: eyeSpaceZQ16,
+            fogCoordinateQ16: fogCoordinateQ16,
             commands: commands,
             diagnostics: diagnostics
         )
@@ -608,6 +644,30 @@ public enum GoldenEyeStageBackgroundDrawPacketBuilder {
 /// Metal vertex contract. Portals remain visibility/clipping inputs and are
 /// deliberately not emitted as diagnostic tinted geometry.
 public enum GoldenEyeStageSourceEnvironmentDrawPacketBuilderV6 {
+    /// Reconcile the explicit environment-only capture scope with the
+    /// source-room contract.  Props/characters/AI/effects can be omitted from
+    /// a scoped capture only after both room/background bits have been proven
+    /// clear by the producer.  Keeping this as a pure value operation makes
+    /// malformed-mask coverage independent of a particular decoded stage
+    /// payload and, importantly, prevents an unknown visible room opcode from
+    /// being hidden by the scope bit clear.
+    static func environmentOnlyCaptureUnsupportedMask(
+        _ unsupportedMask: UInt32
+    ) -> UInt32 {
+        let roomAndBackgroundMask =
+            GoldenEyeStageBackgroundDrawPacket.unsupportedBackgroundDisplayLists |
+            GoldenEyeStageBackgroundDrawPacket.unsupportedRoomGeometry
+        guard unsupportedMask & roomAndBackgroundMask == 0 else {
+            return unsupportedMask
+        }
+        let omittedCategoryMask =
+            GoldenEyeStageBackgroundDrawPacket.unsupportedProps |
+            GoldenEyeStageBackgroundDrawPacket.unsupportedCharacters |
+            GoldenEyeStageBackgroundDrawPacket.unsupportedAI |
+            GoldenEyeStageBackgroundDrawPacket.unsupportedEffects
+        return unsupportedMask & ~omittedCategoryMask
+    }
+
     public static func make(
         scene: GoldenEyeStageScenePacket,
         viewport: GoldenEyeProjectionV10.ViewportV10,
@@ -635,6 +695,8 @@ public enum GoldenEyeStageSourceEnvironmentDrawPacketBuilderV6 {
         }
 
         var vertices: [GoldenEyeStageBackgroundDrawVertex] = []
+        var eyeSpaceZQ16: [Int32] = []
+        var fogCoordinateQ16: [Int32] = []
         var commands: [GoldenEyeStageBackgroundDrawCommand] = []
         var diagnostics: [GoldenEyeStageBackgroundDrawDiagnostic] = []
         vertices.reserveCapacity(scene.setup.portals.count * 18)
@@ -795,7 +857,7 @@ public enum GoldenEyeStageSourceEnvironmentDrawPacketBuilderV6 {
                                 }
                                 let start = UInt32(vertices.count)
                                 for sourceIndex in sourceIndices {
-                                    vertices.append(try roomVertex(
+                                    let lowered = try roomVertex(
                                         pointData,
                                         index: sourceIndex,
                                         roomPosition: roomPosition,
@@ -803,7 +865,10 @@ public enum GoldenEyeStageSourceEnvironmentDrawPacketBuilderV6 {
                                         roomOrigin: roomOrigin,
                                         projection: projection,
                                         roomIndex: room.roomIndex
-                                    ))
+                                    )
+                                    vertices.append(lowered.vertex)
+                                    eyeSpaceZQ16.append(lowered.eyeSpaceZQ16)
+                                    fogCoordinateQ16.append(lowered.fogCoordinateQ16)
                                 }
                                 commands.append(.init(
                                     primitive: .roomTriangle,
@@ -829,7 +894,7 @@ public enum GoldenEyeStageSourceEnvironmentDrawPacketBuilderV6 {
                             }
                             let start = UInt32(vertices.count)
                             for sourceIndex in sourceIndices {
-                                vertices.append(try roomVertex(
+                                let lowered = try roomVertex(
                                     pointData,
                                     index: sourceIndex,
                                     roomPosition: roomPosition,
@@ -837,7 +902,10 @@ public enum GoldenEyeStageSourceEnvironmentDrawPacketBuilderV6 {
                                     roomOrigin: roomOrigin,
                                     projection: projection,
                                     roomIndex: room.roomIndex
-                                ))
+                                )
+                                vertices.append(lowered.vertex)
+                                eyeSpaceZQ16.append(lowered.eyeSpaceZQ16)
+                                fogCoordinateQ16.append(lowered.fogCoordinateQ16)
                             }
                             commands.append(.init(
                                 primitive: .roomTriangle,
@@ -919,17 +987,23 @@ public enum GoldenEyeStageSourceEnvironmentDrawPacketBuilderV6 {
         if environmentOnlyCapture {
             // This explicit capture mode exercises only the room-source
             // producer represented by this packet. Props/characters/AI/
-            // effects are not silently claimed present; they are outside the
-            // capture's declared visible workload and remain unsupported in
-            // the normal runtime packet.
-            unsupportedMask = 0
-            diagnostics.removeAll {
-                switch $0.code {
-                case .unsupportedProps, .unsupportedCharacters,
-                     .unsupportedAI, .unsupportedEffects:
-                    return true
-                default:
-                    return false
+            // effects are outside the capture's declared visible workload.
+            // Never clear their bits while a room/background bit remains set:
+            // a malformed or unknown visible room command must remain
+            // fail-closed instead of becoming a presentable mask=0 packet.
+            let roomAndBackgroundMask =
+                GoldenEyeStageBackgroundDrawPacket.unsupportedBackgroundDisplayLists |
+                GoldenEyeStageBackgroundDrawPacket.unsupportedRoomGeometry
+            if unsupportedMask & roomAndBackgroundMask == 0 {
+                unsupportedMask = environmentOnlyCaptureUnsupportedMask(unsupportedMask)
+                diagnostics.removeAll { diagnostic in
+                    switch diagnostic.code {
+                    case .unsupportedProps, .unsupportedCharacters,
+                         .unsupportedAI, .unsupportedEffects:
+                        return true
+                    default:
+                        return false
+                    }
                 }
             }
         }
@@ -943,6 +1017,8 @@ public enum GoldenEyeStageSourceEnvironmentDrawPacketBuilderV6 {
             scenePacketHash: scene.packetHash,
             unsupportedMask: unsupportedMask,
             vertices: vertices,
+            eyeSpaceZQ16: eyeSpaceZQ16,
+            fogCoordinateQ16: fogCoordinateQ16,
             commands: commands,
             diagnostics: diagnostics
         )
@@ -1045,7 +1121,11 @@ public enum GoldenEyeStageSourceEnvironmentDrawPacketBuilderV6 {
         roomOrigin: GoldenEyeProjectionV10.PointQ16?,
         projection: GoldenEyeProjectionV10.PacketV10,
         roomIndex: UInt32
-    ) throws -> GoldenEyeStageBackgroundDrawVertex {
+    ) throws -> (
+        vertex: GoldenEyeStageBackgroundDrawVertex,
+        eyeSpaceZQ16: Int32,
+        fogCoordinateQ16: Int32
+    ) {
         let offset = index * 16
         guard offset >= 0, offset <= data.count, data.count - offset >= 16 else {
             throw GoldenEyeStageSourceEnvironmentDrawPacketError.malformedRoomCommand(
@@ -1069,21 +1149,37 @@ public enum GoldenEyeStageSourceEnvironmentDrawPacketBuilderV6 {
             y: scaled(Int64(roomPosition.y) + Int64(try signed16(offset + 2)) - Int64(origin.y)),
             z: scaled(Int64(roomPosition.z) + Int64(try signed16(offset + 4)) - Int64(origin.z))
         )
+        let eyeSpace = projection.modelView.applying(to: point)
         let clip = projection.transform(point)
+        guard clip.clipWQ16 != 0 else {
+            throw GoldenEyeStageSourceEnvironmentDrawPacketError.pointBehindCamera(
+                roomIndex, UInt32(index)
+            )
+        }
+        let fogProduct = Int64(clip.clipZQ16) * Int64(GoldenEyeProjectionV10.q16One)
+        let metalDepth = fogProduct / Int64(clip.clipWQ16)
+        // The Metal projection stores depth in [0,1]. Source gSPFogPosition
+        // consumes the symmetric clip-Z coordinate in [-1,1], so preserve
+        // that source domain separately from the GPU position.z payload.
+        let fogCoordinate = Int32(clamping: metalDepth * 2 - Int64(GoldenEyeProjectionV10.q16One))
         let color = (UInt32(data[offset + 12]) << 24) |
             (UInt32(data[offset + 13]) << 16) |
             (UInt32(data[offset + 14]) << 8) |
             UInt32(data[offset + 15])
         let sourceS10_5 = Int32(Int16(bitPattern: try readBE16(data, at: offset + 8)))
         let sourceT10_5 = Int32(Int16(bitPattern: try readBE16(data, at: offset + 10)))
-        return vertex(
-            clip,
-            color: color,
-            sourceIndex: roomIndex,
-            reserved: GoldenEyeStageBackgroundDrawVertex.packedSourceTextureCoordinates(
-                s10_5: sourceS10_5,
-                t10_5: sourceT10_5
-            )
+        return (
+            vertex: vertex(
+                clip,
+                color: color,
+                sourceIndex: roomIndex,
+                reserved: GoldenEyeStageBackgroundDrawVertex.packedSourceTextureCoordinates(
+                    s10_5: sourceS10_5,
+                    t10_5: sourceT10_5
+                )
+            ),
+            eyeSpaceZQ16: eyeSpace.z,
+            fogCoordinateQ16: fogCoordinate
         )
     }
 
@@ -1140,6 +1236,7 @@ public enum GoldenEyeStageSourceEnvironmentDrawPacketError: Error, Sendable, Equ
     case invalidCoordinateScale
     case malformedRoomCommand(UInt32, UInt32)
     case roomInflateFailure(UInt32, UInt32)
+    case missingFogCoordinate(UInt32)
 
     public var description: String {
         switch self {
@@ -1155,6 +1252,8 @@ public enum GoldenEyeStageSourceEnvironmentDrawPacketError: Error, Sendable, Equ
         case .invalidCoordinateScale: return "source environment room coordinate scale is invalid"
         case let .malformedRoomCommand(room, offset): return "room \(room) source GDL command is malformed at 0x\(String(offset, radix: 16))"
         case let .roomInflateFailure(offset, bytes): return "room compressed payload at 0x\(String(offset, radix: 16)) failed inflate for \(bytes) bytes"
+        case let .missingFogCoordinate(room):
+            return "room \(room) clipped geometry is missing a parallel fog coordinate"
         }
     }
 }

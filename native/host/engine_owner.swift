@@ -250,6 +250,20 @@ struct GE120FixedRateScheduler {
         rebaseCount &+= 1
     }
 
+    /// Restart the authoritative simulation clock at native tick zero while
+    /// retaining the owner thread and display-link lifetime. This is used by
+    /// the user-facing Reset Game command; it deliberately does not pretend
+    /// that the renderer or source authority has been reset.
+    mutating func resetGame(atNanoseconds now: UInt64) throws {
+        guard epochNanoseconds != nil else {
+            throw GE120SchedulerError.arithmeticOverflow
+        }
+        epochNanoseconds = now
+        nextNativeTick = 0
+        paused = false
+        resetMeasurementTelemetry(atNanoseconds: now)
+    }
+
     func waitNanoseconds(atNanoseconds now: UInt64) throws -> UInt64 {
         guard !paused, let epochNanoseconds else { return 1_000_000_000 }
         let deadline = try deadline(for: nextNativeTick, epoch: epochNanoseconds)
@@ -339,10 +353,12 @@ struct GE120EngineOwnerTelemetry: Sendable {
 final class GE120EngineOwner: @unchecked Sendable {
     typealias TickHandler = (_ tick: GE120Tick) -> Void
     typealias MeasurementResetHandler = (_ generation: UInt64, _ rawNanoseconds: UInt64) -> Void
+    typealias GameResetHandler = () -> Bool
 
     private let configuration: GE120TimebaseConfiguration
     private let tickHandler: TickHandler
     private let measurementResetHandler: MeasurementResetHandler?
+    private let gameResetHandler: GameResetHandler?
     private let displayLink: GE120DisplayLinkRuntime?
     private let condition = NSCondition()
     private var ownerThread: Thread?
@@ -352,6 +368,11 @@ final class GE120EngineOwner: @unchecked Sendable {
     private var stopRequested = false
     private var pendingPaused: Bool?
     private var pendingMeasurementResetCount: UInt64 = 0
+    private var pendingGameResetCount: UInt64 = 0
+    private var gameResetGeneration: UInt64 = 0
+    private var gameResetIssuedGeneration: UInt64 = 0
+    private var lastGameResetSucceeded = true
+    private var gameResetResults: [UInt64: Bool] = [:]
     private var measurementEpochGeneration: UInt64 = 0
     private var measurementEpochIssuedGeneration: UInt64 = 0
     private var measurementEpochNanoseconds: UInt64 = 0
@@ -363,11 +384,13 @@ final class GE120EngineOwner: @unchecked Sendable {
         configuration: GE120TimebaseConfiguration = .goldenEye,
         displayLink: GE120DisplayLinkRuntime? = nil,
         measurementResetHandler: MeasurementResetHandler? = nil,
+        gameResetHandler: GameResetHandler? = nil,
         tickHandler: @escaping TickHandler
     ) {
         self.configuration = configuration
         self.displayLink = displayLink
         self.measurementResetHandler = measurementResetHandler
+        self.gameResetHandler = gameResetHandler
         self.tickHandler = tickHandler
         self.scheduler = GE120FixedRateScheduler(configuration: configuration)
     }
@@ -420,7 +443,13 @@ final class GE120EngineOwner: @unchecked Sendable {
         condition.lock()
         pendingPaused = paused
         let runLoop = ownerRunLoop
+        let displayLink = self.displayLink
         condition.unlock()
+        // Stop accepting pre-focus-loss drawables immediately. The owner
+        // thread still applies the scheduler pause/rebase below, but the
+        // presentation mailbox must be fenced at the AppKit notification
+        // boundary rather than waiting for the next fixed-rate poll.
+        displayLink?.requestPaused(paused)
         if let runLoop {
             CFRunLoopWakeUp(runLoop)
         }
@@ -476,6 +505,45 @@ final class GE120EngineOwner: @unchecked Sendable {
             if !condition.wait(until: deadline) { break }
         }
         let completed = measurementEpochGeneration >= targetGeneration
+        condition.unlock()
+        return completed
+    }
+
+    /// Request an owner-thread game restart. The source/game state reset is
+    /// acknowledged only after the scheduler has been moved back to native
+    /// tick zero, so the next tick cannot race a partially reset authority.
+    @discardableResult
+    func resetGame(timeout: TimeInterval = 5.0) -> Bool {
+        if isOwnerThread {
+            let succeeded = performGameReset(atNanoseconds: GE120RawClock.nowNanoseconds())
+            return succeeded
+        }
+
+        condition.lock()
+        guard state == .running else {
+            condition.unlock()
+            return false
+        }
+        gameResetIssuedGeneration &+= 1
+        let targetGeneration = gameResetIssuedGeneration
+        pendingGameResetCount &+= 1
+        let runLoop = ownerRunLoop
+        condition.broadcast()
+        condition.unlock()
+        if let runLoop {
+            CFRunLoopWakeUp(runLoop)
+        }
+
+        condition.lock()
+        let deadline = Date().addingTimeInterval(timeout)
+        while gameResetGeneration < targetGeneration,
+              state != .failed,
+              state != .stopped {
+            if !condition.wait(until: deadline) { break }
+        }
+        let succeeded = gameResetResults.removeValue(forKey: targetGeneration)
+            ?? (gameResetGeneration >= targetGeneration ? lastGameResetSucceeded : false)
+        let completed = gameResetGeneration >= targetGeneration && succeeded
         condition.unlock()
         return completed
     }
@@ -607,6 +675,7 @@ final class GE120EngineOwner: @unchecked Sendable {
     }
 
     private func consumeMailbox(atNanoseconds now: UInt64) throws {
+        consumePendingGameResets(atNanoseconds: now)
         consumePendingMeasurementResets(atNanoseconds: now)
         condition.lock()
         let paused = pendingPaused
@@ -622,9 +691,54 @@ final class GE120EngineOwner: @unchecked Sendable {
                 throw error
             }
             schedulerLock.unlock()
-            displayLink?.requestPaused(paused)
+            // `requestPaused` publishes the display-link mailbox immediately
+            // at the caller boundary; applyPendingCommands below consumes it
+            // on the owner run loop after the scheduler state changes.
         }
         displayLink?.applyPendingCommands(afterPresent: false)
+    }
+
+    private func consumePendingGameResets(atNanoseconds now: UInt64) {
+        while true {
+            condition.lock()
+            guard pendingGameResetCount > 0 else {
+                condition.unlock()
+                return
+            }
+            pendingGameResetCount -= 1
+            condition.unlock()
+
+            let succeeded = performGameReset(atNanoseconds: now)
+            condition.lock()
+            gameResetGeneration &+= 1
+            lastGameResetSucceeded = succeeded
+            gameResetResults[gameResetGeneration] = succeeded
+            if gameResetResults.count > 16,
+               let oldest = gameResetResults.keys.min() {
+                gameResetResults.removeValue(forKey: oldest)
+            }
+            condition.broadcast()
+            condition.unlock()
+        }
+    }
+
+    private func performGameReset(atNanoseconds now: UInt64) -> Bool {
+        guard gameResetHandler?() ?? true else { return false }
+        schedulerLock.lock()
+        defer { schedulerLock.unlock() }
+        do {
+            try scheduler.resetGame(atNanoseconds: now)
+        } catch {
+            condition.lock()
+            failure = String(describing: error)
+            condition.unlock()
+            return false
+        }
+        // Reset is a user action, so a game that was paused by focus loss
+        // starts from a neutral, running state once the next loop iteration
+        // applies the display-link mailbox.
+        displayLink?.requestPaused(false)
+        return true
     }
 
     private func consumePendingMeasurementResets(atNanoseconds now: UInt64) {

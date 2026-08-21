@@ -72,6 +72,7 @@ SWIFT_FLAGS=(
     "${SOURCE_ROOT}/goldeneye_source_product_provider_v6.swift" \
     "${SOURCE_ROOT}/goldeneye_source_model_v6.swift" \
     "${SOURCE_ROOT}/goldeneye_source_scene_snapshot_v6.swift" \
+    "${SOURCE_ROOT}/goldeneye_stage_fog_lowering_v6.swift" \
     "${SOURCE_ROOT}/goldeneye_source_node_transform_v6.swift" \
     "${SOURCE_ROOT}/goldeneye_source_texture_coordinates_v6.swift" \
     "${SOURCE_ROOT}/goldeneye_source_texture_setup_v6.swift" \
@@ -161,7 +162,7 @@ for item in isolated[1:5]:
     assert item["setupMaxLOD"] == 5
     assert item["setupMipLevels"] == 6
     assert item["tileBoundsQ2"] == [2, 2, 126, 126]
-    assert item["rawOtherModeH"] == 0x00110000
+    assert item["rawOtherModeH"] == 0x00192c00
 assert len({item["rawSHA256"] for item in isolated}) >= 4
 print("rareware-reference metadata: PASS")
 PY

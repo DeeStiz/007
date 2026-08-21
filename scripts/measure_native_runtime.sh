@@ -182,7 +182,7 @@ run_case() {
     env \
         GOLDENEYE_NATIVE_TITLE=1 \
         GOLDENEYE_NATIVE_ASSET_ROOT="${PROJECT_ROOT}/build/native/boot-assets" \
-        GOLDENEYE_NATIVE_STAGE_ASSET_ROOT="${PROJECT_ROOT}/build/native/stage-assets" \
+        GOLDENEYE_NATIVE_STAGE_ASSET_ROOT="${PROJECT_ROOT}/build/native/stage-assets-image-decoder-v6" \
         GOLDENEYE_NATIVE_SOURCE_FRONTEND_ROOT="${PROJECT_ROOT}/build/native/source-frontend-v6-image-decoder-v6" \
         GOLDENEYE_NATIVE_CAST_ASSET_ROOT="${CAST_ASSET_ROOT}" \
         GOLDENEYE_NATIVE_GUNBARREL_SIDECAR="${GUNBARREL_SIDECAR}" \
@@ -354,14 +354,13 @@ run_case() {
     # "No" before accepting presented-fps evidence.
     [[ "${display_sleep}" == "No" ]] || pass=0
     if [[ "${CADENCE_STRESS}" == "1" ]]; then
-        # Focus/fullscreen/display migration is a lifecycle test. Pause time
-        # must not be folded into steady-state rate acceptance.
-        at_least "${pause}" 1 || pass=0
-        at_least "${resume}" 1 || pass=0
-        at_least "${rebase}" 1 || pass=0
-        at_least "${audio_pause_count}" 1 || pass=0
-        at_least "${audio_resume_count}" 1 || pass=0
+        # Focus/fullscreen/display migration is a lifecycle test. Losing
+        # AppKit focus resets input but deliberately does not pause logic,
+        # audio, or the display-link owner.
+        [[ "${pause}" == "0" && "${resume}" == "0" && "${rebase}" == "0" ]] || pass=0
+        [[ "${audio_pause_count}" == "0" && "${audio_resume_count}" == "0" ]] || pass=0
         [[ "${audio_paused}" == "0" ]] || pass=0
+        rg -q 'event=focusLost reset=1 paused=0' "${events_log}" || pass=0
     else
         in_range "${logic_rate}" 119 121 || pass=0
         [[ "${marshal_drops}" == "0" && "${rejected_presented}" == "0" ]] || pass=0

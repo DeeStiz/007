@@ -57,7 +57,8 @@ struct GoldenEyeGunbarrelV6Smoke {
         )
         check(mode2Pass.backgroundVisible == false
             && mode2Pass.holeVisible
-            && mode2Pass.holePassCount == 2,
+            && mode2Pass.holePassCount == 2
+            && mode2Pass.titleXQ16 != mode2Pass.transitionXQ16,
               "mode-2 compositor submits both moving hole passes")
         let mode3Pass = GoldenEyeGunbarrelRenderPassV6.make(
             nativeTick: 3,
@@ -113,6 +114,34 @@ struct GoldenEyeGunbarrelV6Smoke {
         check(completeLast.mode == 9, "source route terminal mode")
         check(completeLast.fade == .clearBlack || completeLast.mode == 9, "terminal fade")
 
+        // The real renderer starts mode 5 without a completion signal and
+        // advances only as decoded blood frames are acknowledged. Exercise
+        // the full 42-frame handshake instead of using the compatibility
+        // `bloodFrameAvailable` initializer above.
+        var streamedRuntime = GoldenEyeGunbarrelRuntimeV6(manifest: first)
+        var streamedFrames = Set<UInt32>()
+        var nextStreamedFrame: UInt32 = 0
+        var streamedLast = try streamedRuntime.step(nativeTick: 1)
+        for tick in 2...1_500 {
+            streamedLast = try streamedRuntime.step(nativeTick: UInt64(tick))
+            if streamedLast.mode == 5 {
+                if streamedLast.pairPhase == 0 {
+                    streamedFrames.insert(nextStreamedFrame)
+                    streamedRuntime.acknowledgeBloodFrame(
+                        index: nextStreamedFrame,
+                        complete: nextStreamedFrame >= 41
+                    )
+                    nextStreamedFrame = min(nextStreamedFrame + 1, 41)
+                }
+            }
+            if streamedLast.mode == 6 { break }
+        }
+        guard streamedFrames == Set(0...41) else {
+            fatalError("blood mode acknowledges frames \(streamedFrames.sorted()), terminalMode=\(streamedLast.mode)")
+        }
+        print("blood_stream_frames=42 terminalMode=\(streamedLast.mode)")
+        check(streamedLast.mode == 6, "blood completion transitions to red-overlay mode")
+
         if arguments.count > 1 {
             let bloodURL = URL(fileURLWithPath: arguments[1])
             let bloodData = try Data(contentsOf: bloodURL, options: [.mappedIfSafe])
@@ -120,7 +149,12 @@ struct GoldenEyeGunbarrelV6Smoke {
             check(hex(SHA256.hash(data: bloodData)) == "cc960835635ee32b1ef793e6c30f9ec8ed199cd416c5dd8d418db1307ed2dda2", "blood encoded payload hash")
             let firstBlood = try GoldenEyeGunbarrelBloodDecoderV6.decodeInitial(bloodData)
             let secondBlood = try GoldenEyeGunbarrelBloodDecoderV6.decodeInitial(bloodData)
+            let bloodStream = try GoldenEyeGunbarrelBloodDecoderV6.decodeAll(bloodData)
             check(firstBlood == secondBlood, "blood decode determinism")
+            check(bloodStream.isComplete && bloodStream.frames.count == 42,
+                  "blood stream contains exactly 42 complete frames")
+            check(bloodStream.frames.first == firstBlood,
+                  "blood stream frame zero matches decodeInitial")
             check(firstBlood.width == 96 && firstBlood.height == 80, "blood texture dimensions")
             check(firstBlood.pixels.count == 96 * 80, "blood texture payload size")
             check(firstBlood.pixels.contains(0xff) && firstBlood.pixels.contains(0), "blood frame content")

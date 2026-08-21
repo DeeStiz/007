@@ -2,7 +2,9 @@
 """Prepare source setup prop/guard model dependencies for the seven demos.
 
 Setup object records store a direct ``obj`` model index for model-bearing
-prop types and a direct character index for type 9 guards.  This helper
+prop types.  Type 9 records are ``GuardRecord`` values: their model index is
+the high half of the ``bodyAI`` word at record offset ``0x08``; the high half
+of the preceding word is ``chrnum`` and is not a model index.  This helper
 recovers those indices from the checked-in source include order, verifies the
 corresponding external-ROM file-list rows, and copies only guarded model
 payloads beneath ignored ``build/native`` output.  It does not claim a draw
@@ -107,8 +109,8 @@ def object_dependencies(stage: str, data: bytes, props: int, chrs: int) -> list[
         if offset + byte_count > end:
             raise PreparationError(f"{stage} setup object at 0x{offset:x} is truncated")
         second = read_be32(data, offset + 4) if size_words > 1 else 0
-        model_index = (second >> 16) & 0xffff
         if object_type in PROP_MODEL_TYPES:
+            model_index = (second >> 16) & 0xffff
             if model_index >= props:
                 raise PreparationError(f"{stage} prop model index {model_index} >= {props}")
             result.append({
@@ -117,6 +119,13 @@ def object_dependencies(stage: str, data: bytes, props: int, chrs: int) -> list[
                 "setup_offset": offset, "record_bytes": byte_count,
             })
         elif object_type == 9:
+            # GuardRecord layout (src/bondtypes.h:3170-3189): word 1 is
+            # chrnum/pad, while word 2 is bodyID/AIListID.  The existing
+            # object summary intentionally keeps key0=chrnum for generic
+            # object semantics; dependency preparation must use the source
+            # bodyID instead.
+            body_ai = read_be32(data, offset + 8)
+            model_index = (body_ai >> 16) & 0xffff
             if model_index >= chrs:
                 raise PreparationError(f"{stage} character model index {model_index} >= {chrs}")
             result.append({

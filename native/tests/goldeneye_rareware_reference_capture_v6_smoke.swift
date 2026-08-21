@@ -205,8 +205,8 @@ struct GoldenEyeRarewareReferenceCaptureV6Smoke {
                 precondition(setup.tileState.bounds.ulsQ2 == 2 && setup.tileState.bounds.ultQ2 == 2 &&
                              setup.tileState.bounds.lrsQ2 == 126 && setup.tileState.bounds.lrtQ2 == 126,
                              "letter draw \(drawIndex) source tile bounds drifted")
-                precondition(renderState.raw_othermode_h == 0x0011_0000,
-                             "letter draw \(drawIndex) lost source LOD-enable word")
+                precondition(renderState.raw_othermode_h == 0x0019_2c00,
+                             "letter draw \(drawIndex) lost source perspective/filter/LOD word")
                 let hasLODSelector = [
                     renderState.cycle0_color_a, renderState.cycle0_color_b,
                     renderState.cycle0_color_c, renderState.cycle0_color_d,

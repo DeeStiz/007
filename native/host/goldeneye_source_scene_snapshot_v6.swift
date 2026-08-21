@@ -51,7 +51,11 @@ public struct GoldenEyeSourceSceneGPUVertexV6: Sendable, Equatable {
     public let normal: SIMD4<Float>
     public let color: SIMD4<Float>
 
-    public init(source: GESourceVertexV6) {
+    public init(
+        source: GESourceVertexV6,
+        eyeSpaceZQ16: Int32? = nil,
+        fogCoordinateQ16: Int32? = nil
+    ) {
         let position = Self.q16Values(source.position_q16, count: 3)
         let texcoord = Self.q16Values(source.texcoord_q16, count: 2)
         let normal = Self.q16Values(source.normal_q16, count: 3)
@@ -59,10 +63,16 @@ public struct GoldenEyeSourceSceneGPUVertexV6: Sendable, Equatable {
             Self.q16(position[0]), Self.q16(position[1]), Self.q16(position[2]), 1
         )
         self.texcoord = SIMD4(
-            Self.q16(texcoord[0]), Self.q16(texcoord[1]), 0, 1
+            Self.q16(texcoord[0]), Self.q16(texcoord[1]), 0,
+            // The existing fourth texture lane is unused by the source
+            // shader. Keep the GPU vertex stride at 64 bytes while carrying
+            // the optional fog coordinate in a dedicated metadata lane;
+            // normal.w remains a true homogeneous-normal component (zero).
+            fogCoordinateQ16.map(Self.q16) ?? 1
         )
         self.normal = SIMD4(
-            Self.q16(normal[0]), Self.q16(normal[1]), Self.q16(normal[2]), 0
+            Self.q16(normal[0]), Self.q16(normal[1]), Self.q16(normal[2]),
+            0
         )
         self.color = Self.rgba(source.color_rgba)
     }
@@ -125,9 +135,16 @@ public struct GoldenEyeSourceSceneLightingFrameContextV6: Sendable, Equatable {
         geometryModesByState: [UInt32: UInt32],
         modelViewQ16ByState: [UInt32: [Int32]]
     ) throws {
+        // A single decoded GBI packet is bounded to 2,048 states, but a
+        // source stage composition explicitly remaps the sidecars from the
+        // environment plus each visible static-prop packet into one value
+        // namespace. Keep a finite composed bound while admitting the
+        // source-authored state records needed by that packet; missing or
+        // malformed entries still fail at the renderer boundary.
+        let maxComposedStateCount = 16_384
         guard nativeTick > 0, pairPhase <= 1,
-              geometryModesByState.count <= 2_048,
-              modelViewQ16ByState.count <= 2_048,
+              geometryModesByState.count <= maxComposedStateCount,
+              modelViewQ16ByState.count <= maxComposedStateCount,
               geometryModesByState.keys.allSatisfy({ $0 != 0 }),
               modelViewQ16ByState.keys.allSatisfy({ $0 != 0 }),
               modelViewQ16ByState.values.allSatisfy({ $0.count == 16 }) else {
@@ -181,6 +198,10 @@ public final class GoldenEyeSourceSceneSnapshotV6: @unchecked Sendable {
 
     public let gpuVertices: [GoldenEyeSourceSceneGPUVertexV6]
     public let gpuIndices: [GoldenEyeSourceSceneGPUIndexV6]
+    /// Optional additive stage fog coordinate, parallel to `vertices`. Title
+    /// and legacy snapshots leave this nil and retain their existing hashes.
+    public let eyeSpaceZQ16: [Int32]?
+    public let fogCoordinateQ16: [Int32]?
 
     public init(
         summary: GESourceFrameSummaryV6,
@@ -194,7 +215,9 @@ public final class GoldenEyeSourceSceneSnapshotV6: @unchecked Sendable {
         textEvents: [GESourceTextEventV6],
         audioEvents: [GESourceAudioEventV6],
         diagnostics: [GESourceDiagnosticV6],
-        lightingFrameContext: GoldenEyeSourceSceneLightingFrameContextV6? = nil
+        lightingFrameContext: GoldenEyeSourceSceneLightingFrameContextV6? = nil,
+        eyeSpaceZQ16: [Int32]? = nil,
+        fogCoordinateQ16: [Int32]? = nil
     ) throws {
         try Self.validate(
             summary: summary,
@@ -209,6 +232,16 @@ public final class GoldenEyeSourceSceneSnapshotV6: @unchecked Sendable {
             audioEvents: audioEvents,
             diagnostics: diagnostics
         )
+        if let eyeSpaceZQ16, eyeSpaceZQ16.count != vertices.count {
+            throw GoldenEyeSourceSceneSnapshotV6Error.countMismatch(
+                "eye-space fog coordinates", expected: vertices.count, actual: eyeSpaceZQ16.count
+            )
+        }
+        if let fogCoordinateQ16, fogCoordinateQ16.count != vertices.count {
+            throw GoldenEyeSourceSceneSnapshotV6Error.countMismatch(
+                "fog coordinates", expected: vertices.count, actual: fogCoordinateQ16.count
+            )
+        }
 
         self.summary = summary
         self.resources = resources
@@ -222,6 +255,8 @@ public final class GoldenEyeSourceSceneSnapshotV6: @unchecked Sendable {
         self.audioEvents = audioEvents
         self.diagnostics = diagnostics
         self.lightingFrameContext = lightingFrameContext
+        self.eyeSpaceZQ16 = eyeSpaceZQ16
+        self.fogCoordinateQ16 = fogCoordinateQ16
 
         self.resourceHashes = resources.map(Self.hash(resource:))
         self.transformHashes = transforms.map(Self.hash(transform:))
@@ -245,9 +280,27 @@ public final class GoldenEyeSourceSceneSnapshotV6: @unchecked Sendable {
         for hash in self.textEventHashes { aggregate = GEV6Hash.u64(aggregate, hash) }
         for hash in self.audioEventHashes { aggregate = GEV6Hash.u64(aggregate, hash) }
         for hash in self.diagnosticHashes { aggregate = GEV6Hash.u64(aggregate, hash) }
+        if let eyeSpaceZQ16 {
+            aggregate = GEV6Hash.u64(aggregate, GEV6Hash.offset ^ 0x4559_455a)
+            for value in eyeSpaceZQ16 {
+                aggregate = GEV6Hash.u32(aggregate, UInt32(bitPattern: value))
+            }
+        }
+        if let fogCoordinateQ16 {
+            aggregate = GEV6Hash.u64(aggregate, GEV6Hash.offset ^ 0x464f_4751)
+            for value in fogCoordinateQ16 {
+                aggregate = GEV6Hash.u32(aggregate, UInt32(bitPattern: value))
+            }
+        }
         self.copiedRecordAggregateHash = aggregate
 
-        self.gpuVertices = vertices.map(GoldenEyeSourceSceneGPUVertexV6.init(source:))
+        self.gpuVertices = vertices.enumerated().map { index, vertex in
+            GoldenEyeSourceSceneGPUVertexV6(
+                source: vertex,
+                eyeSpaceZQ16: eyeSpaceZQ16?[index],
+                fogCoordinateQ16: fogCoordinateQ16?[index]
+            )
+        }
         self.gpuIndices = indices.map(GoldenEyeSourceSceneGPUIndexV6.init(source:))
     }
 
@@ -294,6 +347,8 @@ public final class GoldenEyeSourceSceneSnapshotV6: @unchecked Sendable {
         self.audioEvents = source.audioEvents
         self.diagnostics = source.diagnostics
         self.lightingFrameContext = lightingFrameContext
+        self.eyeSpaceZQ16 = source.eyeSpaceZQ16
+        self.fogCoordinateQ16 = source.fogCoordinateQ16
 
         self.resourceHashes = source.resourceHashes
         self.transformHashes = transforms.map(Self.hash(transform:))

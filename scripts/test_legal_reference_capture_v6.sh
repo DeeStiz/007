@@ -53,6 +53,7 @@ SWIFT_FLAGS=(
     "${PROJECT_ROOT}/native/host/goldeneye_source_frontend_matrices_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_source_product_provider_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_source_scene_snapshot_v6.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_stage_fog_lowering_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_source_texture_coordinates_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_source_scene_texture_binding_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_rareware_frame_v6.swift" \

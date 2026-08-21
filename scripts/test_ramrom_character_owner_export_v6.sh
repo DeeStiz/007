@@ -16,6 +16,7 @@ SOURCES=(
     "${PROJECT_ROOT}/native/host/goldeneye_ramrom_visible_dependency_catalog_v6.swift"
     "${PROJECT_ROOT}/native/host/goldeneye_stage_model_sidecar_catalog_v6.swift"
     "${PROJECT_ROOT}/native/host/goldeneye_stage_setup_dependency_catalog_v6.swift"
+    "${PROJECT_ROOT}/native/host/goldeneye_ramrom_character_head_selection_v6.swift"
     "${PROJECT_ROOT}/native/host/goldeneye_ramrom_character_scene_v6.swift"
     "${PROJECT_ROOT}/native/host/goldeneye_ramrom_character_owner_export_v6.swift"
     "${PROJECT_ROOT}/native/tests/goldeneye_ramrom_character_owner_export_v6_smoke.swift"

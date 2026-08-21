@@ -30,7 +30,7 @@ expected = {
     "source_setup_status": "PASS",
     "payload_status": "PASS",
     "dependency_count": "1783",
-    "unique_dependency_count": "206",
+    "unique_dependency_count": "141",
     "prop_model_table_count": "340",
     "character_model_table_count": "80",
 }
@@ -55,5 +55,5 @@ for line in rows:
         raise SystemExit(f"decoded dependency digest mismatch: {decoded}")
 if not all(counts[(stage, kind)] > 0 for stage in ("Dam", "Facility", "Runway", "Bunker I", "Silo", "Frigate", "Train") for kind in ("prop", "character")):
     raise SystemExit(f"stage dependency coverage incomplete: {counts}")
-print("native_stage_setup_dependencies: PASS references=1783 unique=206 stages=7 props=1484 characters=299")
+print("native_stage_setup_dependencies: PASS references=1783 unique=141 stages=7 props=1484 characters=299")
 PY

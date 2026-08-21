@@ -16,6 +16,21 @@ public struct GoldenEyeRamRomGameplayReadinessV6: Sendable, Equatable {
     }
 }
 
+/// Copied dynamic door state available to the scoped stage renderer. This is
+/// intentionally separate from guard readiness and carries no C pointer.
+public struct GoldenEyeRamRomDoorTransformV7: Sendable, Equatable {
+    public let sourceRecordOffset: UInt32
+    public let objectID: UInt32
+    public let modelHandle: UInt32
+    public let portalNumber: UInt32
+    public let openState: UInt32
+    public let openPositionQ16: Int32
+    public let transformQ16: [Int32]
+    public let sourceAnchor: Bool
+    public let interpolated: Bool
+    public let sourceHash: UInt64
+}
+
 public struct GoldenEyeRamRomGameplayFrameV6 {
     public let nativeTick: UInt64
     public let referenceTick: UInt64
@@ -27,6 +42,7 @@ public struct GoldenEyeRamRomGameplayFrameV6 {
     public let playerCamera: GoldenEyeRamRomPlayerCameraPublicationV6
     public let guardDoorEventHash: UInt64
     public let weaponEffectEventHash: UInt64
+    public let dynamicDoors: [GoldenEyeRamRomDoorTransformV7]
     public private(set) var readiness: GoldenEyeRamRomGameplayReadinessV6
     public let stateHash: UInt64
 }
@@ -35,6 +51,10 @@ public struct GoldenEyeRamRomGameplayRestoreSnapshotV6 {
     public let nativeTick: UInt64
     public let gameplay: GERamRomGameplaySnapshotV6
     public let playerCamera: GEPlayerCameraSnapshotV6
+    /// Copied door-only owner state keeps dynamic door transforms coherent
+    /// across rewind without exposing the large C owner allocation.
+    public let dynamicDoors: [GoldenEyeRamRomDoorTransformV7]
+    public let doorOwnerStateBytes: Data?
 }
 
 public enum GoldenEyeRamRomGameplayOrchestratorErrorV6: Error, Sendable, Equatable, CustomStringConvertible {
@@ -82,6 +102,9 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
        1.9-MB optional C state on the owner-thread stack. */
     private var guardDoorOwner: UnsafeMutablePointer<GEGuardDoorOwnerStateV6>?
     private let ownsGuardDoorOwner: Bool
+    private var doorOnlyOwner: UnsafeMutablePointer<GEGuardDoorOwnerStateV6>?
+    private let ownsDoorOnlyOwner: Bool
+    private let doorSourceRows: [GEGuardDoorOwnerDoorSourceV6]
     private var weaponSetup: GERamRomWeaponEffectSetupV6?
     private var weaponEffectOwner: GERamRomWeaponEffectOwnerStateV6?
     private let weaponFrames: [UInt64: GERamRomWeaponEffectFrameV6]
@@ -100,11 +123,14 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
         pages: GoldenEyeRamRomPlayerCameraPagesV6,
         atNativeTick nativeTick: UInt64,
         guardDoorOwner: UnsafeMutablePointer<GEGuardDoorOwnerStateV6>? = nil,
+        doorOnlyOwner: UnsafeMutablePointer<GEGuardDoorOwnerStateV6>? = nil,
+        doorSourceRows: [GEGuardDoorOwnerDoorSourceV6] = [],
         weaponSetup: GERamRomWeaponEffectSetupV6? = nil,
         weaponInitialFrame: GERamRomWeaponEffectFrameV6? = nil,
         weaponFrames: [UInt64: GERamRomWeaponEffectFrameV6] = [:],
         additionalMissingFields: [String] = [],
-        ownsGuardDoorOwner: Bool = false
+        ownsGuardDoorOwner: Bool = false,
+        ownsDoorOnlyOwner: Bool = false
     ) throws {
         guard request.demoID > 0, request.stageID == pages.stageID else {
             throw GoldenEyeRamRomGameplayOrchestratorErrorV6.sourceNotReady(["route_identity"])
@@ -121,6 +147,9 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
         self.weaponFrames = weaponFrames
         self.guardDoorOwner = guardDoorOwner
         self.ownsGuardDoorOwner = ownsGuardDoorOwner
+        self.doorOnlyOwner = doorOnlyOwner
+        self.ownsDoorOnlyOwner = ownsDoorOnlyOwner
+        self.doorSourceRows = doorSourceRows
         self.weaponSetup = weaponSetup
         self.weaponEffectOwner = nil
         self.readiness = GoldenEyeRamRomGameplayReadinessV6(
@@ -200,6 +229,7 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
             gameplayEvent: event, playerCamera: initialPublication,
             guardDoorHash: self.guardDoorOwner?.pointee.state_hash ?? 0,
             weaponEffectHash: self.weaponEffectOwner?.snapshot.state_hash ?? 0,
+            dynamicDoors: dynamicDoorPublications(),
             readiness: readiness
         )
     }
@@ -209,6 +239,73 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
             pointer.deinitialize(count: 1)
             pointer.deallocate()
         }
+        if ownsDoorOnlyOwner, let pointer = doorOnlyOwner {
+            UnsafeMutableRawPointer(pointer).deallocate()
+        }
+    }
+
+    private func stepDoorOwner(relativeTick: UInt64) throws {
+        guard let pointer = doorOnlyOwner, relativeTick > 0 else { return }
+        var event = GEGuardDoorOwnerEventV6()
+        let doorCount = pointer.pointee.door_count
+        let status: UInt32
+        if relativeTick & 1 == 1 {
+            status = ge_guard_door_owner_v6_step(
+                relativeTick, nil, 0, nil, doorCount, nil, 0, nil, 0,
+                pointer, &event
+            )
+        } else {
+            status = doorSourceRows.withUnsafeBufferPointer { doorBuffer in
+                ge_guard_door_owner_v6_step(
+                    relativeTick, nil, 0, doorBuffer.baseAddress, doorCount,
+                    nil, 0, nil, 0, pointer, &event
+                )
+            }
+        }
+        guard status == UInt32(GE_STATUS_OK) else {
+            throw GoldenEyeRamRomGameplayOrchestratorErrorV6.cStatus(status, "door owner step")
+        }
+    }
+
+    private func dynamicDoorPublications() -> [GoldenEyeRamRomDoorTransformV7] {
+        guard let pointer = doorOnlyOwner else { return [] }
+        let total = Int(pointer.pointee.door_count)
+        guard total > 0 else { return [] }
+        var result: [GoldenEyeRamRomDoorTransformV7] = []
+        var first = 0
+        while first < total {
+            let capacity = min(Int(GE_GUARD_DOOR_OWNER_V6_PAGE_ITEMS), total - first)
+            var states = Array(repeating: GEGuardDoorOwnerDoorStateV6(), count: capacity)
+            var copied: UInt32 = 0
+            let status = states.withUnsafeMutableBufferPointer { buffer in
+                ge_guard_door_owner_v6_copy_door_page(
+                    pointer, UInt32(first), UInt32(capacity), buffer.baseAddress, &copied
+                )
+            }
+            guard status == UInt32(GE_STATUS_OK), copied > 0 else {
+                return []
+            }
+            result.append(contentsOf: states.prefix(Int(copied)).map { state in
+                GoldenEyeRamRomDoorTransformV7(
+                    sourceRecordOffset: state.source.source_record_offset,
+                    objectID: state.source.object_id,
+                    modelHandle: state.source.model_handle,
+                    portalNumber: state.source.portal_number,
+                    openState: state.source.open_state,
+                    openPositionQ16: state.source.open_position_q16,
+                    transformQ16: Self.int32Values(state.transform_q16),
+                    sourceAnchor: state.source_anchor != 0,
+                    interpolated: state.interpolated != 0,
+                    sourceHash: state.source.source_hash64
+                )
+            })
+            first += Int(copied)
+        }
+        return result
+    }
+
+    private static func int32Values<T>(_ value: T) -> [Int32] {
+        withUnsafeBytes(of: value) { Array($0.bindMemory(to: Int32.self)) }
     }
 
     /// Build a production route from the guarded external asset roots. Missing
@@ -263,6 +360,8 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
         )
         var missing: [String] = []
         var guardPointer: UnsafeMutablePointer<GEGuardDoorOwnerStateV6>?
+        var doorOnlyPointer: UnsafeMutablePointer<GEGuardDoorOwnerStateV6>?
+        var doorSourceRows: [GEGuardDoorOwnerDoorSourceV6] = []
         let guardPages = try GoldenEyeRamRomGuardDoorPagesV6.make(
             stagePacket: packet, dependencies: dependencies, sidecars: sidecars,
             visibleDependencies: visible, demoID: request.demoID,
@@ -278,6 +377,18 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
             guardPointer = pointer
         } else {
             missing.append(contentsOf: guardPages.missingFields)
+            do {
+                let allocation = try GoldenEyeRamRomGuardDoorPagesV6.makeDoorOnlyOwnerPointer(
+                    from: guardPages, rngSeed: UInt64(header.randomizer_seed)
+                )
+                doorOnlyPointer = allocation.pointer
+                doorSourceRows = allocation.doors
+                if allocation.skippedDoorCount > 0 {
+                    missing.append("door_owner_skipped_invalid_rows_\(allocation.skippedDoorCount)")
+                }
+            } catch {
+                missing.append("door_owner_v7: \(error)")
+            }
         }
         let weaponModels = Self.weaponModels(sidecars: sidecars)
         let mapping = GoldenEyeRamRomSourceWeaponMappingV6.resolveExact(
@@ -289,12 +400,26 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
             missing.append(contentsOf: mapping.missingFields)
             missing.append("weapon_source_runtime_page")
         }
-        return try Self(
-            request: request, recording: recording, pages: playerPages,
-            atNativeTick: nativeTick, guardDoorOwner: guardPointer,
-            additionalMissingFields: Array(Set(missing)).sorted(),
-            ownsGuardDoorOwner: guardPointer != nil
-        )
+        do {
+            return try Self(
+                request: request, recording: recording, pages: playerPages,
+                atNativeTick: nativeTick, guardDoorOwner: guardPointer,
+                doorOnlyOwner: doorOnlyPointer,
+                doorSourceRows: guardPointer == nil ? doorSourceRows : guardPages.doors,
+                additionalMissingFields: Array(Set(missing)).sorted(),
+                ownsGuardDoorOwner: guardPointer != nil,
+                ownsDoorOnlyOwner: doorOnlyPointer != nil
+            )
+        } catch {
+            if let pointer = guardPointer {
+                pointer.deinitialize(count: 1)
+                pointer.deallocate()
+            }
+            if let pointer = doorOnlyPointer {
+                UnsafeMutableRawPointer(pointer).deallocate()
+            }
+            throw error
+        }
     }
 
     @discardableResult
@@ -307,6 +432,7 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
                 startNativeTick + expectedRelativeTick, nativeTick
             )
         }
+        try stepDoorOwner(relativeTick: expectedRelativeTick)
         var gameplayEvent = GERamRomGameplayEventV6()
         let gameplayStatus: UInt32 = recording.withUnsafeBytes { raw in
             guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
@@ -387,8 +513,26 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
         }
         let gameplayInput = externalInput ?? Self.inputFromGameplaySnapshot(gameplayState.snapshot)
         _ = try playerOwner.step(nativeTick: expectedRelativeTick, input: gameplayInput)
+        let playerCameraSnapshot = playerOwner.snapshot
+        var gameplayPlayerCameraSnapshot = Self.gameplayPlayerCameraSnapshot(
+            from: playerCameraSnapshot
+        )
+        let playerCameraStatus = withUnsafeMutablePointer(to: &gameplayState) { statePointer in
+            return withUnsafeMutablePointer(to: &gameplayPlayerCameraSnapshot) { cameraPointer in
+                withUnsafeMutablePointer(to: &gameplayEvent) { eventPointer in
+                    ge_ramrom_gameplay_v6_apply_player_camera_snapshot_v7(
+                        statePointer, cameraPointer, eventPointer
+                    )
+                }
+            }
+        }
+        guard playerCameraStatus == UInt32(GE_STATUS_OK) else {
+            throw GoldenEyeRamRomGameplayOrchestratorErrorV6.cStatus(
+                playerCameraStatus, "apply player camera snapshot"
+            )
+        }
         let rebasedPublication = GoldenEyeRamRomPlayerCameraPublicationV6(
-            snapshot: playerOwner.snapshot, nativeTickOverride: nativeTick
+            snapshot: playerCameraSnapshot, nativeTickOverride: nativeTick
         )
         var snapshot = GERamRomGameplaySnapshotV6()
         _ = ge_ramrom_gameplay_v6_copy_snapshot(&gameplayState, &snapshot)
@@ -397,6 +541,7 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
             gameplayEvent: gameplayEvent, playerCamera: rebasedPublication,
             guardDoorHash: guardDoorOwner?.pointee.state_hash ?? 0,
             weaponEffectHash: weaponEventHash,
+            dynamicDoors: dynamicDoorPublications(),
             readiness: readiness
         )
         expectedRelativeTick += 1
@@ -417,9 +562,20 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
 
     public func takeRestoreSnapshot() -> GoldenEyeRamRomGameplayRestoreSnapshotV6? {
         guard let frame = lastFrame else { return nil }
+        let doorOwnerStateBytes: Data?
+        if let pointer = doorOnlyOwner {
+            doorOwnerStateBytes = Data(
+                bytes: UnsafeRawPointer(pointer),
+                count: MemoryLayout<GEGuardDoorOwnerStateV6>.stride
+            )
+        } else {
+            doorOwnerStateBytes = nil
+        }
         let snapshot = GoldenEyeRamRomGameplayRestoreSnapshotV6(
             nativeTick: frame.nativeTick, gameplay: frame.gameplaySnapshot,
-            playerCamera: frame.playerCamera.sourceSnapshot
+            playerCamera: frame.playerCamera.sourceSnapshot,
+            dynamicDoors: frame.dynamicDoors,
+            doorOwnerStateBytes: doorOwnerStateBytes
         )
         restoreSnapshot = snapshot
         active = false
@@ -429,6 +585,23 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
     public func restore(_ snapshot: GoldenEyeRamRomGameplayRestoreSnapshotV6) throws {
         guard snapshot.gameplay.demo_id == request.demoID,
               snapshot.gameplay.stage_id == request.stageID else {
+            throw GoldenEyeRamRomGameplayOrchestratorErrorV6.restoreMismatch
+        }
+        if let bytes = snapshot.doorOwnerStateBytes {
+            guard let pointer = doorOnlyOwner,
+                  bytes.count == MemoryLayout<GEGuardDoorOwnerStateV6>.stride else {
+                throw GoldenEyeRamRomGameplayOrchestratorErrorV6.restoreMismatch
+            }
+            bytes.withUnsafeBytes { raw in
+                guard let base = raw.baseAddress else { return }
+                UnsafeMutableRawPointer(pointer).copyMemory(
+                    from: base, byteCount: MemoryLayout<GEGuardDoorOwnerStateV6>.stride
+                )
+            }
+            guard dynamicDoorPublications() == snapshot.dynamicDoors else {
+                throw GoldenEyeRamRomGameplayOrchestratorErrorV6.restoreMismatch
+            }
+        } else if !snapshot.dynamicDoors.isEmpty || doorOnlyOwner != nil {
             throw GoldenEyeRamRomGameplayOrchestratorErrorV6.restoreMismatch
         }
         var gameplaySnapshot = snapshot.gameplay
@@ -450,11 +623,18 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
         gameplayEvent: GERamRomGameplayEventV6,
         playerCamera: GoldenEyeRamRomPlayerCameraPublicationV6,
         guardDoorHash: UInt64, weaponEffectHash: UInt64,
+        dynamicDoors: [GoldenEyeRamRomDoorTransformV7],
         readiness: GoldenEyeRamRomGameplayReadinessV6
     ) -> GoldenEyeRamRomGameplayFrameV6 {
         let hash = mixWords([
             nativeTick, UInt64(gameplaySnapshot.state_hash), playerCamera.ownerStateHash,
-            guardDoorHash, weaponEffectHash, UInt64(readiness.missingFields.count),
+            guardDoorHash, weaponEffectHash, UInt64(dynamicDoors.count),
+            dynamicDoors.reduce(UInt64(0)) { hash, door in
+                mixWords([hash, UInt64(door.sourceRecordOffset), UInt64(door.openPositionQ16),
+                          UInt64(door.openState), UInt64(door.portalNumber)] +
+                    door.transformQ16.map { UInt64(bitPattern: Int64($0)) } + [door.sourceHash])
+            },
+            UInt64(readiness.missingFields.count),
         ])
         return GoldenEyeRamRomGameplayFrameV6(
             nativeTick: nativeTick, referenceTick: nativeTick >> 1,
@@ -462,6 +642,7 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
             stageID: request.stageID, gameplaySnapshot: gameplaySnapshot,
             gameplayEvent: gameplayEvent, playerCamera: playerCamera,
             guardDoorEventHash: guardDoorHash, weaponEffectEventHash: weaponEffectHash,
+            dynamicDoors: dynamicDoors,
             readiness: readiness, stateHash: hash
         )
     }
@@ -510,6 +691,44 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
         input.pressed_buttons = snapshot.pair_phase == 0 ? snapshot.input_buttons : 0
         input.held_buttons = snapshot.pair_phase == 0 ? snapshot.input_buttons : 0
         return input
+    }
+
+    private static func gameplayPlayerCameraSnapshot(
+        from source: GEPlayerCameraSnapshotV6
+    ) -> GERamRomGameplayPlayerCameraSnapshotV7 {
+        var value = GERamRomGameplayPlayerCameraSnapshotV7()
+        value.header.abi_version = source.header.abi_version
+        value.header.struct_size = UInt32(
+            MemoryLayout<GERamRomGameplayPlayerCameraSnapshotV7>.size
+        )
+        value.record_version = UInt32(GE_RAMROM_GAMEPLAY_PLAYER_CAMERA_V7_RECORD_VERSION)
+        value.flags = source.flags
+        value.demo_id = source.demo_id
+        value.stage_id = source.stage_id
+        value.native_tick = source.native_tick
+        value.reference_tick = source.reference_tick
+        value.pair_phase = source.pair_phase
+        value.source_anchor = source.source_anchor
+        value.current_room = source.current_room
+        value.current_pad = source.current_pad
+        value.weapon_model_handle = source.weapon_model_handle
+        value.weapon_action = source.weapon_action
+        value.player_health = source.player_health
+        value.hud_ammo = source.hud_ammo
+        value.player_animation = source.player_animation
+        value.player_position_q16 = source.player_position_q16
+        value.player_velocity_q16 = source.player_velocity_q16
+        value.camera_position_q16 = source.camera_position_q16
+        value.camera_forward_q16 = source.camera_forward_q16
+        value.camera_up_q16 = source.camera_up_q16
+        value.yaw_q16 = source.yaw_q16
+        value.pitch_q16 = source.pitch_q16
+        value.source_hash = source.source_hash
+        value.state_hash = source.state_hash
+        value.render_hash = source.render_hash
+        value.reserved0 = source.reserved0
+        value.reserved1 = source.reserved1
+        return value
     }
 
     private func gameplayInputForWeapon(

@@ -14,6 +14,9 @@ struct GE120DisplayTiming: Sendable {
     let drawableHeight: Int
     let callbackSequence: UInt64
     let measurementEpochGeneration: UInt64
+    /// Monotonic focus/pause generation. A drawable acquired before a focus
+    /// transition must never be rendered after the app resumes.
+    let pauseGeneration: UInt64
 
     init(
         targetTimestamp: CFTimeInterval,
@@ -21,7 +24,8 @@ struct GE120DisplayTiming: Sendable {
         drawableWidth: Int,
         drawableHeight: Int,
         callbackSequence: UInt64,
-        measurementEpochGeneration: UInt64 = 0
+        measurementEpochGeneration: UInt64 = 0,
+        pauseGeneration: UInt64 = 0
     ) {
         self.targetTimestamp = targetTimestamp
         self.targetPresentationTimestamp = targetPresentationTimestamp
@@ -29,6 +33,7 @@ struct GE120DisplayTiming: Sendable {
         self.drawableHeight = drawableHeight
         self.callbackSequence = callbackSequence
         self.measurementEpochGeneration = measurementEpochGeneration
+        self.pauseGeneration = pauseGeneration
     }
 }
 
@@ -144,6 +149,7 @@ final class GE120DisplayLinkRuntime: NSObject, CAMetalDisplayLinkDelegate, @unch
     private var isRunning = false
     private var isInvalidated = false
     private var pausedState = false
+    private var pauseGeneration: UInt64 = 0
     private var pendingDrawableSize: CGSize?
     private var pendingFrameRateRange: CAFrameRateRange?
     private var pendingPaused: Bool?
@@ -290,10 +296,25 @@ final class GE120DisplayLinkRuntime: NSObject, CAMetalDisplayLinkDelegate, @unch
     }
 
     func requestPaused(_ paused: Bool) {
+        var cancelledCallbacks: [MarshaledCallback] = []
         condition.lock()
+        pauseGeneration &+= 1
         pendingPaused = paused
+        if paused {
+            // A CAMetalDisplayLink callback owns a drawable as soon as it is
+            // delivered. Do not carry pre-focus-loss drawables across the
+            // pause/resume boundary; WindowServer may have already reclaimed
+            // their backing surfaces while the app was inactive.
+            cancelledCallbacks = marshaledCallbacks
+            marshaledCallbacks.removeAll(keepingCapacity: true)
+            marshalDrainScheduled = false
+        }
         let runLoop = ownerRunLoop
         condition.unlock()
+        for callback in cancelledCallbacks {
+            callback.cancel()
+            callback.complete(result: false)
+        }
         if let runLoop {
             CFRunLoopWakeUp(runLoop)
         }
@@ -517,6 +538,7 @@ final class GE120DisplayLinkRuntime: NSObject, CAMetalDisplayLinkDelegate, @unch
             let owner = ownerThreadIdentifier
             let running = isRunning && !isInvalidated
             let measurementGeneration = measurementEpochGeneration
+            let callbackPauseGeneration = pauseGeneration
             callbackSequence &+= 1
             let sequence = callbackSequence
             callbackCount &+= 1
@@ -548,7 +570,8 @@ final class GE120DisplayLinkRuntime: NSObject, CAMetalDisplayLinkDelegate, @unch
                 drawableWidth: drawable.texture.width,
                 drawableHeight: drawable.texture.height,
                 callbackSequence: sequence,
-                measurementEpochGeneration: measurementGeneration
+                measurementEpochGeneration: measurementGeneration,
+                pauseGeneration: callbackPauseGeneration
             )
 
             guard running else { return }
@@ -635,16 +658,22 @@ final class GE120DisplayLinkRuntime: NSObject, CAMetalDisplayLinkDelegate, @unch
         condition.lock()
         let presentationGeneration = measurementEpochGeneration
         let staleEpoch = timing.measurementEpochGeneration != presentationGeneration
-        if staleEpoch { staleCallbackDropCount &+= 1 }
+        let stalePause = timing.pauseGeneration != pauseGeneration
+        if staleEpoch || stalePause { staleCallbackDropCount &+= 1 }
         condition.unlock()
-        guard !staleEpoch else { return false }
+        guard !staleEpoch, !stalePause else { return false }
+        condition.lock()
+        let pauseRequested = pausedState || pendingPaused == true
+        condition.unlock()
+        guard !pauseRequested else { return false }
         // Register before the renderer calls present(). MTLDrawable documents
         // this as the presentation callback; registering after present can
         // miss it entirely and leave Release evidence with no presented times.
         drawable.addPresentedHandler { [weak self] presentedDrawable in
             self?.recordPresentedTime(
                 presentedDrawable.presentedTime,
-                generation: presentationGeneration
+                generation: presentationGeneration,
+                pauseGeneration: timing.pauseGeneration
             )
         }
         defer {
@@ -683,9 +712,23 @@ final class GE120DisplayLinkRuntime: NSObject, CAMetalDisplayLinkDelegate, @unch
         return true
     }
 
-    private func recordPresentedTime(_ time: CFTimeInterval, generation: UInt64) {
+    private func recordPresentedTime(
+        _ time: CFTimeInterval,
+        generation: UInt64,
+        pauseGeneration callbackPauseGeneration: UInt64
+    ) {
         condition.lock()
         guard generation == measurementEpochGeneration else {
+            condition.unlock()
+            return
+        }
+        // A presented handler can run after Core Animation has completed a
+        // drawable that was queued before focus loss. Keep that completion
+        // out of the resumed epoch even when the measurement epoch itself did
+        // not change. This prevents a delayed pre-pause timestamp from
+        // bridging the pause gap or inflating a one-second window.
+        guard callbackPauseGeneration == pauseGeneration else {
+            staleCallbackDropCount &+= 1
             condition.unlock()
             return
         }

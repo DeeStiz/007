@@ -76,6 +76,7 @@ CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}" "${ROUTE_SWIFTC}" \
     -import-objc-header "${PROJECT_ROOT}/native/tests/goldeneye_title_route_v5_bridging.h" \
     -Xcc "-I${PROJECT_ROOT}/native/include" \
     "${PROJECT_ROOT}/native/host/save_store.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_source_timeline_v6.swift" \
     "${PROJECT_ROOT}/native/host/display_link_runtime.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_attract_route.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_cast_title_hash.swift" \
@@ -90,6 +91,7 @@ CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}" "${ROUTE_SWIFTC}" \
     -import-objc-header "${PROJECT_ROOT}/native/tests/goldeneye_title_route_v5_bridging.h" \
     -Xcc "-I${PROJECT_ROOT}/native/include" \
     "${PROJECT_ROOT}/native/host/save_store.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_source_timeline_v6.swift" \
     "${PROJECT_ROOT}/native/host/display_link_runtime.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_attract_route.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_cast_title_hash.swift" \

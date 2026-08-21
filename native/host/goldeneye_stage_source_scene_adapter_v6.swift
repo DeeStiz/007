@@ -96,9 +96,43 @@ enum GoldenEyeStageSourceSceneSnapshotAdapterV6 {
                 (id, GoldenEyeStageTextureCatalogV6.resourceHandle(textureID: id))
             }
         )
+        // The material packet describes the complete stage, while a scoped
+        // gameplay packet may retain only a handful of room triangles.  Build
+        // the exact source-state subset referenced by this packet before
+        // copying render states; carrying every stage material here can
+        // exhaust the bounded 2,048-state scene sidecar even though no draw
+        // can observe those states.
+        var materialStateIndicesByRoom: [UInt32: [UInt32]] = [:]
+        if let materialPacket {
+            let roomByState = Dictionary(
+                uniqueKeysWithValues: materialPacket.states.map { ($0.stateIndex, $0.roomIndex) }
+            )
+            for stateIndex in materialPacket.drawStateIndices {
+                if let roomIndex = roomByState[stateIndex] {
+                    materialStateIndicesByRoom[roomIndex, default: []].append(stateIndex)
+                }
+            }
+        }
+        var usedMaterialStateIndices = Set<UInt32>()
+        if materialPacket != nil {
+            var ordinalsByRoom: [UInt32: Int] = [:]
+            for command in packet.commands where command.primitive == .roomTriangle {
+                let ordinal: Int
+                if command.reserved & 0x8000_0000 != 0 {
+                    ordinal = Int(command.reserved & 0x7fff_ffff)
+                } else {
+                    ordinal = ordinalsByRoom[command.sourceIndex, default: 0]
+                    ordinalsByRoom[command.sourceIndex] = ordinal + 1
+                }
+                if let stateIndex = materialStateIndicesByRoom[command.sourceIndex]?[safe: ordinal] {
+                    usedMaterialStateIndices.insert(stateIndex)
+                }
+            }
+        }
         if let materialPacket {
             renderStates.reserveCapacity(min(materialPacket.states.count + 1, 2_048))
             for material in materialPacket.states {
+                guard usedMaterialStateIndices.contains(material.stateIndex) else { continue }
                 if let existing = uniqueMaterialHandles[material.stateHash] {
                     materialStateHandles[material.stateIndex] = existing
                     continue
@@ -111,17 +145,6 @@ enum GoldenEyeStageSourceSceneSnapshotAdapterV6 {
             }
         }
         var roomTriangleOrdinalsByRoom: [UInt32: Int] = [:]
-        var materialStateIndicesByRoom: [UInt32: [UInt32]] = [:]
-        if let materialPacket {
-            let roomByState = Dictionary(
-                uniqueKeysWithValues: materialPacket.states.map { ($0.stateIndex, $0.roomIndex) }
-            )
-            for stateIndex in materialPacket.drawStateIndices {
-                if let roomIndex = roomByState[stateIndex] {
-                    materialStateIndicesByRoom[roomIndex, default: []].append(stateIndex)
-                }
-            }
-        }
         for (commandIndex, command) in packet.commands.enumerated() {
             guard command.vertexCount == 3,
                   Int(command.vertexStart) + 3 <= vertices.count else {
@@ -316,7 +339,9 @@ enum GoldenEyeStageSourceSceneSnapshotAdapterV6 {
             textEvents: [],
             audioEvents: [],
             diagnostics: [],
-            lightingFrameContext: lighting
+            lightingFrameContext: lighting,
+            eyeSpaceZQ16: packet.eyeSpaceZQ16,
+            fogCoordinateQ16: packet.fogCoordinateQ16
         )
     }
 

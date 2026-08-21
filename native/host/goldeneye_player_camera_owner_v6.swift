@@ -175,27 +175,39 @@ public struct GoldenEyeRamRomPlayerCameraPagesV6: Sendable {
     public let attachments: [GERamRomGameplayAttachmentV6]
     public let source: GEPlayerCameraSourceV6
     public let stan: [GEPlayerCameraStanTileV6]
+    /// Additive source StandTilePoint.link topology. The frozen V6 tile rows
+    /// remain unchanged; the V7 owner uses this prevalidated sidecar to
+    /// constrain cross-room movement to authored STAN edges.
+    public let stanLinks: [GEPlayerCameraStanLinkV7]
     public let pads: [GEPlayerCameraPadV6]
     public let provenance: [String]
 }
 
 public enum GoldenEyeRamRomPlayerCameraPageBuilderV6 {
     private struct StanData {
-        let tiles: [(room: UInt32, points: [[Int32]], offset: UInt32)]
+        let tiles: [(room: UInt32, points: [[Int32]], links: [UInt16], offset: UInt32)]
         let minQ16: [Int32]
         let maxQ16: [Int32]
         let roomCount: UInt32
+        let firstTileBaseOffset: Int
+        /// Source ``setLevelScale`` value. STAN points remain in the
+        /// serialized level units; player/setup coordinates published to the
+        /// owner are runtime units (serialized / levelScale).
+        let levelScale: Double
 
         func floorY(x: Double, z: Double) -> (room: UInt32, y: Double)? {
+            let sourceX = x * levelScale
+            let sourceZ = z * levelScale
             var selected: (UInt32, Double)?
             for tile in tiles {
-                guard Self.inside(tile.points, x: x, z: z),
-                      let y = Self.planeY(tile.points, x: x, z: z) else {
+                guard Self.inside(tile.points, x: sourceX, z: sourceZ),
+                      let y = Self.planeY(tile.points, x: sourceX, z: sourceZ) else {
                     continue
                 }
                 if selected == nil || y > selected!.1 { selected = (tile.room, y) }
             }
-            return selected
+            guard let selected else { return nil }
+            return (selected.0, selected.1 / levelScale)
         }
 
         private static func inside(_ points: [[Int32]], x: Double, z: Double) -> Bool {
@@ -250,6 +262,7 @@ public enum GoldenEyeRamRomPlayerCameraPageBuilderV6 {
             throw GoldenEyeRamRomPlayerCameraOwnerErrorV6.missingSpawn(stagePacket.stageID, UInt32.max)
         }
         let stan = try parseSTAN(stagePacket: stagePacket)
+        let runtimeScale = 1.0 / stan.levelScale
         guard let setupResource = stagePacket.resources.first(where: { $0.kind == .setup }) else {
             throw GoldenEyeRamRomPlayerCameraOwnerErrorV6.missingResource(stagePacket.stageID, "setup")
         }
@@ -265,7 +278,7 @@ public enum GoldenEyeRamRomPlayerCameraPageBuilderV6 {
                 stagePacket.stageID, sourcePages.setup.initial_pad
             )
         }
-        let padPosition = q16Vector(sourcePad.position)
+        let padPosition = scaleQ16Vector(q16Vector(sourcePad.position), by: runtimeScale)
         let floor = stan.floorY(
             x: Double(padPosition[0]) / 65_536.0,
             z: Double(padPosition[2]) / 65_536.0
@@ -283,11 +296,15 @@ public enum GoldenEyeRamRomPlayerCameraPageBuilderV6 {
         var setup = sourcePages.setup
         setInt32Tuple(&setup.initial_position_q16, values: spawnPosition)
         setInt32Tuple(&setup.initial_forward_q16, values: q16Vector(sourcePad.look))
+        setInt32Tuple(&setup.world_min_q16, values: scaleQ16Vector(stan.minQ16, by: runtimeScale))
+        setInt32Tuple(&setup.world_max_q16, values: scaleQ16Vector(stan.maxQ16, by: runtimeScale))
         setup.initial_room = floor.room
         setup.spawn_hash = hashWords([
             UInt64(slot), UInt64(sourcePages.setup.initial_pad), UInt64(floor.room),
             UInt64(bitPattern: Int64(spawnPosition[0])), UInt64(bitPattern: Int64(spawnPosition[1])),
             UInt64(bitPattern: Int64(spawnPosition[2])),
+            UInt64(bitPattern: Int64(scaleQ16(65_536, by: stan.levelScale))),
+            UInt64(bitPattern: Int64(scaleQ16(65_536, by: runtimeScale))),
         ])
 
         var entities = sourcePages.entities
@@ -338,13 +355,23 @@ public enum GoldenEyeRamRomPlayerCameraPageBuilderV6 {
             stagePacket.setup.sourceHash, stagePacket.packetHash,
             sourcePages.setup.stan_source_hash, evidence.sourceHash,
             optionState.sourceHash,
+            UInt64(bitPattern: Int64(scaleQ16(65_536, by: stan.levelScale))),
+            UInt64(bitPattern: Int64(scaleQ16(65_536, by: runtimeScale))),
         ])
         source.setup_hash = sourcePages.setup.source_hash
         source.player_hash = evidence.sourceHash
 
         let stanRows = stan.tiles.map { tile in
-            makeSTANRow(tile: tile, payloadHash: stagePacket.resources.first { $0.kind == .stan }?.payloadHash ?? 0)
+            makeSTANRow(
+                tile: tile, runtimeScale: runtimeScale,
+                payloadHash: stagePacket.resources.first { $0.kind == .stan }?.payloadHash ?? 0
+            )
         }
+        let stanLinks = try makeSTANLinks(
+            stan: stan,
+            payloadHash: stagePacket.resources.first { $0.kind == .stan }?.payloadHash ?? 0,
+            stageID: stagePacket.stageID
+        )
         let padRows = try makePadRows(
             setup: stagePacket.setup, spawnPad: setup.initial_pad, stan: stan
         )
@@ -356,10 +383,14 @@ public enum GoldenEyeRamRomPlayerCameraPageBuilderV6 {
         return GoldenEyeRamRomPlayerCameraPagesV6(
             stageID: stagePacket.stageID, demoID: demoID, slotNumber: slot,
             setup: setup, entities: entities, attachments: sourcePages.attachments, source: source,
-            stan: stanRows, pads: padRows,
+            stan: stanRows, stanLinks: stanLinks, pads: padRows,
             provenance: evidence.provenance + optionState.provenance + [
                 "src/game/bondview_r.c:175-236 selected demo spawn/item/ammo intro records",
                 "src/game/bondview_r.c:388-414 pad position/floor/look camera initialization",
+                "src/game/bg.c:183-200 stage levelscale table",
+                "src/game/bg.c:831-839 setLevelScale(levelscale)",
+                "src/game/stan.c:331-346 world coordinates multiply level_scale for STAN lookup",
+                "src/game/prop.c:1352-1361 setup pad positions multiply room_data_float2",
             ]
         )
     }
@@ -373,8 +404,13 @@ public enum GoldenEyeRamRomPlayerCameraPageBuilderV6 {
             throw GoldenEyeRamRomPlayerCameraOwnerErrorV6.malformedSTAN(stagePacket.stageID, "invalid first tile offset")
         }
         let tileSizes = [0x20, 0x20, 0x20, 0x20, 0x28, 0x30, 0x38, 0x40, 0x48, 0x50, 0x58, 0]
+        guard let levelScale = sourceLevelScale(stageID: stagePacket.stageID) else {
+            throw GoldenEyeRamRomPlayerCameraOwnerErrorV6.unsupportedSource(
+                stagePacket.stageID, "source levelscale is not present in bg.c levelinfotable"
+            )
+        }
         var offset = Int(firstOffset)
-        var tiles: [(room: UInt32, points: [[Int32]], offset: UInt32)] = []
+        var tiles: [(room: UInt32, points: [[Int32]], links: [UInt16], offset: UInt32)] = []
         var minValues = [Int32.max, Int32.max, Int32.max]
         var maxValues = [Int32.min, Int32.min, Int32.min]
         var maxRoom: UInt32 = 0
@@ -389,10 +425,12 @@ public enum GoldenEyeRamRomPlayerCameraPageBuilderV6 {
                 throw GoldenEyeRamRomPlayerCameraOwnerErrorV6.malformedSTAN(stagePacket.stageID, "tile bounds")
             }
             var points: [[Int32]] = []
+            var links: [UInt16] = []
             for point in 0..<count {
                 let pointOffset = offset + 8 + point * 8
                 guard let x = be16(data, pointOffset), let y = be16(data, pointOffset + 2),
-                      let z = be16(data, pointOffset + 4) else {
+                      let z = be16(data, pointOffset + 4),
+                      let link = be16(data, pointOffset + 6) else {
                     throw GoldenEyeRamRomPlayerCameraOwnerErrorV6.malformedSTAN(stagePacket.stageID, "truncated point")
                 }
                 let values = [
@@ -405,9 +443,10 @@ public enum GoldenEyeRamRomPlayerCameraPageBuilderV6 {
                     minValues[axis] = min(minValues[axis], values[axis])
                     maxValues[axis] = max(maxValues[axis], values[axis])
                 }
+                links.append(link)
             }
             let room = idRoom & 0xff
-            tiles.append((room: room, points: points, offset: UInt32(offset)))
+            tiles.append((room: room, points: points, links: links, offset: UInt32(offset)))
             maxRoom = max(maxRoom, room)
             offset += tileSizes[count]
             guard tiles.count <= Int(GE_PLAYER_CAMERA_OWNER_V6_MAX_STAN_TILES) else {
@@ -417,7 +456,24 @@ public enum GoldenEyeRamRomPlayerCameraPageBuilderV6 {
         guard !tiles.isEmpty else {
             throw GoldenEyeRamRomPlayerCameraOwnerErrorV6.malformedSTAN(stagePacket.stageID, "no tiles")
         }
-        return StanData(tiles: tiles, minQ16: minValues, maxQ16: maxValues, roomCount: maxRoom + 1)
+        let tileOffsets = Set(tiles.map { $0.offset })
+        let firstTileBaseOffset = Int(firstOffset) - 0x80
+        for tile in tiles {
+            for link in tile.links where link != 0 {
+                let target = firstTileBaseOffset + (Int(link) << 3)
+                guard target >= 0, tileOffsets.contains(UInt32(target)) else {
+                    throw GoldenEyeRamRomPlayerCameraOwnerErrorV6.malformedSTAN(
+                        stagePacket.stageID,
+                        "link target 0x\(String(target, radix: 16)) from tile 0x\(String(tile.offset, radix: 16))"
+                    )
+                }
+            }
+        }
+        return StanData(
+            tiles: tiles, minQ16: minValues, maxQ16: maxValues,
+            roomCount: maxRoom + 1, firstTileBaseOffset: firstTileBaseOffset,
+            levelScale: levelScale
+        )
     }
 
     private static func parseIntro(
@@ -503,7 +559,9 @@ public enum GoldenEyeRamRomPlayerCameraPageBuilderV6 {
             row.header.struct_size = UInt32(MemoryLayout<GEPlayerCameraPadV6>.size)
             row.record_version = UInt32(GE_PLAYER_CAMERA_OWNER_V6_RECORD_VERSION)
             row.pad_id = item.pad.index
-            let position = q16Vector(item.pad.position)
+            let position = scaleQ16Vector(
+                q16Vector(item.pad.position), by: 1.0 / stan.levelScale
+            )
             guard let floor = stan.floorY(
                 x: Double(position[0]) / 65_536.0, z: Double(position[2]) / 65_536.0
             ) else {
@@ -526,7 +584,8 @@ public enum GoldenEyeRamRomPlayerCameraPageBuilderV6 {
     }
 
     private static func makeSTANRow(
-        tile: (room: UInt32, points: [[Int32]], offset: UInt32), payloadHash: UInt64
+        tile: (room: UInt32, points: [[Int32]], links: [UInt16], offset: UInt32),
+        runtimeScale: Double, payloadHash: UInt64
     ) -> GEPlayerCameraStanTileV6 {
         var row = GEPlayerCameraStanTileV6()
         row.header.abi_version = GE_NATIVE_ABI_VERSION
@@ -541,7 +600,7 @@ public enum GoldenEyeRamRomPlayerCameraPageBuilderV6 {
             for point in tile.points.indices {
                 for axis in 0..<3 {
                     raw.storeBytes(
-                        of: tile.points[point][axis],
+                        of: scaleQ16(tile.points[point][axis], by: runtimeScale),
                         toByteOffset: 28 + (point * 3 + axis) * MemoryLayout<Int32>.size,
                         as: Int32.self
                     )
@@ -553,8 +612,69 @@ public enum GoldenEyeRamRomPlayerCameraPageBuilderV6 {
         return row
     }
 
+    private static func makeSTANLinks(
+        stan: StanData, payloadHash: UInt64, stageID: UInt32
+    ) throws -> [GEPlayerCameraStanLinkV7] {
+        let tileOffsets = Set(stan.tiles.map { $0.offset })
+        var result: [GEPlayerCameraStanLinkV7] = []
+        for tile in stan.tiles {
+            for (pointIndex, link) in tile.links.enumerated() where link != 0 {
+                let target = stan.firstTileBaseOffset + (Int(link) << 3)
+                guard target >= 0, tileOffsets.contains(UInt32(target)),
+                      let targetTile = stan.tiles.first(where: { $0.offset == UInt32(target) }) else {
+                    throw GoldenEyeRamRomPlayerCameraOwnerErrorV6.malformedSTAN(
+                        stageID, "unresolved link target 0x\(String(target, radix: 16))"
+                    )
+                }
+                var row = GEPlayerCameraStanLinkV7()
+                row.source_tile_offset = tile.offset
+                row.point_index = UInt32(pointIndex)
+                row.target_tile_offset = UInt32(target)
+                row.flags = UInt32(GE_PLAYER_CAMERA_OWNER_V7_STAN_LINK_FLAG_SOURCE_DERIVED)
+                row.raw_link = UInt32(link)
+                row.source_room_id = tile.room
+                row.target_room_id = targetTile.room
+                row.reserved0 = 0
+                result.append(row)
+            }
+        }
+        _ = payloadHash
+        return result
+    }
+
     private static func q16Vector(_ vector: GoldenEyeStageSetupVectorBits) -> [Int32] {
         [q16(vector.x), q16(vector.y), q16(vector.z)]
+    }
+
+    private static func scaleQ16Vector(_ values: [Int32], by scale: Double) -> [Int32] {
+        values.map { scaleQ16($0, by: scale) }
+    }
+
+    private static func scaleQ16(_ value: Int32, by scale: Double) -> Int32 {
+        let scaled = Double(value) * scale
+        guard scaled.isFinite else { return 0 }
+        let rounded = scaled.rounded(.toNearestOrAwayFromZero)
+        // GEPlayerCameraOwnerV6 reserves Int32.min as the unknown Q16
+        // sentinel, so a legitimate scaled floor at that boundary must stay
+        // representable without becoming an unknown value.
+        if rounded <= Double(Int32.min) + 1.0 { return Int32.min + 1 }
+        if rounded >= Double(Int32.max) { return Int32.max }
+        return Int32(rounded)
+    }
+
+    /// Exact source values from ``levelinfotable[].levelscale`` in ``bg.c``.
+    /// Unknown stages fail closed rather than silently using identity scale.
+    private static func sourceLevelScale(stageID: UInt32) -> Double? {
+        switch stageID {
+        case 33: return 0.23363999       // LEVELID_DAM
+        case 34: return 1.20648          // LEVELID_FACILITY
+        case 35: return 0.089571431      // LEVELID_RUNWAY
+        case 9: return 0.53931433        // LEVELID_BUNKER1
+        case 20: return 0.47256002       // LEVELID_SILO
+        case 26: return 0.44757429       // LEVELID_FRIGATE
+        case 25: return 0.15019713       // LEVELID_TRAIN
+        default: return nil
+        }
     }
 
     private static func q16(_ bits: UInt32) -> Int32 {
@@ -653,9 +773,11 @@ public struct GoldenEyeRamRomPlayerCameraPublicationV6 {
 /// operation.
 public final class GoldenEyeRamRomPlayerCameraOwnerV6: @unchecked Sendable {
     private var state: GEPlayerCameraOwnerStateV6
+    private let stanLinks: [GEPlayerCameraStanLinkV7]
 
     public init(pages: GoldenEyeRamRomPlayerCameraPagesV6) throws {
         state = GEPlayerCameraOwnerStateV6()
+        stanLinks = pages.stanLinks
         var event = GEPlayerCameraEventV6()
         let status = pages.setup.withUnsafePointer { setupPointer in
             pages.entities.withUnsafeBufferPointer { entityBuffer in
@@ -692,9 +814,23 @@ public final class GoldenEyeRamRomPlayerCameraOwnerV6: @unchecked Sendable {
     @discardableResult
     public func step(nativeTick: UInt64, input: GERamRomGameplayInputV6) throws -> GoldenEyeRamRomPlayerCameraPublicationV6 {
         var event = GEPlayerCameraEventV6()
-        let status = withUnsafeMutablePointer(to: &state) { statePointer in
-            withUnsafeMutablePointer(to: &event) { eventPointer in
-                ge_player_camera_owner_step(nativeTick, input, statePointer, eventPointer)
+        let status: UInt32
+        if stanLinks.isEmpty {
+            status = withUnsafeMutablePointer(to: &state) { statePointer in
+                withUnsafeMutablePointer(to: &event) { eventPointer in
+                    ge_player_camera_owner_step(nativeTick, input, statePointer, eventPointer)
+                }
+            }
+        } else {
+            status = stanLinks.withUnsafeBufferPointer { linkBuffer in
+                withUnsafeMutablePointer(to: &state) { statePointer in
+                    withUnsafeMutablePointer(to: &event) { eventPointer in
+                        ge_player_camera_owner_step_with_stan_topology_v7(
+                            nativeTick, input, linkBuffer.baseAddress,
+                            UInt32(linkBuffer.count), statePointer, eventPointer
+                        )
+                    }
+                }
             }
         }
         guard status == UInt32(GE_STATUS_OK) else {

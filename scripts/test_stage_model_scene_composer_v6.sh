@@ -48,6 +48,7 @@ CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}" "${SWIFTC}" "${SWIFT_COMMON[@]}" -
     "${PROJECT_ROOT}/native/host/goldeneye_stage_background_draw_packet.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_material_lowering_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_texture_catalog_v6.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_stage_fog_lowering_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_setup_dependency_catalog_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_model_sidecar_catalog_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_model_placement_v6.swift" \

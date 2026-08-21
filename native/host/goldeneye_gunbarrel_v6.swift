@@ -1223,6 +1223,19 @@ public struct GoldenEyeGunbarrelFrameV6: Sendable, Equatable {
     public let captureReady: Bool
     public let sourceManifestHash: UInt64
 
+    public var redOverlayAlphaQ8: UInt32 {
+        switch mode {
+        case 6, 7: return 180
+        default: return 0
+        }
+    }
+
+    public var blackOverlayAlphaQ8: UInt32 {
+        mode == 7 ? min(fadeAlphaQ8, 248) : 0
+    }
+
+    public var clearBlack: Bool { mode == 8 || fade == .clearBlack }
+
     public var renderHash: UInt64 {
         var hash: UInt64 = 1_469_598_103_934_665_603
         func mix(_ value: UInt64) { hash ^= value; hash &*= 1_099_511_628_211 }
@@ -1325,6 +1338,19 @@ public struct GoldenEyeGunbarrelRenderPassV6: Sendable, Equatable {
     public let fade: GoldenEyeGunbarrelFrameV6.Fade
     public let fadeAlphaQ8: UInt32
     public let passHash: UInt64
+
+    public var redOverlayAlphaQ8: UInt32 {
+        switch mode {
+        case 6, 7: return 180
+        default: return 0
+        }
+    }
+
+    public var blackOverlayAlphaQ8: UInt32 {
+        mode == 7 ? min(fadeAlphaQ8, 248) : 0
+    }
+
+    public var clearBlack: Bool { mode == 8 || fade == .clearBlack }
 
     public static func make(
         frame: GoldenEyeGunbarrelFrameV6,
@@ -1435,6 +1461,13 @@ public struct GoldenEyeGunbarrelBloodFrameV6: Sendable, Equatable {
     public let digest: String
 }
 
+public struct GoldenEyeGunbarrelBloodStreamV6: Sendable, Equatable {
+    public let frames: [GoldenEyeGunbarrelBloodFrameV6]
+    public let encodedByteCount: Int
+
+    public var isComplete: Bool { frames.count == 42 && encodedByteCount == 2_524 }
+}
+
 /// A bounded source blood decoder.  It ports the byte-level decoder and the
 /// source transpose operation from blood_decrypt.c; it never allocates based
 /// on an unchecked stream value.
@@ -1450,11 +1483,37 @@ public enum GoldenEyeGunbarrelBloodDecoderV6 {
         }
     }
 
-    public static func decodeInitial(_ encoded: Data) throws -> GoldenEyeGunbarrelBloodFrameV6 {
+    public static func decodeAll(_ encoded: Data) throws -> GoldenEyeGunbarrelBloodStreamV6 {
         guard encoded.count > 1 else { throw Error.truncated }
+        var cursor = 0
+        var frames: [GoldenEyeGunbarrelBloodFrameV6] = []
+        frames.reserveCapacity(42)
+        while cursor < encoded.count {
+            let before = cursor
+            frames.append(try decodeFrame(encoded, cursor: &cursor))
+            guard cursor > before else { throw Error.malformed("decoder made no progress") }
+        }
+        guard cursor == encoded.count, frames.count == 42 else {
+            throw Error.malformed("expected 42 complete frames, got \(frames.count) at byte \(cursor)")
+        }
+        return GoldenEyeGunbarrelBloodStreamV6(
+            frames: frames,
+            encodedByteCount: cursor
+        )
+    }
+
+    public static func decodeInitial(_ encoded: Data) throws -> GoldenEyeGunbarrelBloodFrameV6 {
+        var cursor = 0
+        return try decodeFrame(encoded, cursor: &cursor)
+    }
+
+    private static func decodeFrame(
+        _ encoded: Data,
+        cursor: inout Int
+    ) throws -> GoldenEyeGunbarrelBloodFrameV6 {
+        guard cursor + 1 < encoded.count else { throw Error.truncated }
         let sourceWidth = 80
         let sourceHeight = 96
-        var cursor = 0
         // blood_decrypt.c keeps temp_v0 (the first byte) constant for every
         // compressed row; it is not the previous command byte.
         let baseValue = encoded[cursor]
@@ -1554,6 +1613,7 @@ public struct GoldenEyeGunbarrelRuntimeV6: Sendable {
     private var integratedRootMotion: GoldenEyeGunbarrelDynamicSidecarV6.IntegratedRootMotionV6?
     private var bloodFrameIndex: UInt32 = 0
     private var bloodFrameAvailable: Bool
+    private var bloodCompletionAcknowledged: Bool
 
     public init(
         manifest: GoldenEyeGunbarrelSourceManifestV6,
@@ -1565,6 +1625,7 @@ public struct GoldenEyeGunbarrelRuntimeV6: Sendable {
         self.animationEntry = manifest.animation.walkEntryOffset
         self.animationRateQ16 = Int32(manifest.animation.initialPlaySpeedQ16)
         self.bloodFrameAvailable = bloodFrameAvailable
+        self.bloodCompletionAcknowledged = bloodFrameAvailable
         if let dynamicSidecar,
            let walk = try? dynamicSidecar.clip(named: "bond_eye_walk"),
            walk.frameCount > 0 {
@@ -1641,9 +1702,10 @@ public struct GoldenEyeGunbarrelRuntimeV6: Sendable {
     /// Supplies the result of a decoded blood frame.  The source only exits
     /// the blood state after the model lowerer reports completion; merely
     /// having the source metadata row is insufficient.
-    public mutating func acknowledgeBloodFrame(index: UInt32) {
+    public mutating func acknowledgeBloodFrame(index: UInt32, complete: Bool = false) {
         bloodFrameIndex = index
         bloodFrameAvailable = true
+        bloodCompletionAcknowledged = complete || index >= 41
     }
 
     private struct Endpoint {
@@ -1690,7 +1752,7 @@ public struct GoldenEyeGunbarrelRuntimeV6: Sendable {
                 nextBlood &+= 1
                 nextCounter = 2
             }
-            if bloodFrameAvailable {
+            if bloodCompletionAcknowledged {
                 nextMode = 6
                 nextWord = 0
                 nextTransition = nextX

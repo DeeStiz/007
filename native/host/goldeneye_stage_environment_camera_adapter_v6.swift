@@ -64,6 +64,13 @@ public struct GoldenEyeStageEnvironmentCameraInputV6: Sendable, Equatable {
 /// owner publishes; no C owner state or mutable gameplay object crosses into
 /// the environment adapter.
 public struct GoldenEyeStagePlayerCameraSnapshotInputV6: Sendable, Equatable {
+    public enum CoordinateDomain: UInt8, Sendable, Equatable {
+        /// Serialized setup/STAN units used by scene and camera fixtures.
+        case serialized = 0
+        /// Runtime player units after source `1 / levelscale` conversion.
+        case runtimeScaled = 1
+    }
+
     public let stageID: UInt32
     public let nativeTick: UInt64
     public let currentRoom: UInt32
@@ -72,6 +79,7 @@ public struct GoldenEyeStagePlayerCameraSnapshotInputV6: Sendable, Equatable {
     public let cameraUpQ16: SIMD3<Int32>
     public let yawQ16: Int32
     public let pitchQ16: Int32
+    public let coordinateDomain: CoordinateDomain
 
     public init(
         stageID: UInt32,
@@ -81,7 +89,8 @@ public struct GoldenEyeStagePlayerCameraSnapshotInputV6: Sendable, Equatable {
         cameraForwardQ16: SIMD3<Int32>,
         cameraUpQ16: SIMD3<Int32>,
         yawQ16: Int32,
-        pitchQ16: Int32
+        pitchQ16: Int32,
+        coordinateDomain: CoordinateDomain = .serialized
     ) {
         self.stageID = stageID
         self.nativeTick = nativeTick
@@ -91,6 +100,7 @@ public struct GoldenEyeStagePlayerCameraSnapshotInputV6: Sendable, Equatable {
         self.cameraUpQ16 = cameraUpQ16
         self.yawQ16 = yawQ16
         self.pitchQ16 = pitchQ16
+        self.coordinateDomain = coordinateDomain
     }
 }
 
@@ -98,6 +108,10 @@ enum GoldenEyeStageEnvironmentCameraAdapterV6 {
     /// Source constants from the directly compiled player/camera owner and
     /// gameplay camera setup: FOV 60, near 10, and stage far range 10,000.
     static let sourceGameplayFOVDegrees: Double = 60.0
+    /// Fallback projection range for the source fogless stage rows. Enabled
+    /// fog rows derive their homogeneous clip range from the copied source
+    /// `BlendMultiplier`/`FarFog` values below; using this fallback for an
+    /// enabled row would change clip-Z/clip-W and therefore the G_FOG input.
     static let sourceGameplayNear: Double = 10.0
     static let sourceGameplayFar: Double = 10_000.0
 
@@ -108,6 +122,7 @@ enum GoldenEyeStageEnvironmentCameraAdapterV6 {
         case invalidViewport
         case invalidProjection
         case fogUnavailable(UInt32, UInt32)
+        case invalidFogClipRange(UInt32)
 
         var description: String {
             switch self {
@@ -119,6 +134,8 @@ enum GoldenEyeStageEnvironmentCameraAdapterV6 {
             case .invalidProjection: return "stage environment camera projection is invalid"
             case let .fogUnavailable(stageID, reason):
                 return "stage \(stageID) source fog cannot be represented by the current Metal path (reason=\(reason))"
+            case let .invalidFogClipRange(stageID):
+                return "stage \(stageID) source fog clip range is invalid"
             }
         }
     }
@@ -214,13 +231,23 @@ enum GoldenEyeStageEnvironmentCameraAdapterV6 {
         // D_800364CC to the rebased eye for source spC4.
         let roomOrigin = scene.rooms.first(where: { $0.roomIndex == mappedCurrentRoom })
             .flatMap { pointQ16(from: $0.positionBits) } ?? .init(x: 0, y: 0, z: 0)
+        let sourceLevelScale = 1.0 / roomCoordinateScale
+        let serializedCameraPosition: SIMD3<Int32>
+        switch snapshot.coordinateDomain {
+        case .serialized:
+            serializedCameraPosition = snapshot.cameraPositionQ16
+        case .runtimeScaled:
+            serializedCameraPosition = scaledPosition(
+                snapshot.cameraPositionQ16, by: sourceLevelScale
+            )
+        }
         let scaledWorldPosition = scaledPosition(
-            snapshot.cameraPositionQ16, by: roomCoordinateScale
+            serializedCameraPosition, by: roomCoordinateScale
         )
         let cameraDelta = SIMD3(
-            Int32(clamping: Int64(snapshot.cameraPositionQ16.x) - Int64(roomOrigin.x)),
-            Int32(clamping: Int64(snapshot.cameraPositionQ16.y) - Int64(roomOrigin.y)),
-            Int32(clamping: Int64(snapshot.cameraPositionQ16.z) - Int64(roomOrigin.z))
+            Int32(clamping: Int64(serializedCameraPosition.x) - Int64(roomOrigin.x)),
+            Int32(clamping: Int64(serializedCameraPosition.y) - Int64(roomOrigin.y)),
+            Int32(clamping: Int64(serializedCameraPosition.z) - Int64(roomOrigin.z))
         )
         let visibilityScale = sourceVisibilityScale(stageID: snapshot.stageID)
         let scaledEye = scaledPosition(
@@ -233,11 +260,14 @@ enum GoldenEyeStageEnvironmentCameraAdapterV6 {
             yawQ16: snapshot.yawQ16
         )
         let aspect = Double(viewportWidth) / Double(viewportHeight)
+        guard let clipRange = sourceGameplayClipRange(stageID: snapshot.stageID) else {
+            throw Error.invalidFogClipRange(snapshot.stageID)
+        }
         let projection = perspectiveMatrix(
             fovDegrees: sourceGameplayFOVDegrees,
             aspect: aspect,
-            near: sourceGameplayNear,
-            far: sourceGameplayFar
+            near: clipRange.near,
+            far: clipRange.far
         )
         return GoldenEyeStageEnvironmentCameraInputV6(
             stageID: snapshot.stageID,
@@ -280,6 +310,38 @@ enum GoldenEyeStageEnvironmentCameraAdapterV6 {
         case 33: return 0.2                 // bg.c levelinfotable Dam
         default: return 1.0
         }
+    }
+
+    /// Return the source camera's homogeneous clip range. The source
+    /// fogLoadCurrentEnvironment() passes raw Visibility.BlendMultiplier and
+    /// FarFog values to viSetZRange; the separate D_800364CC visibility scale
+    /// belongs to the camera-space transform, not the projection near/far
+    /// contract. Fogless rows retain the historical bounded fallback range;
+    /// an unknown/invalid fog row fails closed instead of silently using it.
+    private static func sourceGameplayClipRange(
+        stageID: UInt32
+    ) -> (near: Double, far: Double)? {
+        guard let fog = try? GoldenEyeStageFogLoweringV6.make(stageID: stageID) else {
+            return nil
+        }
+        guard fog.enabled else {
+            return (sourceGameplayNear, sourceGameplayFar)
+        }
+        let near = Double(fog.sourceBlendMultiplier)
+        let far = Double(fog.sourceFarFog)
+        guard near.isFinite, far.isFinite, near > 0, far > near else {
+            return nil
+        }
+        return (near, far)
+    }
+
+    /// Test/evidence seam for the source viSetZRange contract. Runtime callers
+    /// use input(); this copied scalar avoids making a test infer near/far from
+    /// matrix coefficients.
+    static func sourceGameplayClipRangeForTesting(
+        stageID: UInt32
+    ) -> (near: Double, far: Double)? {
+        sourceGameplayClipRange(stageID: stageID)
     }
 
     private static func pointQ16(
@@ -326,6 +388,8 @@ enum GoldenEyeStageEnvironmentCameraAdapterV6 {
         _ packet: GoldenEyeStageBackgroundDrawPacket
     ) throws -> GoldenEyeStageBackgroundDrawPacket {
         var vertices: [GoldenEyeStageBackgroundDrawVertex] = []
+        var eyeSpaceZQ16: [Int32]? = packet.eyeSpaceZQ16.map { _ in [] }
+        var fogCoordinateQ16: [Int32]? = packet.fogCoordinateQ16.map { _ in [] }
         var commands: [GoldenEyeStageBackgroundDrawCommand] = []
         var sourceOrdinalsByRoom: [UInt32: UInt32] = [:]
         vertices.reserveCapacity(packet.vertices.count)
@@ -338,7 +402,20 @@ enum GoldenEyeStageEnvironmentCameraAdapterV6 {
                 continue
             }
             let start = Int(command.vertexStart)
-            let sourceTriangle = packet.vertices[start..<(start + 3)].map(ClipVertex.init)
+            let sourceTriangle = packet.vertices[start..<(start + 3)].enumerated().map {
+                offset, vertex in
+                let eyeSpace = packet.eyeSpaceZQ16.flatMap { values in
+                    start + offset < values.count ? values[start + offset] : nil
+                }
+                let fogCoordinate = packet.fogCoordinateQ16.flatMap { values in
+                    start + offset < values.count ? values[start + offset] : nil
+                }
+                return ClipVertex(
+                    source: vertex,
+                    eyeSpaceZQ16: eyeSpace,
+                    fogCoordinateQ16: fogCoordinate
+                )
+            }
             let sourceOrdinal = sourceOrdinalsByRoom[command.sourceIndex, default: 0]
             sourceOrdinalsByRoom[command.sourceIndex] = sourceOrdinal + 1
             let polygon = clipPolygon(sourceTriangle)
@@ -347,6 +424,30 @@ enum GoldenEyeStageEnvironmentCameraAdapterV6 {
                 let triangle = [polygon[0], polygon[fanIndex], polygon[fanIndex + 1]]
                 let vertexStart = UInt32(vertices.count)
                 vertices.append(contentsOf: triangle.map(Self.backgroundVertex))
+                if eyeSpaceZQ16 != nil {
+                    guard triangle.allSatisfy({ $0.eyeSpaceZQ16 != nil }) else {
+                        throw GoldenEyeStageSourceEnvironmentDrawPacketError.missingFogCoordinate(
+                            command.sourceIndex
+                        )
+                    }
+                    eyeSpaceZQ16?.append(contentsOf: triangle.map { value in
+                        Int32(clamping: Int64(value.eyeSpaceZQ16!.rounded(.toNearestOrAwayFromZero)))
+                    })
+                }
+                if fogCoordinateQ16 != nil {
+                    guard triangle.allSatisfy({ $0.fogCoordinateQ16 != nil }) else {
+                        throw GoldenEyeStageSourceEnvironmentDrawPacketError.missingFogCoordinate(
+                            command.sourceIndex
+                        )
+                    }
+                    fogCoordinateQ16?.append(contentsOf: triangle.map { value in
+                        // `fogCoordinateQ16` is intentionally recomputed from
+                        // the clipped homogeneous Z/W. Interpolating the
+                        // already-divided endpoint values is not projective
+                        // and changes the source G_FOG equation at clip edges.
+                        Int32(clamping: Int64(value.recomputedFogCoordinateQ16!.rounded(.toNearestOrAwayFromZero)))
+                    })
+                }
                 commands.append(.init(
                     primitive: command.primitive,
                     vertexStart: vertexStart,
@@ -368,9 +469,19 @@ enum GoldenEyeStageEnvironmentCameraAdapterV6 {
             // whose geometry is wholly outside the clip volume at a
             // checkpoint. Preserve that authored black frame without
             // synthesizing diagnostic polygons.
-            return packet.replacingGeometry(vertices: [], commands: [])
+            return packet.replacingGeometry(
+                vertices: [],
+                commands: [],
+                eyeSpaceZQ16: eyeSpaceZQ16.map { _ in [] },
+                fogCoordinateQ16: fogCoordinateQ16.map { _ in [] }
+            )
         }
-        return packet.replacingGeometry(vertices: vertices, commands: commands)
+        return packet.replacingGeometry(
+            vertices: vertices,
+            commands: commands,
+            eyeSpaceZQ16: eyeSpaceZQ16,
+            fogCoordinateQ16: fogCoordinateQ16
+        )
     }
 
     private struct ClipVertex {
@@ -386,8 +497,21 @@ enum GoldenEyeStageEnvironmentCameraAdapterV6 {
         let t: Double
         let hasTextureCoordinates: Bool
         let roomIndex: UInt32
+        let eyeSpaceZQ16: Double?
+        let fogCoordinateQ16: Double?
 
-        init(source: GoldenEyeStageBackgroundDrawVertex) {
+        var recomputedFogCoordinateQ16: Double? {
+            guard w.isFinite, abs(w) > 1.0e-9, z.isFinite else { return nil }
+            // The camera projection stores Metal depth in [0,1], while the
+            // source RDP fog equation consumes symmetric clip Z in [-1,1].
+            return (2.0 * z / w - 1.0) * 65_536.0
+        }
+
+        init(
+            source: GoldenEyeStageBackgroundDrawVertex,
+            eyeSpaceZQ16: Int32?,
+            fogCoordinateQ16: Int32?
+        ) {
             x = Double(source.clipXQ16)
             y = Double(source.clipYQ16)
             z = Double(source.clipZQ16)
@@ -400,27 +524,31 @@ enum GoldenEyeStageEnvironmentCameraAdapterV6 {
             t = Double(source.sourceTextureT10_5)
             hasTextureCoordinates = source.sourceTextureCoordinatesPresent
             roomIndex = source.roomIndex
+            self.eyeSpaceZQ16 = eyeSpaceZQ16.map(Double.init)
+            self.fogCoordinateQ16 = fogCoordinateQ16.map(Double.init)
         }
 
         init(
             x: Double, y: Double, z: Double, w: Double,
             red: Double, green: Double, blue: Double, alpha: Double,
             s: Double, t: Double, hasTextureCoordinates: Bool,
-            roomIndex: UInt32
+            roomIndex: UInt32, eyeSpaceZQ16: Double?, fogCoordinateQ16: Double?
         ) {
             self.x = x; self.y = y; self.z = z; self.w = w
             self.red = red; self.green = green; self.blue = blue; self.alpha = alpha
             self.s = s; self.t = t
             self.hasTextureCoordinates = hasTextureCoordinates
             self.roomIndex = roomIndex
+            self.eyeSpaceZQ16 = eyeSpaceZQ16
+            self.fogCoordinateQ16 = fogCoordinateQ16
         }
     }
 
     private static func clipPolygon(_ input: [ClipVertex]) -> [ClipVertex] {
         var polygon = input
-        // Clip in Q16 homogeneous coordinates. W=1 is one fixed-point unit,
-        // far below the authored near-plane distance, and avoids a zero-W
-        // divide at the packet boundary.
+        // Clip in Q16 homogeneous coordinates. One Q16 unit is 65,536; use
+        // that exact epsilon for the positive-W plane so the clipper does
+        // not admit vertices whose later NDC divide is effectively zero.
         for plane in 0..<7 {
             guard !polygon.isEmpty else { break }
             var output: [ClipVertex] = []
@@ -450,13 +578,13 @@ enum GoldenEyeStageEnvironmentCameraAdapterV6 {
 
     private static func clipDistance(_ value: ClipVertex, plane: Int) -> Double {
         switch plane {
-        case 0: return value.w - 1.0       // W >= epsilon
+        case 0: return value.w - 65_536.0 // W >= one Q16 unit
         case 1: return value.x + value.w    // X >= -W
         case 2: return value.w - value.x    // X <= W
         case 3: return value.y + value.w    // Y >= -W
         case 4: return value.w - value.y    // Y <= W
-        case 5: return value.z + value.w    // Z >= -W
-        default: return value.w - value.z  // Z <= W
+        case 5: return value.z              // Metal depth Z >= 0
+        default: return value.w - value.z   // Z <= W
         }
     }
 
@@ -472,8 +600,22 @@ enum GoldenEyeStageEnvironmentCameraAdapterV6 {
             blue: mix(a.blue, b.blue), alpha: mix(a.alpha, b.alpha),
             s: mix(a.s, b.s), t: mix(a.t, b.t),
             hasTextureCoordinates: a.hasTextureCoordinates || b.hasTextureCoordinates,
-            roomIndex: a.roomIndex
+            roomIndex: a.roomIndex,
+            eyeSpaceZQ16: zipOptional(a.eyeSpaceZQ16, b.eyeSpaceZQ16, mix: mix),
+            // The endpoint fog coordinates are only provenance checks. The
+            // actual value is recomputed from this interpolated clip Z/W by
+            // `recomputedFogCoordinateQ16` when the sidecar is emitted.
+            fogCoordinateQ16: zipOptional(a.fogCoordinateQ16, b.fogCoordinateQ16, mix: mix)
         )
+    }
+
+    private static func zipOptional(
+        _ lhs: Double?,
+        _ rhs: Double?,
+        mix: (Double, Double) -> Double
+    ) -> Double? {
+        guard let lhs, let rhs else { return nil }
+        return mix(lhs, rhs)
     }
 
     private static func backgroundVertex(_ value: ClipVertex) -> GoldenEyeStageBackgroundDrawVertex {
@@ -605,8 +747,11 @@ enum GoldenEyeStageEnvironmentCameraAdapterV6 {
         var values = SIMD16<Int32>(repeating: 0)
         values[0] = q16(focal / aspect)
         values[5] = q16(focal)
-        values[10] = q16(0.5 * a)
-        values[11] = q16(0.5 * b + 0.5)
+        // Source viSetZRange uses the symmetric N64 a/b pair. Metal's
+        // viewport depth is [0,1], so fold that conversion into the
+        // projection: z_metal = 0.5 * (z_source + 1).
+        values[10] = q16(0.5 * (a - 1.0))
+        values[11] = q16(0.5 * b)
         values[14] = -65_536
         return GoldenEyeProjectionV10.MatrixQ16(values: values)
     }

@@ -384,7 +384,12 @@ public enum GoldenEyeSourceTextureSetupResolverV6 {
         guard !commands.isEmpty else { throw GoldenEyeSourceTextureSetupV6Error.emptyCommands }
         let evidence = try makeEvidence(modelName: modelName, model: model, catalog: catalog)
         let textureByHandle = Dictionary(uniqueKeysWithValues: model.textures.map { ($0.resourceHandle, $0) })
-        let aliases = try makeAliases(commands: commands, textureByHandle: textureByHandle)
+        let aliases = try makeAliases(
+            modelName: modelName,
+            model: model,
+            commands: commands,
+            textureByHandle: textureByHandle
+        )
         var state = State()
         var setups: [GoldenEyeSourceTextureSetupV6] = []
         var emittedStandard: Set<String> = []
@@ -595,20 +600,67 @@ public enum GoldenEyeSourceTextureSetupResolverV6 {
     }
 
     private static func makeAliases(
+        modelName: String,
+        model: GoldenEyeSourceModelV6,
         commands: [GoldenEyeSourceTextureSetupCommandV6],
         textureByHandle: [UInt32: GoldenEyeSourceModelV6.Texture]
     ) throws -> [UInt32: UInt32] {
-        let handles = commands.compactMap { command -> UInt32? in
-            guard command.macro == "gsSPUseTexture", command.arguments.count == 9 else { return nil }
-            return textureArgument(command.arguments[8])
+        var handles: [UInt32] = []
+        for command in commands {
+            guard command.macro == "gsSPUseTexture", command.arguments.count == 9 else { continue }
+            guard let raw = textureArgument(command.arguments[8]) else {
+                throw GoldenEyeSourceTextureSetupV6Error.missingTexture(
+                    command.arguments[8], "gsSPUseTexture alias"
+                )
+            }
+            handles.append(try resolveTextureHandle(
+                raw,
+                modelName: modelName,
+                model: model,
+                textureByHandle: textureByHandle
+            ))
         }
         var result: [UInt32: UInt32] = [:]
         for (index, handle) in Set(handles).sorted().enumerated() {
             guard index < 0xfff else { throw GoldenEyeSourceTextureSetupV6Error.aliasCapacity }
-            guard textureByHandle[handle] != nil else { throw GoldenEyeSourceTextureSetupV6Error.missingTexture(handle, "gsSPUseTexture") }
             result[handle] = UInt32(index + 1)
         }
         return result
+    }
+
+    /// `gsSPUseTexture` carries either a prepared full handle or the
+    /// source-authored low-12-bit image alias. Resolve aliases only when they
+    /// identify exactly one prepared texture; ambiguity remains fail-closed.
+    private static func resolveTextureHandle(
+        _ raw: UInt32,
+        modelName: String,
+        model: GoldenEyeSourceModelV6,
+        textureByHandle: [UInt32: GoldenEyeSourceModelV6.Texture]
+    ) throws -> UInt32 {
+        if textureByHandle[raw] != nil { return raw }
+        let matches = textureByHandle.keys.filter { ($0 & 0x0000_0fff) == raw }
+        if matches.count == 1, let handle = matches.first { return handle }
+
+        // Some source Model.c packets retain the image symbol's low value
+        // rather than the prepared texture handle. Reuse the GBI lowerer's
+        // source-row relationship as a second, exact provenance key. A row
+        // match is accepted only when unique; ambiguous or absent aliases
+        // remain fail-closed.
+        let rowMatches = model.textures.filter { texture in
+            textureByHandle[texture.resourceHandle] != nil
+        }.filter { texture in
+            fnv32ResourceRow(modelName: modelName, row: String(raw)) == texture.sourceRowHandle
+                || fnv32ResourceRow(modelName: modelName, row: "IMAGE_\(raw)") == texture.sourceRowHandle
+        }
+        guard rowMatches.count == 1, let handle = rowMatches.first?.resourceHandle else {
+            throw GoldenEyeSourceTextureSetupV6Error.missingTexture(
+                raw,
+                matches.isEmpty && rowMatches.isEmpty
+                    ? "gsSPUseTexture alias"
+                    : "gsSPUseTexture alias is ambiguous or missing a unique source row"
+            )
+        }
+        return handle
     }
 
     private static func normalizeRaw(_ command: GoldenEyeSourceTextureSetupCommandV6) -> GoldenEyeSourceTextureSetupCommandV6 {
@@ -728,7 +780,14 @@ public enum GoldenEyeSourceTextureSetupResolverV6 {
         if command.macro == "gsSPUseTexture" {
             guard command.arguments.count == 9 else { throw GoldenEyeSourceTextureSetupV6Error.invalidCommand(command.sequence, "gsSPUseTexture argument count") }
             p = command.arguments
-            guard let full = textureArgument(p[8]), let mapped = aliases[full] else { throw GoldenEyeSourceTextureSetupV6Error.unknownAlias(p[8]) }
+            guard let raw = textureArgument(p[8]) else { throw GoldenEyeSourceTextureSetupV6Error.unknownAlias(p[8]) }
+            let full = try resolveTextureHandle(
+                raw,
+                modelName: modelName,
+                model: model,
+                textureByHandle: textureByHandle
+            )
+            guard let mapped = aliases[full] else { throw GoldenEyeSourceTextureSetupV6Error.unknownAlias(p[8]) }
             alias = mapped
         } else {
             let w0 = command.word0, w1 = command.word1
@@ -737,14 +796,26 @@ public enum GoldenEyeSourceTextureSetupResolverV6 {
         }
         let fullHandle: UInt32
         if command.macro == "gsSPUseTexture" {
-            guard let handle = textureArgument(p[8]) else { throw GoldenEyeSourceTextureSetupV6Error.unknownAlias(p[8]) }
-            fullHandle = handle
+            guard let raw = textureArgument(p[8]) else { throw GoldenEyeSourceTextureSetupV6Error.unknownAlias(p[8]) }
+            fullHandle = try resolveTextureHandle(
+                raw,
+                modelName: modelName,
+                model: model,
+                textureByHandle: textureByHandle
+            )
         } else {
             let aliasMatches = textureByHandle.keys.filter { ($0 & 0xfff) == alias }
-            guard let handle = aliases.first(where: { $0.value == alias })?.key ?? (aliasMatches.count == 1 ? aliasMatches[0] : nil) else {
-                throw GoldenEyeSourceTextureSetupV6Error.unknownAlias(alias)
+            if let handle = aliases.first(where: { $0.value == alias })?.key
+                ?? (aliasMatches.count == 1 ? aliasMatches[0] : nil) {
+                fullHandle = handle
+            } else {
+                fullHandle = try resolveTextureHandle(
+                    alias,
+                    modelName: modelName,
+                    model: model,
+                    textureByHandle: textureByHandle
+                )
             }
-            fullHandle = handle
         }
         guard let texture = textureByHandle[fullHandle], let evidence = evidenceByHandle[fullHandle] else { throw GoldenEyeSourceTextureSetupV6Error.missingTexture(fullHandle, "G_SETTEX payload") }
         guard p[5] <= 4, p[6] <= maxLOD, p[6] < evidence.mipLevels else { throw GoldenEyeSourceTextureSetupV6Error.invalidTextureType(p[5]) }

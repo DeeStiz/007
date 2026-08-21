@@ -230,10 +230,23 @@ public struct GoldenEyeRamRomGameplaySourcePagesV6: @unchecked Sendable {
         for object in setupPacket.objects {
             guard Self.isGameplayObjectType(object.type) else { continue }
             let isObjective = (23...34).contains(object.type)
+            let dependency: GoldenEyeStageSetupDependencyCatalogV6.Dependency?
+            if object.type == 9 {
+                // Type-9 setup key0 is chrnum; corrected setup dependency
+                // rows join the source GuardRecord by setup offset and carry
+                // the body model index from bodyAI.
+                dependency = dependencies.dependencies.first {
+                    $0.stage == stagePacket.stageName && $0.kind == "character" &&
+                        $0.setupOffset == object.sourceRecordOffset
+                }
+            } else {
+                dependency = dependencies.dependency(kind: "prop", modelIndex: object.key0)
+            }
+            let modelIndex = dependency?.modelIndex ?? object.key0
             if !isObjective {
                 let category = object.type == 9 ? "guards" : "props"
                 guard visibleDependencies.dependencies.contains(where: {
-                    $0.category == category && $0.modelIndex == object.key0 &&
+                    $0.category == category && $0.modelIndex == modelIndex &&
                         $0.stages.contains(stagePacket.stageName)
                 }) else { continue }
             }
@@ -286,7 +299,7 @@ public struct GoldenEyeRamRomGameplaySourcePagesV6: @unchecked Sendable {
             if isObjective {
                 // Objective records are source state, not model placements;
                 // their key words remain in source_aux0/source_aux1.
-            } else if let dependency = dependencies.dependency(kind: dependencyKind, modelIndex: object.key0) {
+            } else if let dependency {
                 let modelName = "stage_\(dependencyKind)_\(String(format: "%03u", dependency.modelIndex))_\(dependency.modelName)"
                 if let model = sidecars.models[modelName] {
                     entity.body_model_handle = model.header.modelHandle
@@ -295,7 +308,7 @@ public struct GoldenEyeRamRomGameplaySourcePagesV6: @unchecked Sendable {
                     missing.append("model:\(modelName)")
                 }
             } else {
-                missing.append("dependency:\(dependencyKind):\(object.key0)")
+                missing.append("dependency:\(dependencyKind):\(modelIndex)")
             }
             entities.append(entity)
         }

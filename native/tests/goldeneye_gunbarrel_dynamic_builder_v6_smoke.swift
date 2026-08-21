@@ -259,6 +259,62 @@ struct GoldenEyeGunbarrelDynamicBuilderV6Smoke {
                 "\(name) exact matrix handle count"
             )
             print("gunbarrel_builder_provenance=\(name):exactDraws=\(result.exactNodeTransformDrawCount):fallbackDraws=\(result.fallbackNodeTransformDrawCount):snapshotDraws=\(result.snapshot.drawCommands.count):exactHandles=\(result.exactNodeTransformHandles.count)")
+
+            // Production supplies an already traversed scene and keeps the
+            // source render setup in the resolved packet. Measure that live
+            // dynamic lowerer path separately from the one-time topology
+            // compile above. Keep the samples in this focused smoke so the
+            // source/result hashes remain the acceptance oracle.
+            let resolvedScene = GoldenEyeGBIResolvedSceneInputV6(
+                scene: GoldenEyeGBISceneBuilderV6.gunbarrelSceneWithRenderSetup(
+                    model: model,
+                    modelName: name,
+                    scene: scene,
+                    context: .gunbarrel
+                )
+            )
+            _ = try GoldenEyeGBISceneBuilderV6.build(
+                model: model,
+                modelName: name,
+                matrices: try handles.map { try makeMatrix($0) } + [try makeMatrix(projectionHandle)],
+                viewports: [viewport],
+                matrixRoles: roles,
+                frame: frame,
+                dynamicResolver: resolver,
+                animationPoses: poses,
+                renderSetupContext: .gunbarrel,
+                textureSetups: setup.setups,
+                resolvedScene: resolvedScene
+            )
+            var samplesUs: [UInt64] = []
+            samplesUs.reserveCapacity(8)
+            for _ in 0..<8 {
+                let start = DispatchTime.now().uptimeNanoseconds
+                let measured = try GoldenEyeGBISceneBuilderV6.build(
+                    model: model,
+                    modelName: name,
+                    matrices: try handles.map { try makeMatrix($0) } + [try makeMatrix(projectionHandle)],
+                    viewports: [viewport],
+                    matrixRoles: roles,
+                    frame: frame,
+                    dynamicResolver: resolver,
+                    animationPoses: poses,
+                    renderSetupContext: .gunbarrel,
+                    textureSetups: setup.setups,
+                    resolvedScene: resolvedScene
+                )
+                samplesUs.append((DispatchTime.now().uptimeNanoseconds - start) / 1_000)
+                expect(measured.presentable && measured.unsupportedVisibleCount == 0,
+                       "\(name) timed build presentable")
+                expect(measured.snapshot.summary.render_hash == result.snapshot.summary.render_hash,
+                       "\(name) timed render hash")
+                expect(measured.snapshot.summary.scene_hash == result.snapshot.summary.scene_hash,
+                       "\(name) timed scene hash")
+            }
+            let sortedSamples = samplesUs.sorted()
+            let p50 = sortedSamples[sortedSamples.count / 2]
+            let p95 = sortedSamples[min(sortedSamples.count - 1, (sortedSamples.count * 95 + 99) / 100 - 1)]
+            print("gunbarrel_builder_timing=\(name):samplesUs=\(samplesUs.map(String.init).joined(separator: ",")):p50Us=\(p50):p95Us=\(p95):renderHash=\(result.snapshot.summary.render_hash):sceneHash=\(result.snapshot.summary.scene_hash)")
             if name == "chrwppk" {
                 expect(result.exactNodeTransformDrawCount == 0
                     && result.fallbackNodeTransformDrawCount == 0,

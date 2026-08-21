@@ -23,6 +23,8 @@ enum GoldenEyeSourceSceneRendererV6Error: Error, CustomStringConvertible {
     case invalidScissor(UInt32)
     case missingLightingContext(UInt32)
     case missingLightingState(UInt32)
+    case missingFogCoordinate(UInt32)
+    case unsupportedFogBinding(UInt32, UInt32)
     case referenceTargetRequired
     case referenceTargetUnavailable
     case referenceReadbackUnavailable
@@ -50,6 +52,10 @@ enum GoldenEyeSourceSceneRendererV6Error: Error, CustomStringConvertible {
             return "missing source-local lighting context for draw \(handle)"
         case .missingLightingState(let handle):
             return "missing decoded GBI lighting state for render state \(handle)"
+        case .missingFogCoordinate(let stageID):
+            return "stage \(stageID) fog requires the copied source-symmetric coordinate array"
+        case .unsupportedFogBinding(let stageID, let reason):
+            return "stage \(stageID) fog binding remains unsupported (reason=\(reason))"
         case .referenceTargetRequired:
             return "Reference 320x240 requires an explicit offscreen target; supplied drawable was not used"
         case .referenceTargetUnavailable:
@@ -154,6 +160,8 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
         var lightingInfo: SIMD4<UInt32>
         var textureInfo: SIMD4<UInt32>
         var textureLevelDimensions: (SIMD4<UInt32>, SIMD4<UInt32>, SIMD4<UInt32>, SIMD4<UInt32>, SIMD4<UInt32>, SIMD4<UInt32>, SIMD4<UInt32>)
+        var fogInfo: SIMD4<UInt32>
+        var presentationInfo: SIMD4<Float>
     }
 
     private final class SlotResources {
@@ -253,6 +261,7 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
     /// strict adapter so no draw can bind a neighboring material or fallback.
     private let textureBindingAdapter: GoldenEyeSourceSceneTextureBindingAdapterV6?
     private let outputMode: GoldenEyeFidelityOutputMode
+    private let presentationTreatment: GoldenEyeSourceScenePresentationTreatmentV6
     private let frontFacing: MTLWinding
     private let slotResources: [SlotResources]
     private let referenceSlotResources: [ReferenceSlotResources]
@@ -276,6 +285,7 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
         maxIndexCount: Int = 65_536,
         maxDrawCount: Int = 2_048,
         outputMode: GoldenEyeFidelityOutputMode = .faithfulHD,
+        presentationTreatment: GoldenEyeSourceScenePresentationTreatmentV6 = .sourceFaithful,
         frontFacing: MTLWinding = .counterClockwise
     ) throws {
         guard state.frameSlots.count == 2 else {
@@ -287,7 +297,7 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
         guard MemoryLayout<GoldenEyeSourceSceneGPUVertexV6>.stride == 64 else {
             throw GoldenEyeSourceSceneRendererV6Error.layoutMismatch("GPU vertex stride")
         }
-        guard MemoryLayout<GPUUniforms>.stride == 464 else {
+        guard MemoryLayout<GPUUniforms>.stride == 496 else {
             throw GoldenEyeSourceSceneRendererV6Error.layoutMismatch("GPU uniform stride")
         }
         guard let completionEvent = state.device.makeSharedEvent() else {
@@ -301,6 +311,9 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
         self.textureResolver = textureResolver
         self.textureBindingAdapter = textureBindingAdapter
         self.outputMode = outputMode
+        self.presentationTreatment = outputMode == .reference320x240
+            ? .sourceFaithful
+            : presentationTreatment
         self.frontFacing = frontFacing
         self.completionEvent = completionEvent
         self.maxVertexCount = maxVertexCount
@@ -1255,6 +1268,19 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
         let resourceByHandle = snapshot.resourceByHandle
         let transformByHandle = snapshot.transformByHandle
         let renderStateByHandle = snapshot.renderStateByHandle
+        // Source bg.c applies the current environment fog around every room
+        // primary/secondary display list.  The stage packet carries the
+        // exact source-symmetric coordinate before the generic NDC vertex
+        // copy; no depth/eye-space approximation is accepted here. Non-stage and
+        // fogless fallback frames retain the zero fog payload.
+        let stageFog: GoldenEyeStageFogParametersV6?
+        if snapshot.summary.screen == UInt32(GE_SOURCE_FRAME_V6_SCREEN_RAMROM) {
+            stageFog = try? GoldenEyeStageFogLoweringV6.make(
+                stageID: snapshot.summary.subphase
+            )
+        } else {
+            stageFog = nil
+        }
         var prepared: [PreparedDraw] = []
         prepared.reserveCapacity(snapshot.drawCommands.count)
 
@@ -1288,6 +1314,38 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
                 hasTexture: hasTexture,
                 sourceScreen: snapshot.summary.screen
             )
+            let fogEnabled = GoldenEyeSourceScenePipelineV6.isFogShadeGeometryState(
+                effectiveRenderState
+            )
+            let fogInfo: SIMD4<UInt32>
+            if fogEnabled {
+                guard snapshot.summary.screen == UInt32(GE_SOURCE_FRAME_V6_SCREEN_RAMROM),
+                      let stageFog, stageFog.enabled else {
+                    throw GoldenEyeSourceSceneRendererV6Error.missingFogCoordinate(
+                        snapshot.summary.subphase
+                    )
+                }
+                guard !stageFog.requiresRendererBinding else {
+                    throw GoldenEyeSourceSceneRendererV6Error.unsupportedFogBinding(
+                        snapshot.summary.subphase,
+                        stageFog.unsupportedReasonCode
+                    )
+                }
+                guard let coordinates = snapshot.fogCoordinateQ16,
+                      coordinates.count == snapshot.vertices.count else {
+                    throw GoldenEyeSourceSceneRendererV6Error.missingFogCoordinate(
+                        snapshot.summary.subphase
+                    )
+                }
+                fogInfo = SIMD4(
+                    UInt32(1),
+                    UInt32(bitPattern: stageFog.sourceFogMultiplier),
+                    UInt32(bitPattern: stageFog.sourceFogOffset),
+                    stageFog.sourceFogColorRGBA
+                )
+            } else {
+                fogInfo = SIMD4<UInt32>(repeating: 0)
+            }
             let sourceUsesTexture = Self.stateUsesTexture(effectiveRenderState)
             var texture: (any MTLTexture)?
             var textureMetadata: GoldenEyeSourceSceneTextureBindingMetadataV6?
@@ -1501,6 +1559,11 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
                     fallbackWidth: texture?.width ?? 1,
                     fallbackHeight: texture?.height ?? 1,
                     fallbackMipLevels: min(textureMipLevels ?? 1, 7)
+                ),
+                fogInfo: fogInfo,
+                presentationInfo: Self.presentationInfo(
+                    screen: lightingFrameContext.screen,
+                    treatment: presentationTreatment
                 )
             )
             let sourceScissor = try outputLayout.sourceScissor(
@@ -1556,6 +1619,37 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
         )
     }
 
+    /// x = treatment (0 source-faithful, 1 enhanced HD), y = material profile
+    /// (1 Nintendo, 2 Rareware, 3 Cast), z = LOD bias, w = profile gain.
+    /// Keeping this as a private GPU record means Enhanced HD cannot mutate the
+    /// source scene hash or the fixed-width C ABI.
+    private static func presentationInfo(
+        screen: UInt32,
+        treatment: GoldenEyeSourceScenePresentationTreatmentV6
+    ) -> SIMD4<Float> {
+        guard treatment.isEnhanced else { return SIMD4<Float>(repeating: 0) }
+        let profile: Float
+        let lodBias: Float
+        let gain: Float
+        switch screen {
+        case UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_NINTENDO):
+            profile = 1
+            lodBias = 0
+            gain = 0
+        case UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_RAREWARE):
+            profile = 2
+            lodBias = -0.5
+            gain = 0.75
+        case UInt32(GE_SOURCE_FRAME_V6_SCREEN_CAST):
+            profile = 3
+            lodBias = 0
+            gain = 1.125
+        default:
+            return SIMD4<Float>(repeating: 0)
+        }
+        return SIMD4(Float(treatment.rawValue), profile, lodBias, gain)
+    }
+
     private static func rendererStateForSource(
         _ state: GESourceRenderStateV6,
         hasTexture: Bool,
@@ -1564,6 +1658,27 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
         let zero = UInt32(GoldenEyeSourceSceneCombinerSelectorV6.zero)
         let combinedAlpha = UInt32(GoldenEyeSourceSceneCombinerSelectorV6.combinedAlpha)
         let lodFraction = UInt32(GoldenEyeSourceSceneCombinerSelectorV6.lodFraction)
+        let isCanonicalGoldenEyeLOD =
+            sourceScreen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_GOLDENEYE) &&
+            state.raw_othermode_h == 0x0011_2000 &&
+            state.raw_othermode_l == 0x0c18_2048 &&
+            state.combiner_cycle_count == 2 &&
+            state.cycle0_color_a == UInt32(GoldenEyeSourceSceneCombinerSelectorV6.texel1) &&
+            state.cycle0_color_b == UInt32(GoldenEyeSourceSceneCombinerSelectorV6.texel0) &&
+            state.cycle0_color_c == lodFraction &&
+            state.cycle0_color_d == UInt32(GoldenEyeSourceSceneCombinerSelectorV6.texel0) &&
+            state.cycle0_alpha_a == UInt32(GoldenEyeSourceSceneCombinerSelectorV6.texel1) &&
+            state.cycle0_alpha_b == UInt32(GoldenEyeSourceSceneCombinerSelectorV6.texel0) &&
+            state.cycle0_alpha_c == lodFraction &&
+            state.cycle0_alpha_d == UInt32(GoldenEyeSourceSceneCombinerSelectorV6.texel0) &&
+            state.cycle1_color_a == UInt32(GoldenEyeSourceSceneCombinerSelectorV6.combined) &&
+            state.cycle1_color_b == zero &&
+            state.cycle1_color_c == UInt32(GoldenEyeSourceSceneCombinerSelectorV6.shade) &&
+            state.cycle1_color_d == zero &&
+            state.cycle1_alpha_a == UInt32(GoldenEyeSourceSceneCombinerSelectorV6.combined) &&
+            state.cycle1_alpha_b == zero &&
+            state.cycle1_alpha_c == UInt32(GoldenEyeSourceSceneCombinerSelectorV6.shade) &&
+            state.cycle1_alpha_d == zero
         func lowerUnsupported(_ selector: UInt32) -> UInt32 {
             if sourceScreen == UInt32(GE_SOURCE_FRAME_V6_SCREEN_RAMROM) {
                 // The partial stage-environment frame has no texture resource
@@ -1580,6 +1695,9 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
             }
             if sourceScreen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_RAREWARE),
                selector == lodFraction {
+                return selector
+            }
+            if isCanonicalGoldenEyeLOD, selector == lodFraction {
                 return selector
             }
             return selector <= zero || selector == combinedAlpha ? selector : zero

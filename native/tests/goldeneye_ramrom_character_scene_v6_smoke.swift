@@ -152,6 +152,40 @@ struct GoldenEyeRamRomCharacterSceneV6Smoke {
         precondition(anchorFrame.staticPlacementCount == 1)
         precondition(anchorFrame.animationReadyCount == 1)
         precondition(anchorFrame.attachmentReadyCount == 1)
+
+        var headAuthority = GoldenEyeRamRomCharacterHeadSelectionAuthorityV6(
+            sourceRandomSeed: 0xAB8D_9F77_8128_0783
+        )
+        headAuthority.reset()
+        let selectedHead = try headAuthority.select(
+            stageID: 33, demoID: 1, objectIndex: 0, bodyID: 1,
+            explicitHeadID: 57
+        )
+        let selectedVisible = GoldenEyeRamRomVisibleDependencyCatalogV6(
+            rootURL: URL(fileURLWithPath: "/tmp"),
+            dependencies: [
+                GoldenEyeRamRomVisibleDependencyCatalogV6.Dependency(
+                    category: "heads", symbol: "chr_57_head",
+                    dependencyKind: "heads", modelIndex: 57,
+                    demoIDs: [1], stages: ["Dam"]
+                ),
+            ],
+            categoryNames: ["heads"]
+        )
+        let selectedFrame = try GoldenEyeRamRomCharacterSceneAdapterV6.make(
+            stageID: 33, stageName: "Dam", demoID: 1, nativeTick: 2,
+            setup: setup, dependencies: emptyDependencies,
+            visibleDependencies: selectedVisible, sidecars: emptySidecars,
+            headSelections: [0: selectedHead]
+        )
+        precondition(selectedFrame.characters[0].headResolution == .sourceSelected)
+        precondition(selectedFrame.characters[0].headTableIndex == 57)
+        precondition(selectedFrame.characters[0].headSelection == selectedHead)
+        precondition(
+            !selectedFrame.characters[0].missingFields.contains("head_selection.table_index")
+        )
+        precondition(!selectedFrame.isPresentable)
+
         var midpointState = state
         midpointState = GoldenEyeRamRomCharacterAnimationStateV6(
             animationID: state.animationID, sourceFrameQ16: state.sourceFrameQ16,

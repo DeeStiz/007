@@ -54,7 +54,7 @@ def make_specs(root: Path, module: ModuleType) -> tuple[dict[str, str], tuple[di
     # candidates they can reach; unrelated MP-only/unused assets are not part
     # of the cast route and would add unexercised preparation failures.
     body_dirs = {
-        "djbond", "boilerbond", "natalya", "boilertrev", "xenia", "orumov",
+        "djbond", "boilerbond", "natalya", "spicebond", "boilertrev", "xenia", "orumov",
         "boris", "valentin", "greatguard", "oliveguard", "rusguard", "techman",
         "techwoman", "commguard", "armourguard", "navyguard", "snowguard", "pilot", "greyguard",
         "jeanwoman", "greyman", "blueman", "redman", "cardiman", "bluecamguard",

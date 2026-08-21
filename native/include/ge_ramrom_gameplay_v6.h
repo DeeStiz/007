@@ -35,6 +35,47 @@ typedef struct GERamRomWeaponEffectSetupV6 GERamRomWeaponEffectSetupV6;
 typedef struct GERamRomWeaponEffectFrameV6 GERamRomWeaponEffectFrameV6;
 typedef struct GERamRomWeaponEffectEventRecordV6 GERamRomWeaponEffectEventRecordV6;
 typedef struct GERamRomWeaponEffectOwnerStateV6 GERamRomWeaponEffectOwnerStateV6;
+
+/* The directly compiled player/camera owner has its own frozen V6 snapshot.
+   This bridge record is deliberately duplicated here instead of importing
+   that owner header, which keeps the gameplay header acyclic and gives the
+   cross-owner handoff an independently checked, fixed-width layout. */
+#define GE_RAMROM_GAMEPLAY_PLAYER_CAMERA_V7_RECORD_VERSION ((uint32_t)1u)
+#define GE_RAMROM_GAMEPLAY_PLAYER_CAMERA_V7_STATE_FLAG_MASK ((uint32_t)0x1fu)
+
+typedef struct GERamRomGameplayPlayerCameraSnapshotV7 {
+    GEAbiHeaderV1 header;
+    uint32_t record_version;
+    uint32_t flags;
+    uint32_t demo_id;
+    uint32_t stage_id;
+    uint64_t native_tick;
+    uint64_t reference_tick;
+    uint32_t pair_phase;
+    /* Player-owner source-frame count; gameplay's boolean source_anchor is
+       normalized from pair_phase when this record is applied. */
+    uint32_t source_anchor;
+    uint32_t current_room;
+    uint32_t current_pad;
+    uint32_t weapon_model_handle;
+    uint32_t weapon_action;
+    uint32_t player_health;
+    uint32_t hud_ammo;
+    uint32_t player_animation;
+    int32_t player_position_q16[3];
+    int32_t player_velocity_q16[3];
+    int32_t camera_position_q16[3];
+    int32_t camera_forward_q16[3];
+    int32_t camera_up_q16[3];
+    int32_t yaw_q16;
+    int32_t pitch_q16;
+    uint64_t source_hash;
+    uint64_t state_hash;
+    uint64_t render_hash;
+    uint32_t reserved0;
+    uint32_t reserved1;
+} GERamRomGameplayPlayerCameraSnapshotV7;
+
 #include "ge_guard_door_owner_v6.h"
 
 #ifdef __cplusplus
@@ -423,11 +464,15 @@ GEStatusV1 ge_ramrom_gameplay_v6_validate_input(const GERamRomGameplayInputV6 *v
 GEStatusV1 ge_ramrom_gameplay_v6_validate_entity(const GERamRomGameplayEntityV6 *value);
 GEStatusV1 ge_ramrom_gameplay_v6_validate_attachment(const GERamRomGameplayAttachmentV6 *value);
 GEStatusV1 ge_ramrom_gameplay_v6_validate_snapshot(const GERamRomGameplaySnapshotV6 *value);
+GEStatusV1 ge_ramrom_gameplay_v6_validate_player_camera_snapshot_v7(
+    const GERamRomGameplayPlayerCameraSnapshotV7 *value);
 GEStatusV1 ge_ramrom_gameplay_v6_validate_event(const GERamRomGameplayEventV6 *value);
 GEStatusV1 ge_ramrom_gameplay_v6_validate_page(const GERamRomGameplayPageV6 *value);
 GEStatusV1 ge_ramrom_gameplay_v6_validate_state(const GERamRomGameplayStateV6 *value);
 
 uint64_t ge_ramrom_gameplay_v6_hash_snapshot(const GERamRomGameplaySnapshotV6 *value);
+uint64_t ge_ramrom_gameplay_v6_hash_player_camera_snapshot_v7(
+    const GERamRomGameplayPlayerCameraSnapshotV7 *value);
 uint64_t ge_ramrom_gameplay_v6_hash_event(const GERamRomGameplayEventV6 *value);
 
 /* Exact source `randomGetNextFrom` transition from src/random.s. The seed is
@@ -515,6 +560,16 @@ GEStatusV1 ge_ramrom_gameplay_v6_copy_snapshot(
     const GERamRomGameplayStateV6 *state,
     GERamRomGameplaySnapshotV6 *out_snapshot);
 
+/* Apply one copied publication from the directly compiled player/camera
+   owner. Only the gameplay player entity and player/camera snapshot fields
+   are replaced; setup, source recording, object categories, and unsupported
+   owner state remain untouched. The optional event is already initialized by
+   the gameplay step and receives only the new state/event hashes. */
+GEStatusV1 ge_ramrom_gameplay_v6_apply_player_camera_snapshot_v7(
+    GERamRomGameplayStateV6 *inout_state,
+    const GERamRomGameplayPlayerCameraSnapshotV7 *player_camera,
+    GERamRomGameplayEventV6 *optional_event);
+
 GEStatusV1 ge_ramrom_gameplay_v6_copy_page(
     const GERamRomGameplayStateV6 *state,
     uint32_t page_kind,
@@ -582,6 +637,8 @@ GE_RAMROM_GAMEPLAY_V6_STATIC_ASSERT(sizeof(GERamRomGameplayAttachmentV6) == 116u
                                     "RAMROM gameplay attachment layout drift");
 GE_RAMROM_GAMEPLAY_V6_STATIC_ASSERT(sizeof(GERamRomGameplaySnapshotV6) == 304u,
                                     "RAMROM gameplay snapshot layout drift");
+GE_RAMROM_GAMEPLAY_V6_STATIC_ASSERT(sizeof(GERamRomGameplayPlayerCameraSnapshotV7) == 176u,
+                                    "RAMROM gameplay player camera V7 layout drift");
 GE_RAMROM_GAMEPLAY_V6_STATIC_ASSERT(sizeof(GERamRomGameplayEventV6) == 184u,
                                     "RAMROM gameplay event layout drift");
 GE_RAMROM_GAMEPLAY_V6_STATIC_ASSERT(sizeof(GERamRomGameplayPageV6) == 56u,

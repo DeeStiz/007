@@ -14,6 +14,8 @@ struct GoldenEyeRamRomGameplayOrchestratorV6Smoke {
         let cameraHash: UInt64
         let readinessMissing: [String]
         let positionChanged: Bool
+        let dynamicDoorCount: UInt32
+        let dynamicDoorHash: UInt64
         let aggregate: UInt64
     }
 
@@ -100,6 +102,7 @@ struct GoldenEyeRamRomGameplayOrchestratorV6Smoke {
                     : min(UInt64(entry.recordCount) * 2, 8)
                 for tick in UInt64(0)..<max(2, tickCount) {
                     let frame = try orchestrator.step(nativeTick: tick)
+                    assertUnifiedPlayerCamera(frame)
                     finalFrame = frame
                     if initialPosition == nil {
                         initialPosition = frame.playerCamera.stageState.playerPositionQ16
@@ -107,7 +110,10 @@ struct GoldenEyeRamRomGameplayOrchestratorV6Smoke {
                     aggregate = mix(aggregate, [
                         tick, frame.stateHash, frame.gameplaySnapshot.state_hash,
                         frame.playerCamera.playerHash, frame.playerCamera.cameraHash,
-                        frame.playerCamera.roomHash, UInt64(frame.readiness.missingFields.count),
+                        frame.playerCamera.roomHash, UInt64(frame.dynamicDoors.count),
+                        frame.dynamicDoors.reduce(UInt64(1_469_598_103_934_665_603)) {
+                            mix($0, [UInt64($1.sourceRecordOffset), UInt64($1.openPositionQ16), $1.sourceHash])
+                        }, UInt64(frame.readiness.missingFields.count),
                     ])
                     if tick == 0 {
                         precondition(frame.readiness.playerCameraReady)
@@ -128,6 +134,10 @@ struct GoldenEyeRamRomGameplayOrchestratorV6Smoke {
                     cameraHash: frame.playerCamera.cameraHash,
                     readinessMissing: frame.readiness.missingFields,
                     positionChanged: positionChanged,
+                    dynamicDoorCount: UInt32(frame.dynamicDoors.count),
+                    dynamicDoorHash: frame.dynamicDoors.reduce(UInt64(1_469_598_103_934_665_603)) {
+                        mix($0, [UInt64($1.sourceRecordOffset), UInt64($1.openPositionQ16), $1.sourceHash])
+                    },
                     aggregate: aggregate
                 )
                 if pass == 0 {
@@ -161,6 +171,7 @@ struct GoldenEyeRamRomGameplayOrchestratorV6Smoke {
             request: damRequest, atNativeTick: 0
         )
         let environmentFrame = try environmentOwner.step(nativeTick: 0)
+        assertUnifiedPlayerCamera(environmentFrame)
         precondition(environmentFrame.readiness.playerCameraReady)
         precondition(environmentFrame.readiness.gameplayReady)
         precondition(environmentFrame.readiness.missingFields.contains { $0.hasPrefix("guard_ai_") })
@@ -169,16 +180,31 @@ struct GoldenEyeRamRomGameplayOrchestratorV6Smoke {
                 $0.hasPrefix("guard_animationtable_payload.") ||
                 $0 == "guard_animation_source_commands"
         })
+        precondition(!environmentFrame.dynamicDoors.isEmpty)
+        _ = try environmentOwner.step(nativeTick: 1)
+        guard let environmentRestore = environmentOwner.takeRestoreSnapshot() else {
+            fatalError("environment restore snapshot missing")
+        }
+        try environmentOwner.restore(environmentRestore)
+        let environmentAdvanced = try environmentOwner.step(nativeTick: 2)
+        assertUnifiedPlayerCamera(environmentAdvanced)
+        try environmentOwner.restore(environmentRestore)
+        let environmentReplayed = try environmentOwner.step(nativeTick: 2)
+        assertUnifiedPlayerCamera(environmentReplayed)
+        precondition(environmentReplayed.dynamicDoors == environmentAdvanced.dynamicDoors)
 
         let aggregate = first.values.sorted { $0.demoID < $1.demoID }.reduce(UInt64(1_469_598_103_934_665_603)) {
             mix($0, [$1.stateHash, $1.playerHash, $1.cameraHash,
-                     $1.positionChanged ? 1 : 0, $1.aggregate])
+                     $1.positionChanged ? 1 : 0, UInt64($1.dynamicDoorCount),
+                     $1.dynamicDoorHash, $1.aggregate])
         }
         print(
                 "goldeneye_ramrom_gameplay_orchestrator_v6_smoke: PASS demos=14 runs=28 " +
                 "aggregate=\(aggregate) dam1State=\(dam.stateHash) " +
                 "dam1Player=\(dam.playerHash) dam1Camera=\(dam.cameraHash) " +
-                "dam1Moved=\(dam.positionChanged ? 1 : 0) restore=1"
+                "dam1Moved=\(dam.positionChanged ? 1 : 0) dynamicDoors=\(dam.dynamicDoorCount) " +
+                "dynamicDoorHash=\(dam.dynamicDoorHash) environmentDynamicDoors=\(environmentFrame.dynamicDoors.count) " +
+                "dynamicRestore=1 restore=1"
         )
         _ = visibleRoot
     }
@@ -203,5 +229,35 @@ struct GoldenEyeRamRomGameplayOrchestratorV6Smoke {
             }
             return result
         }
+    }
+
+    private static func assertUnifiedPlayerCamera(
+        _ frame: GoldenEyeRamRomGameplayFrameV6
+    ) {
+        let gameplay = frame.gameplaySnapshot
+        let camera = frame.playerCamera.sourceSnapshot
+        precondition(gameplay.demo_id == camera.demo_id)
+        precondition(gameplay.stage_id == camera.stage_id)
+        precondition(gameplay.native_tick == camera.native_tick)
+        precondition(gameplay.reference_tick == camera.reference_tick)
+        precondition(gameplay.pair_phase == camera.pair_phase)
+        precondition(gameplay.current_room == camera.current_room)
+        precondition(gameplay.current_pad == camera.current_pad)
+        precondition(gameplay.player_health == camera.player_health)
+        precondition(gameplay.player_weapon == camera.weapon_model_handle)
+        precondition(gameplay.player_animation == camera.player_animation)
+        precondition(q16(gameplay.player_position_q16) == q16(camera.player_position_q16))
+        precondition(q16(gameplay.player_velocity_q16) == q16(camera.player_velocity_q16))
+        precondition(q16(gameplay.camera_position_q16) == q16(camera.camera_position_q16))
+        precondition(q16(gameplay.camera_forward_q16) == q16(camera.camera_forward_q16))
+        precondition(q16(gameplay.camera_up_q16) == q16(camera.camera_up_q16))
+        precondition(gameplay.state_hash != 0)
+        precondition(gameplay.render_hash != 0)
+        precondition(gameplay.audio_hash != 0)
+        precondition(frame.gameplayEvent.state_hash == gameplay.state_hash)
+    }
+
+    private static func q16<T>(_ value: T) -> [Int32] {
+        withUnsafeBytes(of: value) { Array($0.bindMemory(to: Int32.self)) }
     }
 }

@@ -68,6 +68,7 @@ CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}" "${SWIFTC}" "${SWIFT_ARGS[@]}" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_scene_packet.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_gameplay_runtime.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_attract_route.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_cast_title_hash.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_ramrom_playback_service.swift" \
     "${PROJECT_ROOT}/native/tests/goldeneye_ramrom_playback_service_hash.swift" \
     "${PROJECT_ROOT}/native/tests/goldeneye_stage_gameplay_runtime_smoke.swift" \
@@ -89,6 +90,7 @@ CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}" "${SWIFTC}" "${SWIFT_ARGS[@]}" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_scene_packet.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_gameplay_runtime.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_attract_route.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_cast_title_hash.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_ramrom_playback_service.swift" \
     "${PROJECT_ROOT}/native/tests/goldeneye_ramrom_playback_service_hash.swift" \
     "${PROJECT_ROOT}/native/tests/goldeneye_stage_gameplay_runtime_smoke.swift" \

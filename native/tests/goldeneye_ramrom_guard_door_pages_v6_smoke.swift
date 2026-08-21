@@ -83,6 +83,15 @@ struct GoldenEyeRamRomGuardDoorPagesV6Smoke {
         let transformedDoors = first.reduce(0) { partial, page in
             partial + page.doors.reduce(0) { $0 + hasMatrix($1.base_transform_q16) }
         }
+        let resolvedPortalRows = first.reduce(0) { partial, page in
+            partial + page.doors.reduce(0) { $0 + ($1.portal_number != UInt32.max ? 1 : 0) }
+        }
+        let portalNumbers = first.flatMap { $0.doors.map(\.portal_number) }
+        let portalHash = portalNumbers.reduce(UInt64(1_469_598_103_934_665_603)) { hash, value in
+            stride(from: 0, to: 32, by: 8).reduce(hash) { partial, shift in
+                (partial ^ UInt64((value >> UInt32(shift)) & 0xff)) &* 1_099_511_628_211
+            }
+        }
         print(
             "goldeneye_ramrom_guard_door_pages_v6_smoke: PASS demos=14 runs=2 " +
                 "stages=7 guards=\(guards) doors=\(doors) transformedDoors=\(transformedDoors) " +
@@ -90,7 +99,8 @@ struct GoldenEyeRamRomGuardDoorPagesV6Smoke {
                 "poseDecoderEvidence=14 poseEvidence=\(poseEvidence) renderRows=\(renderRows.count) " +
                 "renderModeRows=\(renderModeRows) fogRows=\(fogRows) aiSourceEvidence=\(aiEvidence) " +
                 "weaponEvidence=\(weaponEvidence) weaponPageEvidence=\(weaponPageEvidence) " +
-                "missingWeaponPages=\(weaponMissingPages)"
+                "missingWeaponPages=\(weaponMissingPages) resolvedPortalRows=\(resolvedPortalRows) " +
+                "uniquePortals=\(Set(portalNumbers).count) portalHash=\(portalHash)"
         )
     }
 

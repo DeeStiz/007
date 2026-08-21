@@ -54,7 +54,18 @@ struct GoldenEyeStageModelPlacementCatalogV6: Sendable, Equatable {
             default:
                 return nil
             }
-            let modelIndex = object.key0
+            let dependency: GoldenEyeStageSetupDependencyCatalogV6.Dependency?
+            if kind == "character", let stageName {
+                // Type-9 setup key0 is chrnum. The corrected GuardRecord
+                // dependency row joins by source offset and carries bodyID.
+                dependency = dependencies.dependencies.first {
+                    $0.stage == stageName && $0.kind == "character" &&
+                        $0.setupOffset == object.sourceRecordOffset
+                }
+            } else {
+                dependency = dependencies.dependency(kind: kind, modelIndex: object.key0)
+            }
+            let modelIndex = dependency?.modelIndex ?? object.key0
             if let visibleDependencies {
                 let category = kind == "prop" ? "props" : "guards"
                 guard visibleDependencies.dependencies.contains(where: {
@@ -64,7 +75,6 @@ struct GoldenEyeStageModelPlacementCatalogV6: Sendable, Equatable {
                     return nil
                 }
             }
-            let dependency = dependencies.dependency(kind: kind, modelIndex: modelIndex)
             let modelName = dependency.map {
                 "stage_\(kind)_\(String(format: "%03u", $0.modelIndex))_\($0.modelName)"
             } ?? "stage_\(kind)_\(modelIndex)"

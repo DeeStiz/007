@@ -8,18 +8,22 @@ private final class GoldenEyeView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
+        layerContentsRedrawPolicy = .duringViewResize
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         wantsLayer = true
+        layerContentsRedrawPolicy = .duringViewResize
     }
 
     override var wantsUpdateLayer: Bool { true }
 
     override func makeBackingLayer() -> CALayer {
         let metalLayer = CAMetalLayer()
+        metalLayer.name = "GoldenEye Swift Drawable Surface"
         metalLayer.isOpaque = true
+        metalLayer.backgroundColor = NSColor.black.cgColor
         metalLayer.framebufferOnly = true
         metalLayer.pixelFormat = .bgra8Unorm
         metalLayer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
@@ -45,7 +49,7 @@ private final class GoldenEyeView: NSView {
     func updateDrawableSize() {
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1.0
         metalLayer.contentsScale = scale
-        let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+        let size = convertToBacking(bounds).size
         if let drawableSizePublisher {
             drawableSizePublisher(size)
         } else {
@@ -60,9 +64,13 @@ private final class GoldenEyeOwnerLoop: @unchecked Sendable {
     private var stopRequested = false
     private var running = false
     private var paused = false
+    private var resetRequested = false
     private var pendingInput = GoldenEyeKeyboardSnapshot(sequence: 0, held: 0, pressed: 0, released: 0)
     private var frameRenderer: (any GoldenEyeFrameRenderer)?
     private var titleFlow = GoldenEyeBootFlow()
+    private var renderCount: UInt64 = 0
+    private var firstRenderNanoseconds: UInt64 = 0
+    private var lastRenderNanoseconds: UInt64 = 0
 
     func submit(input: GoldenEyeKeyboardSnapshot) {
         lock.lock()
@@ -85,6 +93,49 @@ private final class GoldenEyeOwnerLoop: @unchecked Sendable {
         lock.lock()
         self.paused = paused
         lock.unlock()
+    }
+
+    @discardableResult
+    func resetGame() -> Bool {
+        lock.lock()
+        guard running else {
+            lock.unlock()
+            return false
+        }
+        resetRequested = true
+        paused = false
+        renderCount = 0
+        firstRenderNanoseconds = 0
+        lastRenderNanoseconds = 0
+        pendingInput = GoldenEyeKeyboardSnapshot(sequence: pendingInput.sequence, held: 0, pressed: 0, released: 0)
+        lock.unlock()
+        return true
+    }
+
+    func performanceSnapshot() -> GoldenEyePerformanceSnapshot {
+        lock.lock()
+        let count = renderCount
+        let first = firstRenderNanoseconds
+        let last = lastRenderNanoseconds
+        lock.unlock()
+        guard count > 1, last > first else {
+            return GoldenEyePerformanceSnapshot(
+                presentedFPS: nil,
+                logicHz: nil,
+                rendererP95Milliseconds: nil,
+                presentedSamples: count,
+                tickCount: count
+            )
+        }
+        let seconds = Double(last - first) / 1_000_000_000
+        let fps = seconds > 0 ? Double(count - 1) / seconds : nil
+        return GoldenEyePerformanceSnapshot(
+            presentedFPS: fps,
+            logicHz: fps,
+            rendererP95Milliseconds: nil,
+            presentedSamples: count,
+            tickCount: count
+        )
     }
 
     func start(renderer: (any GoldenEyeFrameRenderer)? = nil) {
@@ -126,6 +177,14 @@ private final class GoldenEyeOwnerLoop: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return paused
+    }
+
+    private func takeResetRequest() -> Bool {
+        lock.lock()
+        let requested = resetRequested
+        resetRequested = false
+        lock.unlock()
+        return requested
     }
 
     private func takeInput(for tick: Int) -> GoldenEyeKeyboardSnapshot {
@@ -196,6 +255,22 @@ private final class GoldenEyeOwnerLoop: @unchecked Sendable {
         var tick = 1
         while tick <= tickLimit {
             if shouldStop() { break }
+            if takeResetRequest() {
+                _ = ge_native_shutdown()
+                let resetStatus = ge_native_initialize(request)
+                guard resetStatus == GE_STATUS_OK else {
+                    print("GoldenEye owner reset failed: \(resetStatus)")
+                    break
+                }
+                titleFlow = GoldenEyeBootFlow()
+                ticksCompleted = 0
+                tick = 1
+                try? "gameReset=1 status=0\n".write(
+                    toFile: "/tmp/goldeneye-m2-owner-loop.log",
+                    atomically: false,
+                    encoding: .utf8
+                )
+            }
             if shouldPause() {
                 usleep(titleRuntimeEnabled ? 8_333 : 8_000)
                 continue
@@ -220,9 +295,17 @@ private final class GoldenEyeOwnerLoop: @unchecked Sendable {
                 let titleSnapshot = titleFlow.step(input: titleInput(from: keyboardInput))
                 (frameRenderer as? GoldenEyeTitleSnapshotRenderer)?.submit(titleSnapshot: titleSnapshot)
             }
-            if let frameRenderer, !frameRenderer.renderFrame() {
-                print("GoldenEye owner renderer failed")
-                break
+            if let frameRenderer {
+                guard frameRenderer.renderFrame() else {
+                    print("GoldenEye owner renderer failed")
+                    break
+                }
+                let renderedAt = GE120RawClock.nowNanoseconds()
+                lock.lock()
+                if firstRenderNanoseconds == 0 { firstRenderNanoseconds = renderedAt }
+                lastRenderNanoseconds = renderedAt
+                renderCount &+= 1
+                lock.unlock()
             }
             usleep(titleRuntimeEnabled ? 8_333 : 8_000)
         }
@@ -250,6 +333,7 @@ private final class GoldenEyeViewController: NSViewController {
     private let ownerLoop = GoldenEyeOwnerLoop()
     private var keyboardState = GoldenEyeKeyboardInputState()
     private var didRegisterFocusObserver = false
+    private var focusState: Bool?
     private var didScheduleInputProbe = false
     private var didScheduleCadenceWarmup = false
     private var didScheduleCadenceSafetyTermination = false
@@ -262,6 +346,10 @@ private final class GoldenEyeViewController: NSViewController {
     private let nativeInputMailbox = GoldenEyeInputMailbox()
     private var gameControllerAdapter: GoldenEyeGameControllerAdapter?
     private var baselinePipeline: AnyObject?
+    private var performanceOverlay: GoldenEyePerformanceOverlay?
+    private var performanceTimer: Timer?
+    private var performanceOverlayVisible = false
+    private var runtimeActivity: NSObjectProtocol?
     private var gameView: GoldenEyeView { view as! GoldenEyeView }
 
     private var eventProbeEnabled: Bool {
@@ -353,6 +441,15 @@ private final class GoldenEyeViewController: NSViewController {
 
     override func loadView() {
         view = GoldenEyeView(frame: NSRect(x: 0, y: 0, width: 960, height: 540))
+        let overlay = GoldenEyePerformanceOverlay()
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        overlay.isHidden = true
+        gameView.addSubview(overlay)
+        NSLayoutConstraint.activate([
+            overlay.topAnchor.constraint(equalTo: gameView.topAnchor, constant: 12),
+            overlay.trailingAnchor.constraint(equalTo: gameView.trailingAnchor, constant: -12),
+        ])
+        performanceOverlay = overlay
     }
 
     override func viewDidAppear() {
@@ -515,6 +612,7 @@ private final class GoldenEyeViewController: NSViewController {
                             libraryURL: libraryURL,
                             source2DLibraryURL: source2DLibraryURL,
                             outputMode: .faithfulHD,
+                            presentationTreatment: .enhancedHD,
                             frameResourceProvider: matrixProvider
                         )
                     } catch {
@@ -623,6 +721,39 @@ private final class GoldenEyeViewController: NSViewController {
                 name: NSApplication.didBecomeActiveNotification,
                 object: nil
             )
+            if let window = view.window {
+                NotificationCenter.default.addObserver(
+                    self,
+                    selector: #selector(windowDidResignKey(_:)),
+                    name: NSWindow.didResignKeyNotification,
+                    object: window
+                )
+                NotificationCenter.default.addObserver(
+                    self,
+                    selector: #selector(windowDidBecomeKey(_:)),
+                    name: NSWindow.didBecomeKeyNotification,
+                    object: window
+                )
+                NotificationCenter.default.addObserver(
+                    self,
+                    selector: #selector(windowDidMiniaturize(_:)),
+                    name: NSWindow.didMiniaturizeNotification,
+                    object: window
+                )
+                NotificationCenter.default.addObserver(
+                    self,
+                    selector: #selector(windowDidDeminiaturize(_:)),
+                    name: NSWindow.didDeminiaturizeNotification,
+                    object: window
+                )
+                NotificationCenter.default.addObserver(
+                    self,
+                    selector: #selector(windowDidChangeBackingProperties(_:)),
+                    name: NSWindow.didChangeBackingPropertiesNotification,
+                    object: window
+                )
+                focusState = NSApp.isActive && window.isKeyWindow
+            }
             didRegisterFocusObserver = true
         }
         if (nativeTitleRuntimeEnabled || stageBackgroundRuntimeEnabled), let frameRenderer {
@@ -677,6 +808,15 @@ private final class GoldenEyeViewController: NSViewController {
         } else {
             ownerLoop.start(renderer: frameRenderer)
         }
+        if runtimeActivity == nil {
+            runtimeActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .latencyCritical],
+                reason: "GoldenEye Swift game session"
+            )
+        }
+        if ProcessInfo.processInfo.environment["GOLDENEYE_PERFORMANCE_OVERLAY"] == "1" {
+            setPerformanceOverlayVisible(true)
+        }
         scheduleInputProbe()
         schedulePauseProbe()
         if ProcessInfo.processInfo.environment["GOLDENEYE_M9_RESIZE"] == "1"
@@ -691,6 +831,7 @@ private final class GoldenEyeViewController: NSViewController {
     }
 
     override func viewWillDisappear() {
+        setPerformanceOverlayVisible(false)
         stopRuntimeForTermination()
         super.viewWillDisappear()
     }
@@ -700,6 +841,7 @@ private final class GoldenEyeViewController: NSViewController {
     /// renderer can drain its Metal 4 completion fence and publish shutdown
     /// evidence before the process exits.
     func stopRuntimeForTermination() {
+        setPerformanceOverlayVisible(false)
         gameControllerAdapter?.stop()
         gameControllerAdapter = nil
         gameView.drawableSizePublisher = nil
@@ -707,6 +849,95 @@ private final class GoldenEyeViewController: NSViewController {
         nativeTitleOwner = nil
         nativeAudioService = nil
         ownerLoop.stop()
+        if let runtimeActivity {
+            ProcessInfo.processInfo.endActivity(runtimeActivity)
+            self.runtimeActivity = nil
+        }
+    }
+
+    /// Called by the AppKit Game menu. The owner-thread reset recreates the
+    /// source authority and restarts its logical clock at native tick zero;
+    /// saved files remain untouched.
+    func resetGameFromMenu() -> Bool {
+        keyboardState.reset()
+        nativeInputMailbox.reset()
+        nativeInputMailbox.enqueueFocusGained()
+        let succeeded: Bool
+        if let nativeTitleOwner {
+            nativeTitleOwner.resetInput()
+            nativeTitleOwner.setPaused(false)
+            succeeded = nativeTitleOwner.resetGame(timeout: 5.0)
+        } else {
+            ownerLoop.resetInput()
+            ownerLoop.setPaused(false)
+            succeeded = ownerLoop.resetGame()
+        }
+        recordInputEvidence("event=gameReset requested=1 result=\(succeeded ? 1 : 0)")
+        return succeeded
+    }
+
+    @discardableResult
+    func setPerformanceOverlayVisible(_ visible: Bool) -> Bool {
+        performanceOverlayVisible = visible
+        performanceOverlay?.isHidden = !visible
+        if visible {
+            refreshPerformanceOverlay()
+            if performanceTimer == nil {
+                performanceTimer = Timer.scheduledTimer(
+                    timeInterval: 0.5,
+                    target: self,
+                    selector: #selector(refreshPerformanceOverlayTimer(_:)),
+                    userInfo: nil,
+                    repeats: true
+                )
+            }
+        } else {
+            performanceTimer?.invalidate()
+            performanceTimer = nil
+            NSApp.dockTile.badgeLabel = nil
+        }
+        return visible
+    }
+
+    var isPerformanceOverlayVisible: Bool { performanceOverlayVisible }
+
+    @objc private func refreshPerformanceOverlayTimer(_ timer: Timer) {
+        refreshPerformanceOverlay()
+    }
+
+    private func refreshPerformanceOverlay() {
+        guard performanceOverlayVisible else { return }
+        let snapshot: GoldenEyePerformanceSnapshot
+        if let nativeTitleOwner {
+            let telemetry = nativeTitleOwner.telemetry()
+            let scheduler = telemetry.scheduler
+            let schedulerSpan = scheduler.lastSampledNanoseconds >= scheduler.firstSampledNanoseconds
+                ? scheduler.lastSampledNanoseconds - scheduler.firstSampledNanoseconds
+                : 0
+            let logicSeconds = Double(schedulerSpan) / 1_000_000_000
+            let logicHz = logicSeconds > 0 && scheduler.emittedTickCount > 1
+                ? Double(scheduler.emittedTickCount - 1) / logicSeconds
+                : nil
+            let display = telemetry.display
+            let presentedSpan = (display?.lastPresentedTime ?? 0) - (display?.firstPresentedTime ?? 0)
+            let presentedCount = display?.presentedTimeSampleCount ?? 0
+            let presentedFPS = presentedSpan > 0 && presentedCount > 1
+                ? Double(presentedCount - 1) / presentedSpan
+                : nil
+            snapshot = GoldenEyePerformanceSnapshot(
+                presentedFPS: presentedFPS,
+                logicHz: logicHz,
+                rendererP95Milliseconds: display.flatMap {
+                    $0.callbackDurationCount > 0 ? $0.callbackDurationP95 * 1000 : nil
+                },
+                presentedSamples: presentedCount,
+                tickCount: scheduler.emittedTickCount
+            )
+        } else {
+            snapshot = ownerLoop.performanceSnapshot()
+        }
+        performanceOverlay?.update(snapshot: snapshot)
+        NSApp.dockTile.badgeLabel = snapshot.badgeLabel
     }
 
     override func keyDown(with event: NSEvent) {
@@ -752,23 +983,57 @@ private final class GoldenEyeViewController: NSViewController {
         else { ownerLoop.submit(input: snapshot) }
     }
 
-    @objc private func applicationWillResignActive(_ notification: Notification) {
-        if captureModeEnabled { return }
-        recordInputEvidence("event=focusLost reset=1 paused=1")
+    private func setFocusState(_ focused: Bool, source: String) {
+        guard focusState != focused else { return }
+        focusState = focused
+        if focused {
+            recordInputEvidence("event=focusGained paused=0 source=\(source)")
+        } else {
+            recordInputEvidence("event=focusLost reset=1 paused=0 source=\(source)")
+        }
+        guard !focused else {
+            if nativeTitleRuntimeEnabled { nativeInputMailbox.enqueueFocusGained() }
+            return
+        }
         keyboardState.reset()
         if nativeTitleRuntimeEnabled { nativeInputMailbox.enqueueFocusLost() }
         nativeTitleOwner?.resetInput()
-        nativeTitleOwner?.setPaused(true)
         ownerLoop.resetInput()
-        ownerLoop.setPaused(true)
+    }
+
+    @objc private func applicationWillResignActive(_ notification: Notification) {
+        setFocusState(false, source: "application")
     }
 
     @objc private func applicationDidBecomeActive(_ notification: Notification) {
-        if captureModeEnabled { return }
-        recordInputEvidence("event=focusGained paused=0")
-        if nativeTitleRuntimeEnabled { nativeInputMailbox.enqueueFocusGained() }
-        nativeTitleOwner?.setPaused(false)
-        ownerLoop.setPaused(false)
+        let focused = view.window?.isKeyWindow ?? NSApp.isActive
+        setFocusState(focused && NSApp.isActive, source: "application")
+    }
+
+    @objc private func windowDidResignKey(_ notification: Notification) {
+        guard notification.object as AnyObject? === view.window else { return }
+        setFocusState(false, source: "window")
+    }
+
+    @objc private func windowDidBecomeKey(_ notification: Notification) {
+        guard notification.object as AnyObject? === view.window else { return }
+        setFocusState(NSApp.isActive, source: "window")
+    }
+
+    @objc private func windowDidMiniaturize(_ notification: Notification) {
+        guard notification.object as AnyObject? === view.window else { return }
+        setFocusState(false, source: "miniaturize")
+    }
+
+    @objc private func windowDidDeminiaturize(_ notification: Notification) {
+        guard notification.object as AnyObject? === view.window else { return }
+        setFocusState(NSApp.isActive && view.window?.isKeyWindow == true, source: "deminiaturize")
+        gameView.updateDrawableSize()
+    }
+
+    @objc private func windowDidChangeBackingProperties(_ notification: Notification) {
+        guard notification.object as AnyObject? === view.window else { return }
+        gameView.updateDrawableSize()
     }
 
     private func scheduleInputProbe() {
@@ -997,20 +1262,26 @@ private final class GoldenEyeViewController: NSViewController {
 }
 
 @MainActor
-private final class GoldenEyeAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+private final class GoldenEyeAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuItemValidation {
     private var window: NSWindow!
     private var viewController: GoldenEyeViewController!
+    private var performanceOverlayItem: NSMenuItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Self.configurePackagedRuntimeDefaults()
         NSApp.setActivationPolicy(.regular)
+        installMainMenu()
         viewController = GoldenEyeViewController()
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 960, height: 540),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "GoldenEye Swift"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.backgroundColor = .black
         window.contentViewController = viewController
         window.delegate = self
         window.minSize = NSSize(width: 640, height: 360)
@@ -1055,7 +1326,9 @@ private final class GoldenEyeAppDelegate: NSObject, NSApplicationDelegate, NSWin
             window.center()
         }
         window.makeKeyAndOrderFront(nil)
-        window.orderFrontRegardless()
+        if ProcessInfo.processInfo.environment["GOLDENEYE_CADENCE_PROBE"] == "1" {
+            window.orderFrontRegardless()
+        }
         NSApp.activate(ignoringOtherApps: true)
         recordCadenceWindowState(event: "activeGateObserved")
         if prefers120Fullscreen {
@@ -1071,6 +1344,197 @@ private final class GoldenEyeAppDelegate: NSObject, NSApplicationDelegate, NSWin
             }
         }
         print("GoldenEye AppKit host launched")
+    }
+
+    /// Finder launches do not inherit the environment exported by
+    /// `scripts/run_native_boot.sh`. The Release bundle intentionally keeps
+    /// the extracted catalogs/sidecars outside Contents/Resources, so resolve
+    /// the checked-out `build/native` roots from the app's own location when
+    /// those variables are absent. Explicit terminal/CI values always win.
+    private static func configurePackagedRuntimeDefaults() {
+        let fileManager = FileManager.default
+        let bundleURL = Bundle.main.bundleURL.standardizedFileURL
+        var ancestor = bundleURL
+        var resolvedProjectRoot: URL?
+        for _ in 0..<8 {
+            let bootRoot = ancestor.appendingPathComponent(
+                "build/native/boot-assets", isDirectory: true
+            )
+            let sourceRoot = ancestor.appendingPathComponent(
+                "build/native/source-frontend-v6-image-decoder-v6", isDirectory: true
+            )
+            if fileManager.fileExists(
+                atPath: bootRoot.appendingPathComponent(
+                    "native-boot-assets-manifest.txt", isDirectory: false
+                ).path
+            ), fileManager.fileExists(
+                atPath: sourceRoot.appendingPathComponent(
+                    "source-frontend-v6.gefv", isDirectory: false
+                ).path
+            ) {
+                resolvedProjectRoot = ancestor
+                break
+            }
+            let parent = ancestor.deletingLastPathComponent()
+            guard parent.path != ancestor.path else { break }
+            ancestor = parent
+        }
+
+        guard let projectRoot = resolvedProjectRoot else {
+            try? "manualLaunchDefaults=unresolved bundle=\(bundleURL.path)\n".write(
+                toFile: "/tmp/goldeneye-native-launch.log",
+                atomically: true,
+                encoding: .utf8
+            )
+            return
+        }
+
+        let nativeRoot = projectRoot.appendingPathComponent("build/native", isDirectory: true)
+        let defaults: [(String, URL)] = [
+            (
+                "GOLDENEYE_NATIVE_ASSET_ROOT",
+                nativeRoot.appendingPathComponent("boot-assets", isDirectory: true)
+            ),
+            (
+                "GOLDENEYE_NATIVE_SOURCE_FRONTEND_ROOT",
+                nativeRoot.appendingPathComponent(
+                    "source-frontend-v6-image-decoder-v6", isDirectory: true
+                )
+            ),
+            (
+                "GOLDENEYE_NATIVE_CAST_ASSET_ROOT",
+                nativeRoot.appendingPathComponent(
+                    "cast-frontend-v6-image-decoder-v6-fullweapons", isDirectory: true
+                )
+            ),
+            (
+                "GOLDENEYE_NATIVE_STAGE_ASSET_ROOT",
+                nativeRoot.appendingPathComponent(
+                    "stage-assets-image-decoder-v6", isDirectory: true
+                )
+            ),
+            (
+                "GOLDENEYE_NATIVE_VISIBLE_DEPENDENCY_ROOT",
+                nativeRoot.appendingPathComponent(
+                    "ramrom-visible-dependencies-v6", isDirectory: true
+                )
+            ),
+            (
+                "GOLDENEYE_NATIVE_RAMROM_VISIBLE_ROOT",
+                nativeRoot.appendingPathComponent(
+                    "ramrom-visible-dependencies-v6", isDirectory: true
+                )
+            ),
+            (
+                "GOLDENEYE_NATIVE_GUNBARREL_SIDECAR",
+                nativeRoot.appendingPathComponent(
+                    "gunbarrel-v6-prepared/gunbarrel.gbar", isDirectory: false
+                )
+            ),
+        ]
+        var resolved: [String] = []
+        for (key, url) in defaults {
+            let current = ProcessInfo.processInfo.environment[key]
+            guard current == nil || current?.isEmpty == true else { continue }
+            guard fileManager.fileExists(atPath: url.path) else { continue }
+            setenv(key, url.path, 0)
+            resolved.append("\(key)=\(url.path)")
+        }
+        let line = (["manualLaunchDefaults=resolved", "project=\(projectRoot.path)"] + resolved)
+            .joined(separator: " ") + "\n"
+        try? line.write(
+            toFile: "/tmp/goldeneye-native-launch.log",
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    private func installMainMenu() {
+        let mainMenu = NSMenu(title: "GoldenEye Swift")
+
+        let appMenu = NSMenu(title: "GoldenEye Swift")
+        appMenu.addItem(
+            withTitle: "About GoldenEye Swift",
+            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+            keyEquivalent: ""
+        )
+        appMenu.addItem(.separator())
+        appMenu.addItem(
+            withTitle: "Quit GoldenEye Swift",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        ).keyEquivalentModifierMask = .command
+        let appMenuItem = NSMenuItem(title: "GoldenEye Swift", action: nil, keyEquivalent: "")
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        let gameMenu = NSMenu(title: "Game")
+        let resetItem = gameMenu.addItem(
+            withTitle: "Reset Game",
+            action: #selector(resetGame(_:)),
+            keyEquivalent: "r"
+        )
+        resetItem.keyEquivalentModifierMask = .command
+        resetItem.target = self
+        let gameMenuItem = NSMenuItem(title: "Game", action: nil, keyEquivalent: "")
+        gameMenuItem.submenu = gameMenu
+        mainMenu.addItem(gameMenuItem)
+
+        let viewMenu = NSMenu(title: "View")
+        performanceOverlayItem = viewMenu.addItem(
+            withTitle: "Show Performance Overlay",
+            action: #selector(togglePerformanceOverlay(_:)),
+            keyEquivalent: "p"
+        )
+        performanceOverlayItem.keyEquivalentModifierMask = [.command, .shift]
+        performanceOverlayItem.target = self
+        let viewMenuItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+        viewMenuItem.submenu = viewMenu
+        mainMenu.addItem(viewMenuItem)
+
+        let windowMenu = NSMenu(title: "Window")
+        let fullscreenItem = windowMenu.addItem(
+            withTitle: "Toggle Full Screen",
+            action: #selector(NSWindow.toggleFullScreen(_:)),
+            keyEquivalent: "f"
+        )
+        fullscreenItem.keyEquivalentModifierMask = [.command, .control]
+        windowMenu.addItem(
+            withTitle: "Minimize",
+            action: #selector(NSWindow.performMiniaturize(_:)),
+            keyEquivalent: "m"
+        ).keyEquivalentModifierMask = .command
+        let windowMenuItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
+        NSApp.windowsMenu = windowMenu
+        NSApp.mainMenu = mainMenu
+    }
+
+    @objc private func resetGame(_ sender: Any?) {
+        guard let viewController else { return }
+        if !viewController.resetGameFromMenu() {
+            NSSound.beep()
+        }
+    }
+
+    @objc private func togglePerformanceOverlay(_ sender: Any?) {
+        guard let viewController else { return }
+        let visible = viewController.setPerformanceOverlayVisible(
+            !viewController.isPerformanceOverlayVisible
+        )
+        performanceOverlayItem?.state = visible ? .on : .off
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(resetGame(_:)) {
+            return viewController != nil
+        }
+        if menuItem.action == #selector(togglePerformanceOverlay(_:)) {
+            menuItem.state = viewController?.isPerformanceOverlayVisible == true ? .on : .off
+            return viewController != nil
+        }
+        return true
     }
 
     func windowDidEnterFullScreen(_ notification: Notification) {
@@ -1124,6 +1588,7 @@ private final class GoldenEyeAppDelegate: NSObject, NSApplicationDelegate, NSWin
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        viewController?.setPerformanceOverlayVisible(false)
         viewController?.stopRuntimeForTermination()
         viewController?.viewIfLoaded?.window?.performClose(nil)
         try? "shutdown=1\n".write(

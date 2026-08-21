@@ -21,6 +21,17 @@ public enum GoldenEyeFidelityOutputMode: UInt8, CaseIterable, Sendable, Equatabl
     case adaptiveWidescreen = 2
 }
 
+/// Presentation-only material treatment.  It is intentionally orthogonal to
+/// the layout/output mode so the 320x240 source evidence can remain immutable
+/// while the normal HD product receives the requested visibility/sharpness
+/// improvements.
+enum GoldenEyeSourceScenePresentationTreatmentV6: UInt32, Sendable, Equatable {
+    case sourceFaithful = 0
+    case enhancedHD = 1
+
+    var isEnhanced: Bool { self == .enhancedHD }
+}
+
 public extension GoldenEyeFidelityOutputMode {
     var allowsWidescreenExpansion: Bool {
         self == .adaptiveWidescreen

@@ -41,7 +41,7 @@ private func rarewareState() -> GESourceRenderStateV6 {
     value.cycle1_alpha_b = zero
     value.cycle1_alpha_c = primitive
     value.cycle1_alpha_d = zero
-    value.raw_othermode_h = 0x0011_0000
+    value.raw_othermode_h = 0x0019_2c00
     value.raw_othermode_l = 0x0f0a_4000
     value.raw_render_mode = value.raw_othermode_l
     value.primitive_rgba = 0xffff_ffff
@@ -52,7 +52,7 @@ private func rarewareState() -> GESourceRenderStateV6 {
     value.alpha_mode = UInt32(GE_SOURCE_ALPHA_V6_DISABLED)
     value.coverage_mode = UInt32(GE_SOURCE_COVERAGE_V6_CLAMP)
     value.cull_mode = UInt32(GE_SOURCE_CULL_V6_BACK)
-    value.filter_mode = UInt32(GE_SOURCE_FILTER_V6_POINT)
+    value.filter_mode = UInt32(GE_SOURCE_FILTER_V6_BILINEAR)
     value.wrap_s = UInt32(GE_SOURCE_WRAP_V6_CLAMP)
     value.wrap_t = UInt32(GE_SOURCE_WRAP_V6_CLAMP)
     value.lod_min_q16 = 0
@@ -91,7 +91,11 @@ struct GoldenEyeRarewareLODPipelineV6Smoke {
         let state = rarewareState()
         let opaque = UInt32(GE_SOURCE_DRAW_V6_FLAG_OPAQUE) |
             UInt32(GE_SOURCE_DRAW_V6_FLAG_SOURCE_ORDERED)
-        try GoldenEyeSourceScenePipelineV6.validateSupportedState(state, drawFlags: opaque)
+        try GoldenEyeSourceScenePipelineV6.validateSupportedState(
+            state,
+            drawFlags: opaque,
+            textureMipLevels: 6
+        )
         let key = GoldenEyeSourceScenePipelineKeyV6(sourceState: state, drawFlags: opaque)
         precondition(key.words.contains(GoldenEyeSourceSceneCombinerSelectorV6.lodFraction))
         print("rareware LOD pipeline canonical: key=\(String(key.evidenceHash, radix: 16)) PASS")
@@ -101,6 +105,7 @@ struct GoldenEyeRarewareLODPipelineV6Smoke {
         oneLevelAlias.raw_othermode_h = 0
         oneLevelAlias.raw_othermode_l = 0x0050_2048
         oneLevelAlias.raw_render_mode = oneLevelAlias.raw_othermode_l
+        oneLevelAlias.filter_mode = UInt32(GE_SOURCE_FILTER_V6_POINT)
         oneLevelAlias.flags = UInt32(GE_SOURCE_RENDER_STATE_V6_FLAG_ANTIALIAS)
         oneLevelAlias.lod_min_q16 = 0
         oneLevelAlias.lod_max_q16 = 0

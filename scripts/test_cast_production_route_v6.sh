@@ -84,6 +84,8 @@ codesign -d --entitlements :- "${APP_DIR}" 2>/dev/null \
     || fail "Cast capture app is not debuggable"
 
 CAST_LOG="${BUILD_ROOT}/cast-renderer.log"
+PREWARM_LOG="${BUILD_ROOT}/cast-prewarm.log"
+BUILDER_PREWARM_LOG="${BUILD_ROOT}/cast-builder-prewarm.log"
 OWNER_LOG="${BUILD_ROOT}/source-frontend-owner.log"
 FRAME_LOG="${BUILD_ROOT}/source-renderer-frames.log"
 AUTHORITY_LOG="${BUILD_ROOT}/source-frontend-authority.log"
@@ -96,6 +98,8 @@ for log in "${CAST_LOG}" "${OWNER_LOG}" "${FRAME_LOG}" "${AUTHORITY_LOG}"; do : 
 cleanup() {
     stop_app
     cp -f /tmp/goldeneye-source-product-renderer-v6-cast.log "${CAST_LOG}" 2>/dev/null || true
+    cp -f /tmp/goldeneye-source-product-renderer-v6-cast-prewarm.log "${PREWARM_LOG}" 2>/dev/null || true
+    cp -f /tmp/goldeneye-source-product-renderer-v6-cast-builder-prewarm.log "${BUILDER_PREWARM_LOG}" 2>/dev/null || true
     cp -f /tmp/goldeneye-source-frontend-owner.log "${OWNER_LOG}" 2>/dev/null || true
     cp -f /tmp/goldeneye-source-product-renderer-v6-frames.log "${FRAME_LOG}" 2>/dev/null || true
     cp -f /tmp/goldeneye-source-frontend-authority.log "${AUTHORITY_LOG}" 2>/dev/null || true
@@ -174,4 +178,4 @@ gpudebug --oneshot -t "${TRACE_PATH}" \
     > "${GPUD_LOG}"
 [[ -s "${GPUD_LOG}" ]] || fail "Cast GPU inspection log is empty"
 
-echo "Cast production route V6: PASS evidence=${BUILD_ROOT}"
+echo "Cast production route V6: PASS evidence=${BUILD_ROOT} prewarm=${PREWARM_LOG}"

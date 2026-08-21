@@ -333,7 +333,10 @@ static GEStatusV1 ge_runtime_model_callback(
         event->model == GE_SOURCE_FRONTEND_V6_MODEL_GUNBARREL &&
         event->operation == GE_SOURCE_FRONTEND_V6_MODEL_OP_DRAW &&
         context->model_result_operation == GE_SOURCE_FRONTEND_V6_MODEL_OP_BLOOD_TICK &&
-        (context->model_result_flags & GE_SOURCE_FRONTEND_V6_MODEL_RESULT_BLOOD_COMPLETE) != 0u) {
+        (context->model_result_flags & GE_SOURCE_FRONTEND_V6_MODEL_RESULT_EXECUTED) != 0u) {
+        /* Blood playback is a multi-frame source operation.  A nonterminal
+         * BLOOD_TICK|EXECUTED result authorizes the paired DRAW; only the
+         * final result also carries BLOOD_COMPLETE and advances mode 5. */
         result->flags = GE_SOURCE_FRONTEND_V6_MODEL_RESULT_EXECUTED;
         (void)ge_runtime_append_model(context, event, result);
         return GE_STATUS_OK;

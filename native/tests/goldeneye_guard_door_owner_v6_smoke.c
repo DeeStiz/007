@@ -358,6 +358,10 @@ int main(int argc, char **argv)
     {
         GEGuardDoorOwnerStateV6 authority_state = state;
         GEGuardDoorOwnerEventV6 authority_event;
+        authority_state.doors[0].source.open_state =
+            GE_GUARD_DOOR_OWNER_V6_DOOR_STATE_OPENING;
+        authority_state.doors[0].source.open_position_q16 = 0;
+        authority_state.doors[0].source.speed_q16 = 0;
         status = ge_guard_door_owner_v6_step_source_authority(
             1u, &authority_state, &authority_event
         );
@@ -369,7 +373,7 @@ int main(int argc, char **argv)
             2u, &authority_state, &authority_event
         );
         if (status != GE_STATUS_OK || authority_event.event_type != GE_GUARD_DOOR_OWNER_V6_EVENT_SOURCE_ANCHOR ||
-            authority_state.state_hash == 0u) {
+            authority_state.state_hash == 0u || authority_state.doors[0].source.portal_active != 1u) {
             fprintf(stderr, "source authority anchor step failed: %u\n", status);
             return 1;
         }
@@ -502,7 +506,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "gameplay adapter failed: %u\n", status);
         return 1;
     }
-    printf("goldeneye_guard_door_owner_v6_smoke: PASS sourceObjects=2 guards=1 doors=1 poses=2 rng=1 interpolation=1 adapter=1 gameplayIntegration=1\n");
+    printf("goldeneye_guard_door_owner_v6_smoke: PASS sourceObjects=2 guards=1 doors=1 poses=2 rng=1 interpolation=1 portalLifecycle=1 adapter=1 gameplayIntegration=1\n");
     free(setup_bytes); free(animation_bytes); free(body_bytes); free(head_bytes); free(weapon_bytes); free(recording_bytes);
     return 0;
 }

@@ -107,7 +107,11 @@ struct GoldenEyeStageModelSceneComposerV6Smoke {
             frameResources: frameResources,
             nativeTick: 2,
             demoID: 0,
-            visibleDependencies: visible
+            visibleDependencies: visible,
+            // This smoke exercises the retained non-presentable full-scene
+            // composition manifest. The gameplay-camera scoped path uses the
+            // strict default and rejects fog-enabled draws without sidecars.
+            requireExactFogCoordinates: false
         )
         precondition(result.placementCount == UInt32(placements.placements.count))
         precondition(propCount == propReady)

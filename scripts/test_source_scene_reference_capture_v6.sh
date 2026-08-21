@@ -34,6 +34,7 @@ SWIFT_FLAGS=(
     "${PROJECT_ROOT}/native/host/goldeneye_source_scene_texture_binding_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_source_lighting_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_source_scene_snapshot_v6.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_stage_fog_lowering_v6.swift" \
     "${PROJECT_ROOT}/native/host/metal_source_scene_pipeline_v6.swift" \
     "${PROJECT_ROOT}/native/host/metal_device_state.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_reference_capture_codec_v6.swift" \

@@ -41,7 +41,27 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
         case background = 0
         case hole = 1
         case blood = 2
-        case fade = 3
+        case redOverlay = 3
+        case blackOverlay = 4
+        case clearBlack = 5
+    }
+
+    // Metal 4 command encoders retain the address bound in the argument table,
+    // not a Swift snapshot of the bytes that happened to be in that address at
+    // drawPrimitives time.  Every auxiliary draw in a frame therefore needs a
+    // distinct, completion-fenced constant slice.  Keep the lanes fixed and
+    // deterministic so a malformed pass cannot silently alias another draw.
+    private enum UniformLane: Int {
+        case background = 0
+        case leadingHole = 1
+        case trailingHole = 2
+        case blood = 3
+        case fade = 4
+        case reservedBlackFade = 5
+        case clearBlack = 6
+
+        static let count = 7
+        static let stride = 256
     }
 
     private let state: GoldenEyeMetalDeviceState
@@ -49,7 +69,7 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
     private let depthState: any MTLDepthStencilState
     private let sampler: any MTLSamplerState
     private let background: any MTLTexture
-    private let blood: any MTLTexture
+    private let bloodFrames: [any MTLTexture]
     private let backgroundVertices: any MTLBuffer
     private let holeVertices: any MTLBuffer
     private let fullscreenVertices: any MTLBuffer
@@ -66,7 +86,12 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
         }
         self.state = state
         let backgroundPixels = try Self.decodeBackground(backgroundData)
-        let bloodFrame = try GoldenEyeGunbarrelBloodDecoderV6.decodeInitial(bloodData)
+        let bloodStream = try GoldenEyeGunbarrelBloodDecoderV6.decodeAll(bloodData)
+        guard bloodStream.isComplete else {
+            throw GoldenEyeGunbarrelPassRendererV6Error.sourceBuild(
+                "Gunbarrel blood stream is incomplete"
+            )
+        }
 
         let backgroundDescriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .r8Unorm,
@@ -87,24 +112,30 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
             bytesPerRow: backgroundPixels.width
         )
 
-        let bloodDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .r8Unorm,
-            width: Int(bloodFrame.width),
-            height: Int(bloodFrame.height),
-            mipmapped: false
-        )
-        bloodDescriptor.storageMode = .shared
-        bloodDescriptor.usage = [.shaderRead]
-        guard let blood = state.device.makeTexture(descriptor: bloodDescriptor) else {
-            throw GoldenEyeGunbarrelPassRendererV6Error.sourceBuild("Gunbarrel blood texture allocation")
+        let bloodFrames: [any MTLTexture] = try bloodStream.frames.enumerated().map {
+            index, bloodFrame in
+            let bloodDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .r8Unorm,
+                width: Int(bloodFrame.width),
+                height: Int(bloodFrame.height),
+                mipmapped: false
+            )
+            bloodDescriptor.storageMode = .shared
+            bloodDescriptor.usage = [.shaderRead]
+            guard let blood = state.device.makeTexture(descriptor: bloodDescriptor) else {
+                throw GoldenEyeGunbarrelPassRendererV6Error.sourceBuild(
+                    "Gunbarrel blood texture allocation \(index)"
+                )
+            }
+            blood.label = "GoldenEye.V6.Gunbarrel.Blood.I4.96x80.Frame.\(index)"
+            blood.replace(
+                region: MTLRegionMake2D(0, 0, Int(bloodFrame.width), Int(bloodFrame.height)),
+                mipmapLevel: 0,
+                withBytes: bloodFrame.pixels,
+                bytesPerRow: Int(bloodFrame.width)
+            )
+            return blood
         }
-        blood.label = "GoldenEye.V6.Gunbarrel.Blood.I4.96x80"
-        blood.replace(
-            region: MTLRegionMake2D(0, 0, Int(bloodFrame.width), Int(bloodFrame.height)),
-            mipmapLevel: 0,
-            withBytes: bloodFrame.pixels,
-            bytesPerRow: Int(bloodFrame.width)
-        )
 
         let samplerDescriptor = MTLSamplerDescriptor()
         samplerDescriptor.minFilter = .linear
@@ -147,7 +178,7 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
         var uniformBuffers: [any MTLBuffer] = []
         for index in 0..<state.frameSlots.count {
             guard let buffer = state.device.makeBuffer(
-                length: max(256, MemoryLayout<Uniforms>.stride),
+                length: UniformLane.count * UniformLane.stride,
                 options: .storageModeShared
             ) else {
                 throw GoldenEyeGunbarrelPassRendererV6Error.sourceBuild("Gunbarrel pass uniforms slot \(index)")
@@ -157,7 +188,7 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
         }
 
         self.background = background
-        self.blood = blood
+        self.bloodFrames = bloodFrames
         self.sampler = sampler
         self.pipeline = pipeline
         self.depthState = depthState
@@ -166,8 +197,11 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
         self.fullscreenVertices = fullscreenVertices
         self.uniformBuffers = uniformBuffers
 
-        for resource in [background, blood, backgroundVertices, holeVertices, fullscreenVertices] {
+        for resource in [background, backgroundVertices, holeVertices, fullscreenVertices] {
             state.sceneResidency.addAllocation(resource)
+        }
+        for blood in bloodFrames {
+            state.sceneResidency.addAllocation(blood)
         }
         for buffer in uniformBuffers {
             state.sceneResidency.addAllocation(buffer)
@@ -182,15 +216,26 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
     ) throws {
         guard pass.mode >= 2, pass.mode <= 7 else { return }
         if pass.backgroundVisible {
-            try encode(kind: .background, pass: pass, encoder: encoder, slotIndex: slotIndex)
+            try encode(
+                kind: .background,
+                lane: .background,
+                pass: pass,
+                encoder: encoder,
+                slotIndex: slotIndex
+            )
         }
-        guard pass.holeVisible, pass.holeTriangleCount > 0 else { return }
+        // The authored 440x299 backdrop already contains the settled sight
+        // disk. The generated source mesh is only needed for mode 2's
+        // two-ring sweep; drawing it over the settled backdrop can leave a
+        // full-screen transparent/black quad on Metal's auxiliary blend path.
+        guard pass.mode == 2, pass.holeVisible, pass.holeTriangleCount > 0 else { return }
         // title.c's mode-2 sweep submits the generated sight geometry twice:
         // the leading ring follows g_TitleX and the trailing ring follows
-        // titleTransitionX.  Later modes keep one enlarged ring centered on
-        // the moving backdrop.
+        // titleTransitionX. Later modes use the authored backdrop's centered
+        // disk; they intentionally do not submit a second fullscreen mask.
         try encode(
             kind: .hole,
+            lane: .leadingHole,
             pass: pass,
             holeXQ16: pass.titleXQ16,
             encoder: encoder,
@@ -199,6 +244,7 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
         if pass.holePassCount > 1 {
             try encode(
                 kind: .hole,
+                lane: .trailingHole,
                 pass: pass,
                 holeXQ16: pass.transitionXQ16,
                 encoder: encoder,
@@ -213,18 +259,55 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
         slotIndex: Int
     ) throws {
         if pass.bloodVisible, pass.bloodPayloadAvailable {
-            try encode(kind: .blood, pass: pass, encoder: encoder, slotIndex: slotIndex)
+            try encode(
+                kind: .blood,
+                lane: .blood,
+                pass: pass,
+                encoder: encoder,
+                slotIndex: slotIndex
+            )
         }
         switch pass.fade {
         case .none:
             break
-        case .red, .black, .clearBlack:
-            try encode(kind: .fade, pass: pass, encoder: encoder, slotIndex: slotIndex)
+        default:
+            if pass.redOverlayAlphaQ8 > 0 {
+                try encode(
+                    kind: .redOverlay,
+                    lane: .fade,
+                    fadeAlphaQ8: pass.redOverlayAlphaQ8,
+                    pass: pass,
+                    encoder: encoder,
+                    slotIndex: slotIndex
+                )
+            }
+            if pass.blackOverlayAlphaQ8 > 0 {
+                try encode(
+                    kind: .blackOverlay,
+                    lane: .reservedBlackFade,
+                    fadeAlphaQ8: pass.blackOverlayAlphaQ8,
+                    pass: pass,
+                    encoder: encoder,
+                    slotIndex: slotIndex
+                )
+            }
+            if pass.clearBlack {
+                try encode(
+                    kind: .clearBlack,
+                    lane: .clearBlack,
+                    fadeAlphaQ8: 255,
+                    pass: pass,
+                    encoder: encoder,
+                    slotIndex: slotIndex
+                )
+            }
         }
     }
 
     private func encode(
         kind: Kind,
+        lane: UniformLane,
+        fadeAlphaQ8: UInt32? = nil,
         pass: GoldenEyeGunbarrelRenderPassV6,
         holeXQ16: Int32? = nil,
         encoder: any MTL4RenderCommandEncoder,
@@ -237,15 +320,18 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
             // For hole draws this field is the selected ring center.  The
             // background/fade/blood passes retain the source title position.
             titleXQ16: holeXQ16 ?? pass.titleXQ16,
-            fadeAlphaQ8: pass.fadeAlphaQ8,
+            fadeAlphaQ8: fadeAlphaQ8 ?? pass.fadeAlphaQ8,
             bloodFrame: pass.bloodFrameIndex,
             reserved0: 0,
             reserved1: SIMD4<Float>(repeating: 0)
         )
         let uniform = uniformBuffers[safeSlot]
+        let laneOffset = lane.rawValue * UniformLane.stride
         withUnsafeBytes(of: &uniforms) { bytes in
             if let baseAddress = bytes.baseAddress {
-                uniform.contents().copyMemory(from: baseAddress, byteCount: bytes.count)
+                uniform.contents()
+                    .advanced(by: laneOffset)
+                    .copyMemory(from: baseAddress, byteCount: bytes.count)
             }
         }
         let vertices: any MTLBuffer
@@ -255,15 +341,31 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
             vertices = backgroundVertices
             count = 6
         case .hole:
-            vertices = holeVertices
-            count = 28 * 3
-        case .blood, .fade:
+            // Rasterize the source-generated hole as a clipped logical
+            // fullscreen pass. The source still owns the 30/28 geometry
+            // counts in the immutable pass manifest, but feeding the
+            // overlapping gSPVertex windows to Metal can produce a
+            // viewport-sized triangle on some drivers. The fragment mask
+            // below preserves the same 64-unit radius and gradient without
+            // allowing an invalid edge to escape the circle.
+            vertices = fullscreenVertices
+            count = 6
+        case .blood, .redOverlay, .blackOverlay, .clearBlack:
             vertices = fullscreenVertices
             count = 6
         }
         state.argumentTable.setAddress(vertices.gpuAddress, index: 0)
-        state.argumentTable.setAddress(uniform.gpuAddress, index: 1)
-        let texture = kind == .blood ? blood : background
+        state.argumentTable.setAddress(
+            uniform.gpuAddress + UInt64(laneOffset),
+            index: 1
+        )
+        let texture: any MTLTexture
+        if kind == .blood {
+            let index = min(Int(pass.bloodFrameIndex), bloodFrames.count - 1)
+            texture = bloodFrames[index]
+        } else {
+            texture = background
+        }
         state.argumentTable.setTexture(texture.gpuResourceID, index: 0)
         state.argumentTable.setSamplerState(sampler.gpuResourceID, index: 0)
         encoder.setRenderPipelineState(pipeline)
@@ -271,7 +373,10 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
         encoder.setDepthStencilState(depthState)
         encoder.setCullMode(.none)
         let centerSuffix = holeXQ16.map { ".Center.\($0)" } ?? ""
-        encoder.pushDebugGroup("GoldenEye.V6.Gunbarrel.Pass.\(kind.rawValue).Mode.\(pass.mode)\(centerSuffix)")
+        encoder.pushDebugGroup(
+            "GoldenEye.V6.Gunbarrel.Pass.\(kind.rawValue).Mode.\(pass.mode)"
+                + ".Lane.\(lane.rawValue).Offset.\(laneOffset)\(centerSuffix)"
+        )
         encoder.drawPrimitives(primitiveType: .triangle, vertexStart: 0, vertexCount: count)
         encoder.popDebugGroup()
     }
@@ -322,6 +427,10 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
     }
 
     private static func holeTriangleVertices() -> [Vertex] {
+        // Keep the exact source 30-vertex/28-triangle topology in the copied
+        // manifest buffer. Settled modes use the backdrop's authored disk;
+        // mode 2's GPU pass uses the bounded logical mask below instead of
+        // submitting this overlapping source window directly.
         var source: [Vertex] = []
         source.reserveCapacity(30)
         let pi = Float.pi
@@ -329,18 +438,10 @@ final class GoldenEyeGunbarrelPassRendererV6: @unchecked Sendable {
             let angle = Float(step) * pi / 30
             let sinValue = sin(angle) * 64
             let cosValue = cos(angle) * -64
-            // The source computes 143 - cos(angle) * -111.  `cosValue` is
-            // already scaled to the 64-unit radius and must not be reused in
-            // the colour expression (that would clamp nearly every vertex to
-            // black or white instead of producing the authored gradient).
             let brightness = (143 - cos(angle) * -111) / 255
             let color = SIMD4<Float>(repeating: max(0, min(1, brightness)))
             source.append(Vertex(position: SIMD2(sinValue, cosValue), uv: .zero, color: color))
             if step != 0 && step < 30 {
-                // title3.c stores the paired vertex as (-sinval, cosval),
-                // not (-sinval, -cosval).  Keeping the second coordinate
-                // unchanged is what makes the two 14-vertex triangle strips
-                // form the source circular hole.
                 source.append(Vertex(position: SIMD2(-sinValue, cosValue), uv: .zero, color: color))
             }
         }

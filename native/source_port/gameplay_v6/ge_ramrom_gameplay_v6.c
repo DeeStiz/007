@@ -269,6 +269,30 @@ GEStatusV1 ge_ramrom_gameplay_v6_validate_snapshot(
     return GE_STATUS_OK;
 }
 
+GEStatusV1 ge_ramrom_gameplay_v6_validate_player_camera_snapshot_v7(
+    const GERamRomGameplayPlayerCameraSnapshotV7 *value)
+{
+    GEStatusV1 status;
+    if (value == NULL) {
+        return GE_STATUS_INVALID_ARGUMENT;
+    }
+    status = ge_gameplay_validate_common(&value->header,
+                                         (uint32_t)sizeof(*value),
+                                         value->record_version);
+    if (status != GE_STATUS_OK) {
+        return status;
+    }
+    if ((value->flags & ~GE_RAMROM_GAMEPLAY_PLAYER_CAMERA_V7_STATE_FLAG_MASK) != 0u ||
+        value->demo_id == 0u || value->stage_id == 0u ||
+        value->pair_phase > 1u ||
+        value->source_hash == 0u || value->state_hash == 0u ||
+        value->render_hash == 0u || value->reserved0 != 0u ||
+        value->reserved1 != 0u) {
+        return GE_STATUS_MALFORMED_STREAM;
+    }
+    return GE_STATUS_OK;
+}
+
 GEStatusV1 ge_ramrom_gameplay_v6_validate_event(
     const GERamRomGameplayEventV6 *value)
 {
@@ -366,6 +390,44 @@ uint64_t ge_ramrom_gameplay_v6_hash_snapshot(
     hash = ge_gameplay_hash_u64(hash, value->source_hash);
     hash = ge_gameplay_hash_u64(hash, value->packet_hash);
     hash = ge_gameplay_hash_u64(hash, value->rng_checkpoint_hash);
+    return hash;
+}
+
+uint64_t ge_ramrom_gameplay_v6_hash_player_camera_snapshot_v7(
+    const GERamRomGameplayPlayerCameraSnapshotV7 *value)
+{
+    uint64_t hash;
+    uint32_t index;
+    if (value == NULL) {
+        return 0u;
+    }
+    hash = GE_GAMEPLAY_FNV_OFFSET;
+    hash = ge_gameplay_hash_u32(hash, value->flags);
+    hash = ge_gameplay_hash_u32(hash, value->demo_id);
+    hash = ge_gameplay_hash_u32(hash, value->stage_id);
+    hash = ge_gameplay_hash_u64(hash, value->native_tick);
+    hash = ge_gameplay_hash_u64(hash, value->reference_tick);
+    hash = ge_gameplay_hash_u32(hash, value->pair_phase);
+    hash = ge_gameplay_hash_u32(hash, value->source_anchor);
+    hash = ge_gameplay_hash_u32(hash, value->current_room);
+    hash = ge_gameplay_hash_u32(hash, value->current_pad);
+    hash = ge_gameplay_hash_u32(hash, value->weapon_model_handle);
+    hash = ge_gameplay_hash_u32(hash, value->weapon_action);
+    hash = ge_gameplay_hash_u32(hash, value->player_health);
+    hash = ge_gameplay_hash_u32(hash, value->hud_ammo);
+    hash = ge_gameplay_hash_u32(hash, value->player_animation);
+    for (index = 0u; index < 3u; index++) {
+        hash = ge_gameplay_hash_u32(hash, (uint32_t)value->player_position_q16[index]);
+        hash = ge_gameplay_hash_u32(hash, (uint32_t)value->player_velocity_q16[index]);
+        hash = ge_gameplay_hash_u32(hash, (uint32_t)value->camera_position_q16[index]);
+        hash = ge_gameplay_hash_u32(hash, (uint32_t)value->camera_forward_q16[index]);
+        hash = ge_gameplay_hash_u32(hash, (uint32_t)value->camera_up_q16[index]);
+    }
+    hash = ge_gameplay_hash_u32(hash, (uint32_t)value->yaw_q16);
+    hash = ge_gameplay_hash_u32(hash, (uint32_t)value->pitch_q16);
+    hash = ge_gameplay_hash_u64(hash, value->source_hash);
+    hash = ge_gameplay_hash_u64(hash, value->state_hash);
+    hash = ge_gameplay_hash_u64(hash, value->render_hash);
     return hash;
 }
 
@@ -1225,6 +1287,134 @@ GEStatusV1 ge_ramrom_gameplay_v6_copy_snapshot(
     }
     *out_snapshot = state->snapshot;
     return ge_ramrom_gameplay_v6_validate_snapshot(out_snapshot);
+}
+
+GEStatusV1 ge_ramrom_gameplay_v6_apply_player_camera_snapshot_v7(
+    GERamRomGameplayStateV6 *inout_state,
+    const GERamRomGameplayPlayerCameraSnapshotV7 *player_camera,
+    GERamRomGameplayEventV6 *optional_event)
+{
+    GERamRomGameplayEntityV6 *player;
+    GERamRomGameplaySnapshotV6 previous_snapshot;
+    GERamRomGameplayEntityV6 previous_player;
+    uint64_t audio_hash;
+    uint64_t render_hash;
+    GEStatusV1 status;
+
+    if (inout_state == NULL || player_camera == NULL) {
+        return GE_STATUS_INVALID_ARGUMENT;
+    }
+    status = ge_ramrom_gameplay_v6_validate_player_camera_snapshot_v7(player_camera);
+    if (status != GE_STATUS_OK) {
+        return status;
+    }
+    if (inout_state->header.abi_version != GE_NATIVE_ABI_VERSION ||
+        inout_state->header.struct_size != sizeof(*inout_state) ||
+        inout_state->record_version != GE_RAMROM_GAMEPLAY_V6_RECORD_VERSION ||
+        (inout_state->flags & GE_RAMROM_GAMEPLAY_V6_STATE_FLAG_ACTIVE) == 0u ||
+        inout_state->demo_id != player_camera->demo_id ||
+        inout_state->stage_id != player_camera->stage_id ||
+        inout_state->entity_count == 0u) {
+        return GE_STATUS_INVALID_STATE;
+    }
+    /* The C playback step and the source player/camera owner must publish the
+       same native cadence. UINT64_MAX is the pre-step sentinel and is only
+       accepted for a caller that explicitly applies an initial publication. */
+    if (inout_state->native_tick != UINT64_MAX &&
+        (inout_state->native_tick != player_camera->native_tick ||
+         inout_state->pair_phase != player_camera->pair_phase)) {
+        return GE_STATUS_INVALID_ARGUMENT;
+    }
+    player = &inout_state->entities[0];
+    if (player->entity_kind != GE_RAMROM_GAMEPLAY_V6_ENTITY_PLAYER) {
+        return GE_STATUS_ASSET_MISMATCH;
+    }
+    if (optional_event != NULL) {
+        status = ge_ramrom_gameplay_v6_validate_event(optional_event);
+        if (status != GE_STATUS_OK) {
+            return status;
+        }
+    }
+
+    previous_snapshot = inout_state->snapshot;
+    previous_player = *player;
+
+    /* Only the player row's mutable source publication is joined here.  Do
+       not copy camera state into setup, object rows, or unsupported owner
+       categories; those remain owned by their respective source seams. */
+    memcpy(player->position_q16, player_camera->player_position_q16,
+           sizeof(player->position_q16));
+    memcpy(player->velocity_q16, player_camera->player_velocity_q16,
+           sizeof(player->velocity_q16));
+    player->room_id = player_camera->current_room;
+    player->weapon_model_handle = player_camera->weapon_model_handle;
+    player->action_state = player_camera->weapon_action;
+    player->animation_id = player_camera->player_animation;
+    player->health = player_camera->player_health;
+
+    inout_state->snapshot.native_tick = player_camera->native_tick;
+    inout_state->snapshot.reference_tick = player_camera->reference_tick;
+    inout_state->snapshot.pair_phase = player_camera->pair_phase;
+    /* The player owner publishes a monotonically increasing source-frame
+       count; the gameplay record retains its existing boolean anchor bit and
+       carries that count in source_frame. */
+    inout_state->snapshot.source_anchor = player_camera->pair_phase == 0u ? 1u : 0u;
+    inout_state->snapshot.source_frame = player_camera->source_anchor;
+    inout_state->snapshot.current_room = player_camera->current_room;
+    inout_state->snapshot.current_pad = player_camera->current_pad;
+    inout_state->snapshot.player_health = player_camera->player_health;
+    inout_state->snapshot.player_weapon = player_camera->weapon_model_handle;
+    inout_state->snapshot.player_animation = player_camera->player_animation;
+    inout_state->snapshot.hud_health = player_camera->player_health;
+    inout_state->snapshot.hud_ammo = player_camera->hud_ammo;
+    memcpy(inout_state->snapshot.player_position_q16,
+           player_camera->player_position_q16,
+           sizeof(inout_state->snapshot.player_position_q16));
+    memcpy(inout_state->snapshot.player_velocity_q16,
+           player_camera->player_velocity_q16,
+           sizeof(inout_state->snapshot.player_velocity_q16));
+    memcpy(inout_state->snapshot.camera_position_q16,
+           player_camera->camera_position_q16,
+           sizeof(inout_state->snapshot.camera_position_q16));
+    memcpy(inout_state->snapshot.camera_forward_q16,
+           player_camera->camera_forward_q16,
+           sizeof(inout_state->snapshot.camera_forward_q16));
+    memcpy(inout_state->snapshot.camera_up_q16,
+           player_camera->camera_up_q16,
+           sizeof(inout_state->snapshot.camera_up_q16));
+
+    inout_state->snapshot.state_hash =
+        ge_ramrom_gameplay_v6_hash_snapshot(&inout_state->snapshot);
+    if (inout_state->snapshot.state_hash == 0u) {
+        inout_state->snapshot.state_hash = GE_GAMEPLAY_FNV_OFFSET;
+    }
+    render_hash = ge_gameplay_entity_hash(inout_state) ^
+                  inout_state->snapshot.state_hash;
+    inout_state->snapshot.render_hash = render_hash == 0u ?
+        GE_GAMEPLAY_FNV_OFFSET : render_hash;
+    audio_hash = inout_state->input_hash ^ inout_state->rng_checkpoint_hash;
+    inout_state->snapshot.audio_hash = audio_hash == 0u ?
+        ge_gameplay_hash_u64(GE_GAMEPLAY_FNV_OFFSET,
+                             player_camera->source_hash) : audio_hash;
+    inout_state->gameplay_hash = inout_state->snapshot.state_hash;
+
+    status = ge_ramrom_gameplay_v6_validate_snapshot(&inout_state->snapshot);
+    if (status != GE_STATUS_OK) {
+        inout_state->snapshot = previous_snapshot;
+        *player = previous_player;
+        return status;
+    }
+    if (optional_event != NULL) {
+        optional_event->state_hash = inout_state->snapshot.state_hash;
+        optional_event->event_hash = ge_ramrom_gameplay_v6_hash_event(optional_event);
+        status = ge_ramrom_gameplay_v6_validate_event(optional_event);
+        if (status != GE_STATUS_OK) {
+            inout_state->snapshot = previous_snapshot;
+            *player = previous_player;
+            return status;
+        }
+    }
+    return GE_STATUS_OK;
 }
 
 static GEStatusV1 ge_gameplay_copy_page_items(
