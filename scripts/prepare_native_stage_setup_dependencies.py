@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import os
 import re
 import struct
@@ -56,6 +57,28 @@ def parse_include_names(path: Path, pattern: str) -> list[str]:
     if not names:
         raise PreparationError(f"model include table is empty: {path}")
     return names
+
+
+def model_scale_q16(root: Path, kind: str, name: str) -> int:
+    """Copy the source model/prop scale used by domakedefaultobj()."""
+    if kind == "prop":
+        path = root / "assets/obseg/prop" / name / "propFileRecord.inc.c"
+        pattern = r"PROPFILERECORD\s*\(\s*\w+\s*,\s*([0-9.]+)\s*\)"
+    else:
+        path = root / "assets/obseg/chr" / name / "chrModelFileRecord.inc.c"
+        pattern = r"\{\s*&\w+\s*,\s*\"[^\"]+\"\s*,\s*([0-9.]+)\s*,"
+    if not path.is_file():
+        raise PreparationError(f"model scale source is missing: {path}")
+    match = re.search(pattern, path.read_text(encoding="utf-8"))
+    if match is None:
+        raise PreparationError(f"model scale is missing from: {path}")
+    scale = float(match.group(1))
+    if not math.isfinite(scale) or scale <= 0:
+        raise PreparationError(f"model scale is invalid for {kind}/{name}: {scale}")
+    value = int(round(scale * 65_536.0))
+    if value <= 0 or value > 0x7fff_ffff:
+        raise PreparationError(f"model scale Q16 is out of range for {kind}/{name}: {value}")
+    return value
 
 
 def read_filelist(root: Path) -> dict[str, str]:
@@ -215,6 +238,7 @@ def main() -> int:
                     f"object_type:{dependency['object_type']}",
                     f"setup_offset:{dependency['setup_offset']}",
                     f"model_index:{model_index}", f"model_name:{name}",
+                    f"model_scale_q16:{model_scale_q16(root, kind, name)}",
                     f"source_path:{source_path}", f"rom_row:{row_path}",
                     f"rom_offset:{offset}", f"rom_bytes:{size}",
                     f"compressed:{compressed}", f"source_sha256:{sha256(raw)}",

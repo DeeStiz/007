@@ -219,9 +219,11 @@ enum GoldenEyeStageGameplayCameraPacketV7Error: Swift.Error, Sendable, Equatable
 /// composed first as a guard: it must still report the established `0x38`
 /// character/AI/effects gap before the scoped packet can clear anything.
 enum GoldenEyeStageGameplayCameraPacketAdapterV7 {
+    // Pad-backed static/door/glass records only. Collectables, ammo,
+    // monitors, autoguns, gas, vehicles, and other runtime-owned pages stay
+    // outside this V7 scope until their authoritative owner snapshots exist.
     private static let staticPropTypes: Set<UInt32> = [
-        1, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 17, 20, 21, 36, 39, 40,
-        41, 42, 43, 45, 47,
+        1, 3, 4, 5, 12, 17, 42, 43, 47,
     ]
 
     /// Return the source setup rows that this bounded lowerer can actually
@@ -230,6 +232,19 @@ enum GoldenEyeStageGameplayCameraPacketAdapterV7 {
     static func staticPropObjectIndices(in scene: GoldenEyeStageScenePacket) -> [UInt32] {
         scene.setup.objects
             .filter { staticPropTypes.contains($0.type) }
+            .map(\.index)
+            .sorted()
+    }
+
+    static func staticPropObjectIndices(
+        in scene: GoldenEyeStageScenePacket,
+        visiblePropModelIndices: Set<UInt32>
+    ) -> [UInt32] {
+        scene.setup.objects
+            .filter {
+                staticPropTypes.contains($0.type)
+                    && visiblePropModelIndices.contains($0.key0)
+            }
             .map(\.index)
             .sorted()
     }
@@ -322,7 +337,8 @@ enum GoldenEyeStageGameplayCameraPacketAdapterV7 {
             scene: scene,
             visibleStaticPropObjectIndices: snapshot.visibleStaticPropObjectIndices,
             dynamicPropTransforms: snapshot.dynamicPropTransforms,
-            cameraModelView: cameraInput.modelView
+            cameraModelView: cameraInput.modelView,
+            setupDependencies: setupDependencies
         )
         // `environmentOnlyCapture` is permitted only after the full-scene
         // guard above and only for the explicit room+static-prop subset.  It
@@ -347,7 +363,8 @@ enum GoldenEyeStageGameplayCameraPacketAdapterV7 {
             nativeTick: snapshot.nativeTick,
             demoID: snapshot.demoID,
             visibleDependencies: visibleDependencies,
-            requireExactFogCoordinates: true
+            requireExactFogCoordinates: true,
+            scopedCategoryNames: Set(["props"])
         )
         guard rawScopedComposition.propPlacementCount ==
                 UInt32(snapshot.visibleStaticPropObjectIndices.count) else {
@@ -545,7 +562,8 @@ enum GoldenEyeStageGameplayCameraPacketAdapterV7 {
         scene: GoldenEyeStageScenePacket,
         visibleStaticPropObjectIndices: [UInt32],
         dynamicPropTransforms: [GoldenEyeStageGameplayCameraDynamicPropV7],
-        cameraModelView: GoldenEyeProjectionV10.MatrixQ16
+        cameraModelView: GoldenEyeProjectionV10.MatrixQ16,
+        setupDependencies: GoldenEyeStageSetupDependencyCatalogV6
     ) throws -> GoldenEyeStageScenePacket {
         let visible = Set(visibleStaticPropObjectIndices)
         let dynamicByIndex = Dictionary(uniqueKeysWithValues: dynamicPropTransforms.map { ($0.objectIndex, $0) })
@@ -555,10 +573,19 @@ enum GoldenEyeStageGameplayCameraPacketAdapterV7 {
             guard staticPropTypes.contains(object.type) else {
                 throw GoldenEyeStageGameplayCameraPacketV7Error.invalidStaticProp(object.index)
             }
+            let modelScaleQ16 = setupDependencies
+                .dependency(kind: "prop", modelIndex: object.key0)?.modelScaleQ16 ?? 0
+            let sourceMatrixWords = GoldenEyeStageModelPlacementCatalogV6
+                .sourcePlacementMatrixWords(
+                    object: object,
+                    setup: scene.setup,
+                    modelScaleQ16: modelScaleQ16
+                )
             return try transformed(
                 object: object,
                 cameraModelView: cameraModelView,
-                dynamicTransformQ16: dynamicByIndex[object.index]?.transformQ16
+                dynamicTransformQ16: dynamicByIndex[object.index]?.transformQ16,
+                sourceMatrixWords: sourceMatrixWords
             )
         }
         guard !objects.isEmpty else {
@@ -699,9 +726,11 @@ enum GoldenEyeStageGameplayCameraPacketAdapterV7 {
     private static func transformed(
         object: GoldenEyeStageSetupObjectPacket,
         cameraModelView: GoldenEyeProjectionV10.MatrixQ16,
-        dynamicTransformQ16: [Int32]? = nil
+        dynamicTransformQ16: [Int32]? = nil,
+        sourceMatrixWords: [UInt32]? = nil
     ) throws -> GoldenEyeStageSetupObjectPacket {
-        guard object.matrixWords.count == 16,
+        let serializedMatrixWords = sourceMatrixWords ?? object.matrixWords
+        guard serializedMatrixWords.count == 16,
               dynamicTransformQ16 == nil || dynamicTransformQ16?.count == 16 else {
             throw GoldenEyeStageGameplayCameraPacketV7Error.invalidStaticProp(object.index)
         }
@@ -712,7 +741,7 @@ enum GoldenEyeStageGameplayCameraPacketAdapterV7 {
             }
         } else {
             for index in 0..<16 {
-                let value = Float(bitPattern: object.matrixWords[index])
+                let value = Float(bitPattern: serializedMatrixWords[index])
                 guard value.isFinite else {
                     throw GoldenEyeStageGameplayCameraPacketV7Error.invalidStaticProp(object.index)
                 }

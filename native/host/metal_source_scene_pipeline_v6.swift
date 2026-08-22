@@ -622,13 +622,32 @@ final class GoldenEyeSourceScenePipelineV6 {
                 sourceState.cycle1_alpha_d == GoldenEyeSourceSceneCombinerSelectorV6.zero
             let rarewareLODCombiner =
                 sourceState.cycle0_alpha_c == GoldenEyeSourceSceneCombinerSelectorV6.lodFraction
+            // Stage model sidecars use the exact GoldenEye LOD selector
+            // equation with the source opaque stage render mode. Admit only
+            // those two authored opaque modes; arbitrary stage LOD/noise/key
+            // selectors still fail closed below.
+            let stageLODCombiner =
+                rawH == 0x0011_2000 &&
+                (rawL == 0xc411_2078 || rawL == 0xc410_4dd8 || rawL == 0xc411_2d58 || rawL == 0xc410_49d8 || rawL == 0xc410_4b50) &&
+                goldenEyeLODCombiner
+            let stageOneLevelLOD =
+                rawH == 0x0010_2000 &&
+                (rawL == 0xc411_2078 || rawL == 0xc410_49d8) &&
+                goldenEyeLODCombiner && textureMipLevels == 1 &&
+                sourceState.lod_min_q16 == 0 && sourceState.lod_max_q16 == 0
             guard (rawH == 0x0019_2c00 && rawL == 0x0f0a_4000 && rarewareLODCombiner) ||
-                  (rawH == 0x0011_2000 && rawL == 0x0c18_2048 && goldenEyeLODCombiner) else {
+                  (rawH == 0x0011_2000 && rawL == 0x0c18_2048 && goldenEyeLODCombiner) ||
+                  stageLODCombiner || stageOneLevelLOD else {
                 throw GoldenEyeSourceScenePipelineV6Error.unsupportedCombiner(
-                    "LOD_FRACTION requires the canonical Rareware or GoldenEye source tuple rawH=0x\(String(rawH, radix: 16)) rawL=0x\(String(rawL, radix: 16)) filter=\(sourceState.filter_mode)"
+                    "LOD_FRACTION requires the canonical Rareware or GoldenEye source tuple rawH=0x\(String(rawH, radix: 16)) rawL=0x\(String(rawL, radix: 16)) filter=\(sourceState.filter_mode) "
+                        + "cycles=\(sourceState.cycle0_color_a),\(sourceState.cycle0_color_b),\(sourceState.cycle0_color_c),\(sourceState.cycle0_color_d);"
+                        + "\(sourceState.cycle1_color_a),\(sourceState.cycle1_color_b),\(sourceState.cycle1_color_c),\(sourceState.cycle1_color_d) "
+                        + "alpha=\(sourceState.cycle0_alpha_a),\(sourceState.cycle0_alpha_b),\(sourceState.cycle0_alpha_c),\(sourceState.cycle0_alpha_d);"
+                        + "\(sourceState.cycle1_alpha_a),\(sourceState.cycle1_alpha_b),\(sourceState.cycle1_alpha_c),\(sourceState.cycle1_alpha_d) "
+                        + "lod=\(sourceState.lod_min_q16)...\(sourceState.lod_max_q16) mip=\(textureMipLevels ?? 0)"
                 )
             }
-            guard lodEnabled else {
+            guard lodEnabled || stageOneLevelLOD else {
                 throw GoldenEyeSourceScenePipelineV6Error.unsupportedRasterState(
                     "LOD_FRACTION requires source texture LOD"
                 )
@@ -746,13 +765,17 @@ final class GoldenEyeSourceScenePipelineV6 {
             && sourceState.flags & UInt32(GE_SOURCE_RENDER_STATE_V6_FLAG_DEPTH_TEST) != 0
             && sourceState.flags & UInt32(GE_SOURCE_RENDER_STATE_V6_FLAG_DEPTH_WRITE) == 0
             && sourceState.coverage_mode == UInt32(GE_SOURCE_COVERAGE_V6_WRAP)
-        let stageXluMode = mode == 0x0c18_49d8 || mode == 0x0050_49d8
-        let stageDecalMode = mode == 0x0c18_4dd8 || mode == 0x0c19_2d58 ||
+        let stageXluMode = mode == 0xc410_49d8 || mode == 0xc410_4b50 || mode == 0x0c18_49d8 || mode == 0x0050_49d8
+        let stageDecalMode = mode == 0xc410_4dd8 || mode == 0xc411_2d58 || mode == 0x0c18_4dd8 || mode == 0x0c19_2d58 ||
             mode == 0x0c18_4e50 || mode == 0x0050_4dd8 || mode == 0x0050_4e50
         guard (coverageDestination == 0 || coverageSave || stageXluMode || stageDecalMode || gunbarrelSecondary || castSecondary),
               (zMode == 0 || stageXluMode || stageDecalMode || castSecondary), !coverageXAlpha,
               !forceBlend || alphaCoverageSelect || stageXluMode || stageDecalMode || rarewareForcedPass || coverageSave || gunbarrelSecondary || castSecondary else {
-            throw GoldenEyeSourceScenePipelineV6Error.unsupportedRasterState("coverage/decal/forced blend mode")
+            throw GoldenEyeSourceScenePipelineV6Error.unsupportedRasterState(
+                "coverage/decal/forced blend mode raw=0x\(String(mode, radix: 16)) "
+                    + "cov=\(coverageDestination) zmode=\(zMode) force=\(forceBlend ? 1 : 0) "
+                    + "alphaCoverage=\(alphaCoverageSelect ? 1 : 0) drawFlags=0x\(String(drawFlags, radix: 16))"
+            )
         }
         func pairedBlender(_ cycle0Shift: UInt32, _ cycle1Shift: UInt32) -> UInt32 {
             ((mode >> cycle0Shift) & 3) | (((mode >> cycle1Shift) & 3) << 2)
@@ -802,7 +825,8 @@ final class GoldenEyeSourceScenePipelineV6 {
                 destinationAlpha: .zero
             )
         }
-        if rawMode == 0x0c18_49d8 || rawMode == 0x0c18_4dd8 ||
+        if rawMode == 0xc410_4dd8 || rawMode == 0xc411_2d58 || rawMode == 0xc410_49d8 || rawMode == 0xc410_4b50 ||
+            rawMode == 0x0c18_49d8 || rawMode == 0x0c18_4dd8 ||
             rawMode == 0x0c19_2d58 || rawMode == 0x0c18_4e50 ||
             rawMode == 0x0050_49d8 || rawMode == 0x0050_4dd8 || rawMode == 0x0050_4e50 {
             // Source stage XLU/decal room passes use coverage wrap and

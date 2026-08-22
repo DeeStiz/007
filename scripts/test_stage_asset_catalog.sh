@@ -36,8 +36,10 @@ fi
 
 STAGE_OBJECT="${BUILD_DIR}/ge_stage_v5.o"
 STAGE_OBJECT_ASAN="${BUILD_DIR}/ge_stage_v5_asan.o"
+STAGE_OBJECT_UBSAN="${BUILD_DIR}/ge_stage_v5_ubsan.o"
 SMOKE="${BUILD_DIR}/goldeneye_stage_asset_catalog_smoke"
 SMOKE_ASAN="${BUILD_DIR}/goldeneye_stage_asset_catalog_smoke_asan"
+SMOKE_UBSAN="${BUILD_DIR}/goldeneye_stage_asset_catalog_smoke_ubsan"
 
 echo "Building strict C stage V5 object"
 "${STAGE_CC}" "${COMMON_CFLAGS[@]}" \
@@ -73,6 +75,21 @@ CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}" "${STAGE_SWIFTC}" \
     -o "${SMOKE_ASAN}"
 ASAN_OPTIONS=halt_on_error=1 "${SMOKE_ASAN}" "${ASSET_ROOT}" \
     | tee "${BUILD_DIR}/stage-asset-catalog-asan.log"
+
+echo "Building UBSan Swift stage catalog bootstrap smoke"
+"${STAGE_CC}" "${COMMON_CFLAGS[@]}" -O1 -fno-omit-frame-pointer \
+    -fsanitize=undefined -c "${PROJECT_ROOT}/native/src/ge_stage_v5.c" \
+    -o "${STAGE_OBJECT_UBSAN}"
+CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}" "${STAGE_SWIFTC}" \
+    "${SWIFT_ARGS[@]}" -sanitize=undefined \
+    -import-objc-header "${PROJECT_ROOT}/native/tests/goldeneye_native_bridging.h" \
+    -Xcc "-I${PROJECT_ROOT}/native/include" \
+    "${PROJECT_ROOT}/native/host/goldeneye_stage_asset_catalog.swift" \
+    "${PROJECT_ROOT}/native/tests/goldeneye_stage_asset_catalog_smoke.swift" \
+    "${STAGE_OBJECT_UBSAN}" \
+    -o "${SMOKE_UBSAN}"
+UBSAN_OPTIONS=halt_on_error=1 "${SMOKE_UBSAN}" "${ASSET_ROOT}" \
+    | tee "${BUILD_DIR}/stage-asset-catalog-ubsan.log"
 
 echo "Checking malformed-manifest guard"
 MALFORMED_ROOT="${BUILD_DIR}/malformed-manifest"

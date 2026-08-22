@@ -14,6 +14,10 @@ struct GoldenEyeStageSetupDependencyCatalogV6: Sendable, Equatable {
         let setupOffset: UInt32
         let modelIndex: UInt32
         let modelName: String
+        /// Source ItemModelFileRecord/ChrModelFileRecord scale in Q16.16.
+        /// Setup ObjectRecord matrices are runtime-owned; placement lowering
+        /// uses this copied scale with the source pad basis.
+        let modelScaleQ16: Int32
         let sourcePath: String
         let romRow: String
         let romOffset: UInt32
@@ -113,6 +117,10 @@ struct GoldenEyeStageSetupDependencyCatalogV6: Sendable, Equatable {
                 guard let value = UInt32(try required(key)) else { throw Error.invalidManifest("invalid \(key)") }
                 return value
             }
+            func int32(_ key: String) throws -> Int32 {
+                guard let value = Int32(try required(key)) else { throw Error.invalidManifest("invalid \(key)") }
+                return value
+            }
             let rawFile = try required("raw_file")
             let decodedFile = try required("decoded_file")
             let raw = try readPayload(root: root, fileName: rawFile, expected: Int(try uint("rom_bytes")), digest: try required("source_sha256"), name: rawFile)
@@ -123,7 +131,8 @@ struct GoldenEyeStageSetupDependencyCatalogV6: Sendable, Equatable {
                 stage: try required("stage"), kind: try required("kind"),
                 objectIndex: try uint("object_index"), objectType: try uint("object_type"),
                 setupOffset: try uint("setup_offset"), modelIndex: try uint("model_index"),
-                modelName: try required("model_name"), sourcePath: try required("source_path"),
+                modelName: try required("model_name"), modelScaleQ16: try int32("model_scale_q16"),
+                sourcePath: try required("source_path"),
                 romRow: try required("rom_row"), romOffset: try uint("rom_offset"),
                 romBytes: try uint("rom_bytes"), compressed: try uint("compressed") != 0,
                 sourceSHA256: try required("source_sha256"), decodedBytes: try uint("decoded_bytes"),

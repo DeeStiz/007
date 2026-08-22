@@ -84,9 +84,21 @@ struct GoldenEyeSourceAudioBindingV6: Sendable {
     static let musicIntro: UInt32 = 2
     static let musicFolders: UInt32 = 23
     static let musicStop: UInt32 = 0
+    static let playSFXOperation: UInt32 = 3
     static let sfxRarewareLogo: UInt32 = 258
     static let sfxOptionClick2: UInt32 = 18
     static let sfxGunRifle7Big1: UInt32 = 111
+    static let sfxFileCopy: UInt32 = 77
+    static let sfxFileErase: UInt32 = 79
+    static let sfxFileCopyComplete: UInt32 = 118
+    static let sfxFileEraseComplete: UInt32 = 197
+    static let sfxModeSolo: UInt32 = 199
+    static let sfxModeMulti: UInt32 = 222
+    static let supportedSFXIDs: [UInt32] = [
+        sfxOptionClick2, sfxFileCopy, sfxFileErase, sfxGunRifle7Big1,
+        sfxFileCopyComplete, sfxFileEraseComplete, sfxModeSolo, sfxModeMulti,
+        sfxRarewareLogo,
+    ]
 
     private(set) var lastConsumedSequence: UInt64 = 0
 
@@ -171,10 +183,8 @@ struct GoldenEyeSourceAudioBindingV6: Sendable {
                     continue
                 }
                 kind = .music
-            case 3: // GE_SOURCE_FRONTEND_RUNTIME_V6_AUDIO_OP_PLAY_SFX
-                guard event.assetID == Self.sfxRarewareLogo ||
-                    event.assetID == Self.sfxOptionClick2 ||
-                    event.assetID == Self.sfxGunRifle7Big1 else {
+            case Self.playSFXOperation: // GE_SOURCE_FRONTEND_RUNTIME_V6_AUDIO_OP_PLAY_SFX
+                guard Self.supportedSFXIDs.contains(event.assetID) else {
                     rejections.append(.init(sequence: event.sequence, reason: .unmappedSFX(event.assetID)))
                     continue
                 }

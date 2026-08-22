@@ -50,6 +50,8 @@ build_and_run() {
             -import-objc-header "${ROOT}/native/tests/goldeneye_ramrom_gameplay_v6_bridging.h" \
             -Xcc "-I${ROOT}/native/include" \
             "${ROOT}/native/host/goldeneye_stage_asset_catalog.swift" \
+            "${ROOT}/native/host/goldeneye_stage_payload_store_v6.swift" \
+            "${ROOT}/native/host/goldeneye_stage_transfer_queue_v6.swift" \
             "${ROOT}/native/host/goldeneye_stage_setup_packet.swift" \
             "${ROOT}/native/host/goldeneye_stage_scene_packet.swift" \
             "${ROOT}/native/host/goldeneye_source_model_v6.swift" \
@@ -67,6 +69,8 @@ build_and_run() {
         -import-objc-header "${ROOT}/native/tests/goldeneye_ramrom_gameplay_v6_bridging.h" \
         -Xcc "-I${ROOT}/native/include" \
         "${ROOT}/native/host/goldeneye_stage_asset_catalog.swift" \
+        "${ROOT}/native/host/goldeneye_stage_payload_store_v6.swift" \
+        "${ROOT}/native/host/goldeneye_stage_transfer_queue_v6.swift" \
         "${ROOT}/native/host/goldeneye_stage_setup_packet.swift" \
         "${ROOT}/native/host/goldeneye_stage_scene_packet.swift" \
         "${ROOT}/native/host/goldeneye_source_model_v6.swift" \

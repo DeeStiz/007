@@ -11,11 +11,21 @@ ROOT=$(cd -- "${SCRIPT_DIR}/.." && pwd -P)
 BUILD_ROOT="${ROOT}/build/native/original-source-v6/paired-authority-v6"
 mkdir -p "${BUILD_ROOT}"
 
+SWIFT_BUILD_ARGS=()
+if [[ "${GOLDENEYE_SWIFT_BUILD_DISABLE_SANDBOX:-0}" == "1" ]]; then
+    SWIFT_BUILD_ARGS+=(--disable-sandbox)
+fi
+
 SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
 SWIFTC=$(xcrun --sdk macosx --find swiftc)
 
-swift build --target GoldenEyeNative -c debug
-swift build --target GoldenEyeOriginalFrontend -c debug
+if [[ "${#SWIFT_BUILD_ARGS[@]}" -gt 0 ]]; then
+    swift build "${SWIFT_BUILD_ARGS[@]}" --target GoldenEyeNative -c debug
+    swift build "${SWIFT_BUILD_ARGS[@]}" --target GoldenEyeOriginalFrontend -c debug
+else
+    swift build --target GoldenEyeNative -c debug
+    swift build --target GoldenEyeOriginalFrontend -c debug
+fi
 
 PRODUCTS="${ROOT}/.build/out/Products/Debug"
 INTERMEDIATES="${ROOT}/.build/out/Intermediates.noindex/GoldenEyeSwift.build/Debug"

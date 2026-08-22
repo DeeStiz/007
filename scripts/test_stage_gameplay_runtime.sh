@@ -42,6 +42,8 @@ CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}" "${SWIFTC}" "${SWIFT_ARGS[@]}" \
     -import-objc-header "${PROJECT_ROOT}/native/tests/goldeneye_stage_gameplay_runtime_bridging.h" \
     -Xcc "-I${PROJECT_ROOT}/native/include" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_asset_catalog.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_stage_payload_store_v6.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_stage_transfer_queue_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_setup_packet.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_scene_packet.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_gameplay_runtime.swift" \
@@ -64,6 +66,8 @@ CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}" "${SWIFTC}" "${SWIFT_ARGS[@]}" \
     -import-objc-header "${PROJECT_ROOT}/native/tests/goldeneye_stage_gameplay_runtime_bridging.h" \
     -Xcc "-I${PROJECT_ROOT}/native/include" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_asset_catalog.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_stage_payload_store_v6.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_stage_transfer_queue_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_setup_packet.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_scene_packet.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_gameplay_runtime.swift" \
@@ -86,6 +90,8 @@ CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}" "${SWIFTC}" "${SWIFT_ARGS[@]}" \
     -import-objc-header "${PROJECT_ROOT}/native/tests/goldeneye_stage_gameplay_runtime_bridging.h" \
     -Xcc "-I${PROJECT_ROOT}/native/include" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_asset_catalog.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_stage_payload_store_v6.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_stage_transfer_queue_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_setup_packet.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_scene_packet.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_gameplay_runtime.swift" \

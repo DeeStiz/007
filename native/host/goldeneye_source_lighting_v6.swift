@@ -49,7 +49,7 @@ enum GoldenEyeSourceSceneLightingV6Error: Error, Sendable, Equatable,
     case unsupportedScreen(UInt32)
     case invalidPairPhase(UInt32)
     case invalidVector(String)
-    case invalidNormalTransform
+    case invalidNormalTransform(UInt32)
 
     var description: String {
         switch self {
@@ -69,8 +69,8 @@ enum GoldenEyeSourceSceneLightingV6Error: Error, Sendable, Equatable,
             return "invalid source lighting pair phase \(phase)"
         case .invalidVector(let name):
             return "invalid source lighting vector \(name)"
-        case .invalidNormalTransform:
-            return "invalid source normal transform"
+        case .invalidNormalTransform(let stateHandle):
+            return "invalid source normal transform for render state \(stateHandle)"
         }
     }
 }
@@ -126,7 +126,7 @@ struct GoldenEyeSourceSceneLightingBindingV6: Sendable, Equatable {
             throw GoldenEyeSourceSceneLightingV6Error.invalidVector("color or direction")
         }
         guard Self.isFinite(normalTransform) else {
-            throw GoldenEyeSourceSceneLightingV6Error.invalidNormalTransform
+            throw GoldenEyeSourceSceneLightingV6Error.invalidNormalTransform(stateHandle)
         }
 
         self.stateHandle = stateHandle
@@ -284,6 +284,8 @@ struct GoldenEyeSourceSceneLightingProviderV6: Sendable {
     static let screenGunbarrel: UInt32 = 3
     static let screenGoldenEye: UInt32 = 4
     static let screenCast: UInt32 = 7
+    // GE_SOURCE_FRAME_V6_SCREEN_RAMROM in the fixed V6 source enum.
+    static let screenStage: UInt32 = 8
 
     private let records: [UInt32: GoldenEyeSourceSceneLightingBindingV6]
     private let useTitleDefaults: Bool
@@ -351,7 +353,8 @@ struct GoldenEyeSourceSceneLightingProviderV6: Sendable {
             )
         }
         guard screen == Self.screenNintendo || screen == Self.screenGoldenEye ||
-            screen == Self.screenRareware || screen == Self.screenCast else {
+            screen == Self.screenRareware || screen == Self.screenCast ||
+            screen == Self.screenStage else {
             throw GoldenEyeSourceSceneLightingV6Error.unsupportedScreen(screen)
         }
         let ambient: SIMD4<Float>

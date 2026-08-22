@@ -6,6 +6,40 @@ private let screenGunbarrel = UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_GUNBAR
 private let screenGoldenEye = UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_GOLDENEYE)
 private let screenSwitch = UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_SWITCH)
 
+/// The source title primes blood frame 0 when entering mode 5, then calls
+/// die_blood_image_routine(1) every two 60 Hz anchors.  The paired route runs
+/// at 120 Hz, so one source continuation arrives every four native ticks and
+/// completion is reached on continuation 41.
+private func modelResultForSourceStateWithBloodStream(
+    _ state: GEFrontendRuntimeV6State,
+    nativeTick: UInt64,
+    bloodContinuationCount: inout UInt32,
+    bloodStartTick: inout UInt64?
+) -> (model: UInt32, operation: UInt32, flags: UInt32, value0: UInt32, value1: UInt32) {
+    let executed = UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_RESULT_EXECUTED)
+    let bloodComplete = UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_RESULT_BLOOD_COMPLETE)
+    if state.screen == screenGunbarrel,
+       state.gunbarrel_mode == 5,
+       nativeTick & 1 == 0 {
+        if bloodStartTick == nil {
+            bloodStartTick = nativeTick
+        }
+        if (nativeTick - (bloodStartTick ?? nativeTick)) % 4 == 0 {
+            if bloodContinuationCount < 41 {
+                bloodContinuationCount += 1
+            }
+            return (
+                UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_GUNBARREL),
+                UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_OP_BLOOD_TICK),
+                executed | (bloodContinuationCount >= 41 ? bloodComplete : 0),
+                bloodContinuationCount,
+                0
+            )
+        }
+    }
+    return modelResultForSourceState(state, nativeTick: nativeTick)
+}
+
 private func modelResultForSourceState(
     _ state: GEFrontendRuntimeV6State,
     nativeTick: UInt64
@@ -134,12 +168,16 @@ struct GoldenEyeGunbarrelTransitionProjectionV6Smoke {
         var observedScreens = Set<UInt32>()
         var modeFirstTick: [UInt32: UInt64] = [:]
         var modeLastTick: [UInt32: UInt64] = [:]
+        var bloodContinuationCount: UInt32 = 0
+        var bloodStartTick: UInt64?
 
         while authority.nativeAuthority.state.native_tick < 6_000 {
             let nativeTick = UInt64(authority.nativeAuthority.state.native_tick) + 1
-            let result = modelResultForSourceState(
+            let result = modelResultForSourceStateWithBloodStream(
                 authority.nativeAuthority.state,
-                nativeTick: nativeTick
+                nativeTick: nativeTick,
+                bloodContinuationCount: &bloodContinuationCount,
+                bloodStartTick: &bloodStartTick
             )
             let frame = try authority.step(
                 nativeTick: nativeTick,

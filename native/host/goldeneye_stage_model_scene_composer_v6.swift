@@ -65,7 +65,8 @@ struct GoldenEyeStageModelSceneCompositionV6: @unchecked Sendable {
         nativeTick: UInt64,
         demoID: UInt8? = nil,
         visibleDependencies: GoldenEyeRamRomVisibleDependencyCatalogV6? = nil,
-        requireExactFogCoordinates: Bool = true
+        requireExactFogCoordinates: Bool = true,
+        scopedCategoryNames: Set<String>? = nil
     ) throws -> Result {
         let base = try GoldenEyeStageSourceSceneSnapshotAdapterV6.make(
             packet: environmentPacket,
@@ -87,7 +88,9 @@ struct GoldenEyeStageModelSceneCompositionV6: @unchecked Sendable {
             stageID: stageScene.stageID,
             stageName: stageScene.stageName,
             demoID: demoID
-        )
+        ).filter { packet in
+            scopedCategoryNames == nil || scopedCategoryNames!.contains(packet.category)
+        }
 
         guard let frameResources else {
             let stageMask = unsupportedMask(

@@ -53,6 +53,8 @@ PY
 
 SWIFTC=$(xcrun --sdk macosx --find swiftc)
 SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
-"${SWIFTC}" -frontend -parse -sdk "${SDKROOT}" \
+MODULE_CACHE_DIR="${ROOT}/build/native/release-renderer-environment-guard-v6/module-cache"
+mkdir -p "${MODULE_CACHE_DIR}"
+CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}" "${SWIFTC}" -frontend -parse -sdk "${SDKROOT}" \
     "${ROOT}/native/host/goldeneye_fidelity_policy.swift" \
     "${MAIN}"

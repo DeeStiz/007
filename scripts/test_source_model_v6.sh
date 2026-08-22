@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/.." && pwd)
 BUILD_DIR="${PROJECT_ROOT}/build/native/source-model-v6"
-mkdir -p "${BUILD_DIR}"
+mkdir -p "${BUILD_DIR}" "${BUILD_DIR}/asan" "${BUILD_DIR}/ubsan"
 
 if command -v xcrun >/dev/null 2>&1; then
     SWIFTC=$(xcrun --sdk macosx --find swiftc)
@@ -14,9 +14,11 @@ else
     SDKROOT=${SDKROOT:-}
 fi
 
+SWIFT_PLATFORM=()
 SWIFT_ARGS=(-O -warnings-as-errors)
 if [[ -n "${SDKROOT}" ]]; then
-    SWIFT_ARGS+=(-target arm64-apple-macosx27.0 -sdk "${SDKROOT}")
+    SWIFT_PLATFORM=(-target arm64-apple-macosx27.0 -sdk "${SDKROOT}")
+    SWIFT_ARGS+=("${SWIFT_PLATFORM[@]}")
 fi
 
 SMOKE="${BUILD_DIR}/goldeneye_source_model_v6_smoke"
@@ -32,6 +34,30 @@ echo "Building strict GESM V6 runtime parser/compiler smoke"
 
 echo "Running all eight generated sidecars"
 "${SMOKE}" "${PROJECT_ROOT}/build/native/source-frontend-v6" "${WORDS}" | tee "${LOG}"
+
+for variant in asan ubsan; do
+    SANITIZER="address"
+    if [[ "${variant}" == "ubsan" ]]; then SANITIZER="undefined"; fi
+    SANITIZER_FLAGS=(-Onone -sanitize="${SANITIZER}")
+    SANITIZER_BIN="${BUILD_DIR}/${variant}/goldeneye_source_model_v6_smoke"
+    SANITIZER_LOG="${BUILD_DIR}/${variant}.log"
+    echo "Building ${variant} GESM V6 runtime parser/compiler smoke"
+    "${SWIFTC}" -warnings-as-errors "${SANITIZER_FLAGS[@]}" \
+        "${SWIFT_PLATFORM[@]}" \
+        "${PROJECT_ROOT}/native/host/goldeneye_source_model_v6.swift" \
+        "${PROJECT_ROOT}/native/tests/goldeneye_source_model_v6_smoke.swift" \
+        -o "${SANITIZER_BIN}"
+    if [[ "${variant}" == "asan" ]]; then
+        ASAN_OPTIONS=halt_on_error=1:detect_leaks=0 \
+            "${SANITIZER_BIN}" "${PROJECT_ROOT}/build/native/source-frontend-v6" \
+            | tee "${SANITIZER_LOG}"
+    else
+        UBSAN_OPTIONS=halt_on_error=1 \
+            "${SANITIZER_BIN}" "${PROJECT_ROOT}/build/native/source-frontend-v6" \
+            | tee "${SANITIZER_LOG}"
+    fi
+    grep -Fq 'source-model-v6 validation: PASS' "${SANITIZER_LOG}"
+done
 
 echo "Building strict old-GE/F3D macro oracle"
 if command -v xcrun >/dev/null 2>&1; then

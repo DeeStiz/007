@@ -4,6 +4,8 @@ rom_sha1=abe01e4aeb033b6c0836819f549c791b26cfde83
 rom_size=12582912
 reference_command=make -j8 IDO_RECOMP=NO VERSION=US COMPARE=1 VERBOSE=1
 reference_hash_command=sha1sum -c ge007.u.sha1
+# R0 accepts either a clean committed checkout or an additive dirty snapshot.
+r0_status_policy=clean-or-dirty
 
 # The current source-scene root is the only release-consumable generation.
 final_packet_sha256=b9247beab28b0e101c471c1a94d0d4baebf8a3ea85e306981bef1365d3e485ad

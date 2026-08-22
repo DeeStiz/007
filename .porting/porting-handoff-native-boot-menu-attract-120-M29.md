@@ -570,6 +570,43 @@ SHA-1: `abe01e4aeb033b6c0836819f549c791b26cfde83`
   headless 120-Hz soak pass (`ticks=241 rate=120.0 dropped=0 maxDebt=1`);
   physical focus migration and sustained 120-Hz acceptance remain open.
 
+## 2026-08-21 source/render gap audit refresh
+
+- The delegated source/render audit confirms that the recommended stage lane is
+  already implemented as the opt-in V7 gameplay-camera route. NativeTitleOwner
+  gates it behind `GOLDENEYE_STAGE_GAMEPLAY_CAMERA_V7=1`, publishes copied
+  demo/stage/player-camera input, and the product renderer performs the strict
+  full-scene `0x38` guard before publishing only the scoped room/static-prop
+  composition. No stage-source files changed in this audit.
+- Fresh packet validation passed strict/ASan/UBSan. Dam (stage 33) reports
+  camera hash `17166107536987602611`, packet hash
+  `4344127377687538898`, environment commands `28`, scene draws `1183`, and
+  static props `197/197`. Facility (stage 34) reports camera hash
+  `9901855664259801205`, packet hash `2739797606600666455`, environment
+  commands `48`, scene draws `1444`, and static props `267/267`. Both retain
+  scoped `unsupportedMask=0x0`, full-scene `0x38`, deterministic `1`, and
+  fail-closed `1`. The all-demo reference lane passes `14` demos / `42`
+  checkpoints.
+- The production supplied-drawable harness was freshly rebuilt and run with
+  Metal API and shader validation. It reached the device gate and recorded
+  `SKIP (Metal 4 device unavailable)` in
+  `build/native/stage-gameplay-camera-production-capture-v7/strict.log`.
+  Therefore no Release room-plus-props pixel hash, supplied-drawable frame,
+  inspected gameplay gputrace, or physical validation proof is claimed. The
+  legacy environment/material artifacts remain valid source evidence but keep
+  `unsupportedMask=60` for their broader props/characters/AI/effects packet;
+  the composed full-scene model evidence narrows that retained gap to `0x38`
+  after the static-prop slice is lowered.
+- The next bounded gate is a Metal 4-capable host running the signed Release
+  with the opt-in environment, then inspecting the supplied-drawable raw/PNG/
+  JSON hashes and gputrace while retaining the explicit full-scene category
+  boundary. Characters, effects, AI, HUD, weapons, and collision remain out
+  of scope for this route.
+- The canonical source-faithful Release was rebuilt after this audit. Stage
+  preparation reports `resources=21`; the signed executable SHA-256 is
+  `c4f4f4b9e4f3772f7c47052e32559084e1e9fb0869b3c4f037844b0e4c1516a7`, and
+  the Release history/provenance gate passes with the external ROM boundary.
+
 ## Required continuation
 
 ```sh
@@ -616,3 +653,97 @@ bash scripts/test_gunbarrel_dynamic_builder_v6.sh
 Do not treat the build, launch, screenshot, or local GPU trace as N64 pixel or
 performance parity. Runtime must continue to avoid opening the ROM; private
 prepared assets remain beneath ignored `build/native/` directories.
+
+## 2026-08-21 current integrated refresh
+
+- Rebuilt the signed source-faithful Release after the M24 lifecycle and
+  validation-harness changes. Stage preparation reports `resources=21`; the
+  executable SHA-256 is
+  `85a7c8f86abbba1709e30f5cc4689bf6ce1a59a22c941657729b1c1e262cd916`.
+- `scripts/test_native_boot_release_history_v6.py` passes the external ROM
+  SHA-1 boundary, frozen V1–V5 history, bundle guard, and
+  `final_packet_sha256=b9247beab28b0e101c471c1a94d0d4baebf8a3ea85e306981bef1365d3e485ad`.
+  Elevated `codesign --verify --deep --strict` reports the bundle valid on
+  disk and satisfying its designated requirement.
+- Short post-display-observer supplied-drawable cadence measurements are
+  retained at `build/native/boot-runtime/cadence/runs/m30-current-short/`:
+  logic rates are `119.9975` and `119.9879` Hz with zero dropped ticks, but
+  only `5/6` callbacks, zero presented-time samples, zero presented FPS, and
+  `pass=0`. These are headless/window evidence, not physical 120/60
+  acceptance.
+- Current M27 Metal reference/production runs all explicitly SKIP without a
+  Metal 4 device; current Cast production remains `castSubmit=0` in the M23
+  blockers. Keep those gates open and do not infer visual or physical
+  acceptance from archived captures.
+- A post-observer wake/fullscreen attempt at
+  `build/native/boot-runtime/cadence/runs/m30-wake-attempt/120/report.txt`
+  reached `119.9897` Hz with displays awake, but `frontmost=loginwindow`, zero
+  presented samples/FPS, 64 rejected samples, and `pass=0`; an active Aqua
+  session is still required.
+
+## 2026-08-22 M24 transfer-contract Release refresh
+
+- The source-faithful Release was rebuilt after the bounded M24 file-index and
+  transfer-queue addition. Stage preparation reports `resources=21`; the
+  current signed executable SHA-256 is
+  `0738a1202ea27a5949fb7fe10e1889d5c7d27f53ed634d5594ab81f61d535f33`.
+- Release history/provenance, codesign, bundle guards, R0, debug host build,
+  owner route guard, source boot-route smoke, payload-store/lifecycle smokes,
+  and strict/ASan/UBSan transfer-queue validation pass. This metadata/transfer
+  lane does not change the physical cadence or Metal-4 acceptance gates.
+- The post-Release stage gameplay-camera capture was rerun with API and shader
+  validation enabled and remains `SKIP (Metal 4 device unavailable)`; stale
+  ignored traces are not current evidence. Presented timestamps/FPS remain
+  unavailable in the login-window session.
+
+## 2026-08-22 repeated Gunbarrel Release refresh
+
+- Source-owner reset at the authoritative Gunbarrel screen transition removes
+  the stale second-cycle blood latch. Fresh 120-second Release evidence at
+  `build/native/boot-runtime/cadence/runs/m28-repeat-reset-20260822-120/120/`
+  records `sourceAuthorityFailure=none`, `119.9999 Hz`, zero dropped ticks,
+  zero renderer failures, and the supplied-drawable Facility V7 frame.
+- Current signed executable SHA-256 is
+  `fcc912c92170f2943a8981d5e87e08460e0d38b0c31696b89e11d35b55d62279`;
+  provenance, codesign, and R0 pass. Physical presentation remains open, and
+  current Metal-4 capture remains an explicit device-unavailable SKIP.
+
+## 2026-08-22 M27 anchor-window Release refresh
+
+- The final signed Release now carries a coalesced, 120-native-tick-spaced
+  four-anchor V7 window. Independent 30-second runs agree on ticks
+  `4324,4444,4564,4684` and all camera/packet/environment/composition hashes;
+  both retain `sourceAuthorityFailure=none`, zero dropped/fatal debt ticks,
+  and zero renderer failures. Current SHA-256 is
+  `aadf9c2bfcda56eef17ee5efa34b70271c5f87d3cd325be5d15704f5b12bc681`.
+- The run still has zero presented timestamps/FPS under the login-window
+  session; Metal-4 capture remains unavailable. No full-scene category bit was
+  cleared.
+
+## 2026-08-22 RAMROM evidence retention refresh
+
+- RAMROM authority/gameplay logs are now append-only. The full Release run at
+  `build/native/boot-runtime/cadence/runs/m28-ramrom-append-long-20260822-120/120/`
+  retains packet `0/559`, `558/559`, `559/559`, and the next-cycle `0/559`,
+  plus four V7 anchor submissions. It reports `sourceAuthorityFailure=none`,
+  logic `119.9997 Hz`, zero dropped/fatal debt, and zero renderer failures.
+- Current signed executable SHA-256 is
+  `ca09b6cb290ebb62f0874678a1dcabbf6278730beb62ec89e39d0c6f3de1af30`;
+  provenance, codesign, and R0 pass. Physical presented cadence remains open.
+
+## 2026-08-22 stage-prewarm Release rebuild and session boundary
+
+- The rebuilt source-faithful Release SHA-256 is
+  `803dc0db99e4786b7eb03893191d1c24a3330fcb90cbf063f5e2be4457990dfa`;
+  Release history/provenance, codesign, R0, renderer-environment, fidelity,
+  prepared dry-run, shader/resource, preserved-catalog, and forbidden-bundle
+  gates pass.
+- Scene packet, transfer queue, asset catalog, and V7 gameplay-camera strict,
+  ASan, and UBSan checks pass. The V7 Release route records four valid scoped
+  submissions at `4324,4444,4564,4684` (`158/158` props, `1191` draws,
+  scoped `0`, full-scene `0x38`), but its preflight was `frontmost=loginwindow`
+  and therefore supplies no physical cadence proof.
+- The no-V7 control still exposes the uncached gameplay-orchestrator begin at
+  tick `4322` (`3413 ms` target stall, `fatalDebtTicks=241`). Keep the V7
+  gameplay-camera route opt-in and do not broaden masks. Unlock the desktop
+  again before the next short active-session cadence/capture attempt.

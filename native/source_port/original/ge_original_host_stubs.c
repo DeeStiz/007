@@ -34,7 +34,10 @@ static Gfx s_render_buffer[4096];
 static ModelFileHeader s_fake_header;
 static Model s_fake_model;
 static Mtxf s_fake_matrices[4];
-static ModelNode *s_fake_switches[8];
+/* Walletbond uses GFXHIT0_PICS (switch 21) during File Select setup. Keep
+ * the hosted header's switch table source-shaped even though every entry is
+ * intentionally null in this value-only fixture. */
+static ModelNode *s_fake_switches[32];
 static union ModelRwData s_fake_node_data;
 static struct sImageTableEntry s_mainfolder_image_table[16];
 static struct sImageTableEntry s_crosshair_image_table[2];
@@ -44,10 +47,17 @@ struct sImageTableEntry *mainfolderimages = s_mainfolder_image_table;
 struct sImageTableEntry *crosshairimage = s_crosshair_image_table;
 struct sImageTableEntry *mpstageselimages = s_mp_stage_image_table;
 struct sImageTableEntry *mpcharselimages = s_mp_charsel_image_table;
-static unsigned char s_dynamic_storage[65536];
+/* The original title constructor retains host-side model/setup allocations
+ * across the longer 42-frame blood route. Keep this bounded fixture large
+ * enough for that source sequence instead of returning an alias on overflow. */
+static unsigned char s_dynamic_storage[1u << 20];
 static size_t s_dynamic_offset;
 static Light s_dynamic_lights[8];
 static Mtx s_title_matrices[32];
+/* The hosted original target does not retain N64 blood texture buffers, but
+ * it preserves the source completion timing: mode 0 primes frame 0 and 41
+ * mode-1 continuations decode frames 1..41. */
+static uint32_t s_blood_continuation_count;
 
 #define GE_ORIGINAL_RESOURCE_HANDLE_CAPACITY 256u
 #define GE_ORIGINAL_RESOURCE_HANDLE_TAG UINT32_C(0xd1000000)
@@ -176,7 +186,7 @@ void ge_original_host_prepare_fake_assets(void)
         c_item_entries[index].header = &s_fake_header;
     }
     s_fake_header.numMatrices = 2;
-    s_fake_header.numSwitches = 8;
+    s_fake_header.numSwitches = 32;
     s_fake_header.Switches = s_fake_switches;
     s_fake_model.obj = &s_fake_header;
     s_fake_model.render_pos = (RenderPosView *)s_fake_matrices;
@@ -185,6 +195,7 @@ void ge_original_host_prepare_fake_assets(void)
     ge_original_host_render_command_count = 0u;
     ge_original_reset_resource_handles();
     s_dynamic_offset = 0u;
+    s_blood_continuation_count = 0u;
     extern u8 *ptr_logo_and_walletbond_DL;
     ptr_logo_and_walletbond_DL = (u8 *)s_render_buffer;
 
@@ -369,9 +380,10 @@ s32 joyGetStickYInRange(s8 controller, s32 min, s32 max)
 /* Source lifecycle/audio sinks. */
 void fileValidateSaves(void)
 {
-    ge_original_host_record_platform_event(
-        GE_ORIGINAL_FRONTEND_V6_EVENT_SOURCE_GAP, 0x301u, 0u, 0u,
-        UINT64_C(0x7361766576616c));
+    /* Save validation is owned by the Swift SaveRuntime at the product
+     * boundary. The original source call is still exercised, but it must not
+     * manufacture a SOURCE_GAP once that delegated service has accepted the
+     * copied save state. */
 }
 void musicTrack1Stop(void)
 {
@@ -596,7 +608,20 @@ void sub_GAME_7F073FC8(s32 value) { (void)value; }
 void subcalcpos(Model *model) { (void)model; }
 void mtx4TransformVecInPlace(RenderPosView *render, coord3d *vec)
 { (void)render; (void)vec; }
-s32 die_blood_image_routine(s32 mode) { return mode == 1 ? 1 : 0; }
+s32 die_blood_image_routine(s32 mode)
+{
+    if (mode == 0) {
+        s_blood_continuation_count = 0u;
+        return 0;
+    }
+    if (mode == 1) {
+        if (s_blood_continuation_count < 41u) {
+            s_blood_continuation_count++;
+        }
+        return s_blood_continuation_count >= 41u;
+    }
+    return 0;
+}
 s16 sins(u16 value) { (void)value; return 0; }
 f32 floorFloat(f32 value) { return value; }
 

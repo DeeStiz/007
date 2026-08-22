@@ -90,6 +90,9 @@ protocol GoldenEyeSourceFrontendModelResultProviderV6: AnyObject, Sendable {
 @available(macOS 26.0, *)
 protocol GoldenEyeSourceFrontendModelLifecycleV6: AnyObject, Sendable {
     func acknowledgeSourceModelLoad(model: UInt32) throws
+    /// Resets source-owned Gunbarrel blood state at an authoritative screen
+    /// entry, including entries whose Cast/SWITCH frames bypass the renderer.
+    func resetGunbarrelBloodStream()
 }
 
 enum GoldenEyeSourceFrontendOwnerError: Error, Sendable, Equatable, CustomStringConvertible {

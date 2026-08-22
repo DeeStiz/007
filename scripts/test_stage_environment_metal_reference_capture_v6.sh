@@ -58,6 +58,8 @@ CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}" "${SWIFTC}" "${SWIFT_FLAGS[@]}" \
     "${PROJECT_ROOT}/native/host/goldeneye_cast_title_hash.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_ramrom_playback_service.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_asset_catalog.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_stage_payload_store_v6.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_stage_transfer_queue_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_setup_packet.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_scene_packet.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_background_draw_packet.swift" \
@@ -91,6 +93,12 @@ for stage_id in "${STAGES[@]}"; do
         | tee -a "${BUILD_DIR}/strict.log"
 done
 PASS_COUNT=$(rg -c 'goldeneye_stage_environment_metal_reference_capture_v6_smoke: PASS' \
-    "${BUILD_DIR}/strict.log")
+    "${BUILD_DIR}/strict.log" || true)
+SKIP_COUNT=$(rg -c 'goldeneye_stage_environment_metal_reference_capture_v6_smoke: SKIP' \
+    "${BUILD_DIR}/strict.log" || true)
+if [[ "${PASS_COUNT}" -eq 0 && "${SKIP_COUNT}" -eq "${#STAGES[@]}" ]]; then
+    echo 'Stage environment Metal 4 compositor-independent capture validation: SKIP (Metal 4 unavailable)'
+    exit 0
+fi
 [[ "${PASS_COUNT}" -eq "${#STAGES[@]}" ]]
 echo 'Stage environment Metal 4 compositor-independent capture validation: PASS'

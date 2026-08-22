@@ -16,6 +16,24 @@ STAGE_ROOT="${GOLDENEYE_NATIVE_STAGE_ASSET_ROOT:-${ROOT}/build/native/stage-asse
 VISIBLE_ROOT="${GOLDENEYE_NATIVE_VISIBLE_DEPENDENCY_ROOT:-${ROOT}/build/native/ramrom-visible-dependencies-v6}"
 ROM_PATH="${1:-${GOLDENEYE_ROM_PATH:-/Users/derek/Documents/GoldenEye 007 (USA).z64}}"
 SEED="${GE_CAST_PRODUCTION_SEED:-0x12345678}"
+CAPTURE_MODE="${GE_CAST_PRODUCTION_MODE:-capture}"
+case "${CAPTURE_MODE}" in
+    validation)
+        SHADER_VALIDATION=1
+        CAPTURE_ENABLED=0
+        ;;
+    capture)
+        # gpucapture refuses a process launched with MTL_SHADER_VALIDATION=1.
+        # Validation and trace evidence are therefore deliberately separate
+        # runs over the same debuggable production-shaped app.
+        SHADER_VALIDATION=0
+        CAPTURE_ENABLED=1
+        ;;
+    *)
+        echo "Cast production route V6: GE_CAST_PRODUCTION_MODE must be validation or capture" >&2
+        exit 2
+        ;;
+esac
 
 fail() {
     echo "Cast production route V6: $*" >&2
@@ -121,14 +139,19 @@ open -n \
     --env GOLDENEYE_NATIVE_SOURCE_FRONTEND_ROOT="${SOURCE_ROOT}" \
     --env GOLDENEYE_NATIVE_CAST_ASSET_ROOT="${CAST_ROOT}" \
     --env GOLDENEYE_NATIVE_GUNBARREL_SIDECAR="${GUNBARREL_SIDECAR}" \
+    --env GOLDENEYE_NATIVE_CAST_SOURCE_INDEX="${GE_CAST_SOURCE_INDEX:-}" \
+    --env GOLDENEYE_NATIVE_CAST_RANDOM_WORD="${GE_CAST_RANDOM_WORD:-}" \
+    --env GOLDENEYE_NATIVE_FULLSCREEN="${GOLDENEYE_NATIVE_FULLSCREEN:-0}" \
+    --env GOLDENEYE_CADENCE_FULLSCREEN="${GOLDENEYE_CADENCE_FULLSCREEN:-0}" \
+    --env GOLDENEYE_CADENCE_STRESS="${GOLDENEYE_CADENCE_STRESS:-0}" \
     --env GOLDENEYE_TITLE_RANDOM_SEED="${SEED}" \
     --env GOLDENEYE_CADENCE_PROBE=1 \
     --env GOLDENEYE_CADENCE_DURATION=120 \
     --env MTL_DEBUG_LAYER=1 \
     --env MTL_DEBUG_LAYER_ERROR_MODE=nslog \
-    --env MTL_SHADER_VALIDATION=1 \
+    --env MTL_SHADER_VALIDATION="${SHADER_VALIDATION}" \
     --env MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1 \
-    --env MTL_CAPTURE_ENABLED=1 \
+    --env MTL_CAPTURE_ENABLED="${CAPTURE_ENABLED}" \
     "${APP_DIR}"
 
 PID=""
@@ -138,7 +161,9 @@ for _ in $(seq 1 20); do
     sleep 1
 done
 [[ -n "${PID}" ]] || fail "production Cast app did not start"
-printf 'pid=%s\nseed=%s\ncastRoot=%s\n' "${PID}" "${SEED}" "${CAST_ROOT}" > "${BUILD_ROOT}/launch.txt"
+printf 'pid=%s\nseed=%s\nmode=%s\nshaderValidation=%s\ncaptureEnabled=%s\ncastRoot=%s\n' \
+    "${PID}" "${SEED}" "${CAPTURE_MODE}" "${SHADER_VALIDATION}" \
+    "${CAPTURE_ENABLED}" "${CAST_ROOT}" > "${BUILD_ROOT}/launch.txt"
 
 cast_seen=0
 for _ in $(seq 1 120); do
@@ -165,6 +190,16 @@ if [[ "${cast_seen}" != 1 ]]; then
         fi
     } > "${BLOCKER_LOG}"
     fail "production Cast route did not reach castSubmit=1; see ${BLOCKER_LOG}"
+fi
+
+if [[ "${CAPTURE_MODE}" == "validation" ]]; then
+    {
+        echo "castSubmit=1"
+        echo "shaderValidation=1"
+        echo "capture=separate-run-required"
+    } > "${BUILD_ROOT}/validation.txt"
+    echo "Cast production route V6 validation: PASS evidence=${BUILD_ROOT}"
+    exit 0
 fi
 
 BOUNDARIES=$(gpucapture boundaries --pid "${PID}" | tee "${BOUNDARY_LOG}")

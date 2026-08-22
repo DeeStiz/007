@@ -36,6 +36,8 @@ CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}" "${SWIFTC}" "${SWIFT_ARGS[@]}" \
     -Xcc "-I${PROJECT_ROOT}/native/include" \
     "${PROJECT_ROOT}/native/host/goldeneye_projection_v10.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_asset_catalog.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_stage_payload_store_v6.swift" \
+    "${PROJECT_ROOT}/native/host/goldeneye_stage_transfer_queue_v6.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_setup_packet.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_scene_packet.swift" \
     "${PROJECT_ROOT}/native/host/goldeneye_stage_background_draw_packet.swift" \

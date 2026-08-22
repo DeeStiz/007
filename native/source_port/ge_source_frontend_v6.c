@@ -1201,6 +1201,15 @@ static GEStatusV1 ge_frontend_step_interface(
     case GE_SOURCE_FRONTEND_V6_SCREEN_CAST:
         if (source_anchor) {
             state->source_timer++;
+            /* front.c's interface_menu18_displaycast advances the source
+             * roster at timer 181 by requesting the next Cast transition.
+             * Keep this source-owned switch explicit so the paired original
+             * authority observes the same transition/exit events instead of
+             * leaving native Cast latched on screen 25. */
+            if (state->source_timer >= 181u) {
+                (void)ge_frontend_request_reload(
+                    state, callbacks, GE_SOURCE_FRONTEND_V6_SCREEN_CAST);
+            }
         }
         if (pressed) {
             (void)ge_frontend_request_reload(

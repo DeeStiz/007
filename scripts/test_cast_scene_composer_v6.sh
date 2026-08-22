@@ -45,6 +45,8 @@ CLANG_MODULE_CACHE_PATH="${MODULE_CACHE}" "${SWIFTC}" \
     "${ROOT}/native/host/goldeneye_attract_route.swift" \
     "${ROOT}/native/host/goldeneye_ramrom_playback_service.swift" \
     "${ROOT}/native/host/goldeneye_stage_asset_catalog.swift" \
+    "${ROOT}/native/host/goldeneye_stage_payload_store_v6.swift" \
+    "${ROOT}/native/host/goldeneye_stage_transfer_queue_v6.swift" \
     "${ROOT}/native/host/goldeneye_stage_setup_packet.swift" \
     "${ROOT}/native/host/goldeneye_stage_scene_packet.swift" \
     "${ROOT}/native/host/goldeneye_projection_v10.swift" \
@@ -60,6 +62,6 @@ CLANG_MODULE_CACHE_PATH="${MODULE_CACHE}" "${SWIFTC}" \
 
 "${BUILD_ROOT}/goldeneye_cast_scene_composer_v6_smoke" "${ASSET_ROOT}" \
     | tee "${BUILD_ROOT}/cast-scene-composer-v6.log"
-grep -Fq 'goldeneye_cast_scene_composer_v6_smoke: PASS identities=30 animations=22 preparedModelCombinations=30 missingClosed=0 castTextFade=PASS' \
+grep -Fq 'goldeneye_cast_scene_composer_v6_smoke: PASS identities=30 animations=22 preparedModelCombinations=30 missingClosed=0 castTextFade=PASS row2RandomBody=natalya/spicebond' \
     "${BUILD_ROOT}/cast-scene-composer-v6.log"
 echo 'test_cast_scene_composer_v6: PASS'

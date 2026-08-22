@@ -82,6 +82,7 @@ public struct GoldenEyeStageScenePacket: Sendable, Equatable {
         case backgroundParse(UInt32, UInt32, String)
         case roomCapacity(Int)
         case roomCopy(UInt32, UInt32, UInt32, UInt32)
+        case transfer(String)
 
         public var description: String {
             switch self {
@@ -94,6 +95,7 @@ public struct GoldenEyeStageScenePacket: Sendable, Equatable {
             case let .backgroundParse(id, status, message): return "background parse failed for \(id) status=\(status) \(message)"
             case let .roomCapacity(count): return "room count \(count) exceeds bounded capacity"
             case let .roomCopy(id, status, copied, expected): return "room copy failed for \(id) status=\(status) copied=\(copied)/\(expected)"
+            case let .transfer(detail): return "stage transfer-backed scene load failed: \(detail)"
             }
         }
     }
@@ -107,6 +109,152 @@ public struct GoldenEyeStageScenePacket: Sendable, Equatable {
         guard let stage = catalog.stages.first(where: { $0.stageID == stageID }) else {
             throw Error.unknownStage(stageID)
         }
+        var resourceData: [GoldenEyeStageAssetKind: Data] = [:]
+        resourceData.reserveCapacity(stage.resources.count)
+        for resource in stage.resources.sorted(by: { $0.kind.rawValue < $1.kind.rawValue }) {
+            let data: Data
+            do {
+                data = try Data(contentsOf: resource.decodedURL, options: [.mappedIfSafe])
+            } catch {
+                throw Error.missingResource(resource.resourceName)
+            }
+            resourceData[resource.kind] = data
+        }
+        return try load(
+            stageID: stageID,
+            catalog: catalog,
+            resourceData: resourceData,
+            maxResourceBytes: maxResourceBytes
+        )
+    }
+
+    /// Transfer-backed scene loading for the production owner. Each resource
+    /// is copied through the bounded M24 queue before the existing C
+    /// background/setup parsers consume it. The queue is deliberately passed
+    /// inout so request IDs, source-order completion, and transfer hashes are
+    /// retained by the owner without introducing an asynchronous scheduler.
+    public static func load(
+        stageID: UInt32,
+        catalog: GoldenEyeStageAssetCatalog,
+        transferQueue: inout GoldenEyeStageTransferQueueV6,
+        maxResourceBytes: Int = 64 * 1024 * 1024
+    ) throws -> Self {
+        guard maxResourceBytes > 0 else { throw Error.invalidCapacity }
+        guard catalog.stages.contains(where: { $0.stageID == stageID }) else {
+            throw Error.unknownStage(stageID)
+        }
+        let resources = catalog.stages
+            .first(where: { $0.stageID == stageID })?.resources
+            .sorted(by: { $0.kind.rawValue < $1.kind.rawValue }) ?? []
+        guard resources.count == GoldenEyeStageAssetKind.allCases.count else {
+            throw Error.transfer("stage \(stageID) does not expose all three resources")
+        }
+        var resourceData: [GoldenEyeStageAssetKind: Data] = [:]
+        resourceData.reserveCapacity(resources.count)
+        for resource in resources {
+            guard resource.decodedBytes <= UInt32(clamping: maxResourceBytes) else {
+                throw Error.resourceSize(
+                    resource.resourceName,
+                    Int(resource.decodedBytes),
+                    maxResourceBytes
+                )
+            }
+            let totalBytes = Int(resource.decodedBytes)
+            let chunkBytes = Int(transferQueue.maxChunkBytes)
+            guard chunkBytes > 0 else {
+                throw Error.transfer("transfer queue chunk size is zero")
+            }
+            var offset = 0
+            var data = Data()
+            data.reserveCapacity(totalBytes)
+            while offset < totalBytes {
+                let count = min(chunkBytes, totalBytes - offset)
+                do {
+                    let request = try transferQueue.submit(
+                        stageID: stageID,
+                        kind: resource.kind,
+                        decodedOffset: UInt32(offset),
+                        byteCount: UInt32(count)
+                    )
+                    let completion = try transferQueue.complete(requestID: request.requestID)
+                    guard completion.request == request,
+                          completion.bytes.count == count,
+                          completion.decodedSHA256 == resource.decodedSHA256 else {
+                        throw Error.transfer(
+                            "request \(request.requestID) metadata/digest mismatch for \(stageID)/\(resource.kind.rawValue)"
+                        )
+                    }
+                    data.append(completion.bytes)
+                    offset += count
+                } catch let error as Error {
+                    throw error
+                } catch {
+                    throw Error.transfer(
+                        "request for \(stageID)/\(resource.kind.rawValue) offset \(offset) failed: \(error)"
+                    )
+                }
+            }
+            resourceData[resource.kind] = data
+        }
+        return try load(
+            stageID: stageID,
+            catalog: catalog,
+            resourceData: resourceData,
+            maxResourceBytes: maxResourceBytes
+        )
+    }
+
+    /// Loads every stage through the queue in the C file-index order. Only one
+    /// stage is active at a time; each stage is released after its packet is
+    /// parsed, and the caller may explicitly reactivate the selected stage.
+    public static func loadAll(
+        catalog: GoldenEyeStageAssetCatalog,
+        transferQueue: inout GoldenEyeStageTransferQueueV6,
+        maxResourceBytes: Int = 64 * 1024 * 1024
+    ) throws -> [Self] {
+        var orderedStageIDs: [UInt32] = []
+        var seen: Set<UInt32> = []
+        for entry in transferQueue.fileIndex.entries where seen.insert(entry.stageID).inserted {
+            orderedStageIDs.append(entry.stageID)
+        }
+        guard orderedStageIDs.count == catalog.stages.count else {
+            throw Error.transfer(
+                "C source-order stage count \(orderedStageIDs.count) != Swift catalog \(catalog.stages.count)"
+            )
+        }
+        var packets: [Self] = []
+        packets.reserveCapacity(orderedStageIDs.count)
+        for stageID in orderedStageIDs {
+            _ = try transferQueue.activate(stageID: stageID)
+            do {
+                let packet = try load(
+                    stageID: stageID,
+                    catalog: catalog,
+                    transferQueue: &transferQueue,
+                    maxResourceBytes: maxResourceBytes
+                )
+                try transferQueue.deactivate(stageID: stageID)
+                try transferQueue.unload(stageID: stageID)
+                packets.append(packet)
+            } catch {
+                _ = try? transferQueue.deactivate(stageID: stageID)
+                _ = try? transferQueue.unload(stageID: stageID)
+                throw error
+            }
+        }
+        return packets
+    }
+
+    private static func load(
+        stageID: UInt32,
+        catalog: GoldenEyeStageAssetCatalog,
+        resourceData: [GoldenEyeStageAssetKind: Data],
+        maxResourceBytes: Int
+    ) throws -> Self {
+        guard maxResourceBytes > 0 else { throw Error.invalidCapacity }
+        guard let stage = catalog.stages.first(where: { $0.stageID == stageID }) else {
+            throw Error.unknownStage(stageID)
+        }
         var cEntry = GEStageCatalogEntryV5()
         guard UInt32(ge_stage_v5_find_stage(stageID, &cEntry)) == UInt32(GE_STATUS_OK) else {
             throw Error.catalogLookup(stageID)
@@ -115,10 +263,7 @@ public struct GoldenEyeStageScenePacket: Sendable, Equatable {
         var sceneResources: [GoldenEyeStageSceneResource] = []
         sceneResources.reserveCapacity(stage.resources.count)
         for resource in stage.resources.sorted(by: { $0.kind.rawValue < $1.kind.rawValue }) {
-            let data: Data
-            do {
-                data = try Data(contentsOf: resource.decodedURL, options: [.mappedIfSafe])
-            } catch {
+            guard let data = resourceData[resource.kind] else {
                 throw Error.missingResource(resource.resourceName)
             }
             guard data.count == Int(resource.decodedBytes), data.count <= maxResourceBytes else {

@@ -3082,8 +3082,12 @@ enum CCRMLUT
         HEAD_COUNT        = HEAD_END - HEAD_START,         // Total number of heads
         HEAD_MALE_COUNT   = HEAD_F_START - HEAD_START,     // Total number of usable randon male heads
         HEAD_FEMALE_COUNT = HEAD_BOND_START - HEAD_F_START, // Total number of usable randon female heads
-        HEAD_FIXED        = 0xFFFFFFFF,
-        HEAD_RANDOM       = 0xFFFFFF9F
+        /* These are signed sentinels in the original source.  Keep the
+         * negative representation explicit so hosted Clang does not choose
+         * an unsigned enum underlying type and turn `head >= 0` into an
+         * always-true out-of-bounds catalog access. */
+        HEAD_FIXED        = -1,
+        HEAD_RANDOM       = -97
     } HEADS;
 
     //Canonical name and style "ai_destroyobj 2 : (def->obj == PROP_ELVIS_SAUCER)\n"
@@ -4851,4 +4855,3 @@ typedef enum PROJECTILES
 #pragma endregion
 
 #endif
-

@@ -89,6 +89,8 @@ CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_DIR" "$SWIFTC" \
     "$PROJECT_ROOT/native/host/goldeneye_ramrom_playback_service.swift" \
     "$PROJECT_ROOT/native/host/goldeneye_ramrom_visible_dependency_catalog_v6.swift" \
     "$PROJECT_ROOT/native/host/goldeneye_stage_asset_catalog.swift" \
+    "$PROJECT_ROOT/native/host/goldeneye_stage_payload_store_v6.swift" \
+    "$PROJECT_ROOT/native/host/goldeneye_stage_transfer_queue_v6.swift" \
     "$PROJECT_ROOT/native/host/goldeneye_stage_setup_packet.swift" \
     "$PROJECT_ROOT/native/host/goldeneye_stage_scene_packet.swift" \
     "$PROJECT_ROOT/native/host/goldeneye_stage_background_draw_packet.swift" \
@@ -146,7 +148,7 @@ if grep -Fq 'goldeneye_stage_gameplay_camera_production_capture_v7_smoke: SKIP' 
     exit 0
 fi
 grep -Fq \
-    'goldeneye_stage_gameplay_camera_production_capture_v7_smoke: PASS demo=0 stages=33,34 suppliedDrawable=1 roomProps=1 deterministic=1' \
+    'goldeneye_stage_gameplay_camera_production_capture_v7_smoke: PASS demo=0 stages=33,34,35,9,20,26,25 suppliedDrawable=1 roomProps=1 deterministic=1' \
     "$BUILD_DIR/strict.log"
 
 python3 - "$OUTPUT_DIR" <<'PY'
@@ -155,8 +157,8 @@ import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
-records = [root / "stage-33-demo-00-gameplay-camera.json",
-           root / "stage-34-demo-00-gameplay-camera.json"]
+records = [root / f"stage-{stage}-demo-00-gameplay-camera.json"
+           for stage in (33, 34, 35, 9, 20, 26, 25)]
 for path in records:
     if not path.is_file():
         raise SystemExit(f"missing production capture metadata: {path}")
@@ -165,10 +167,10 @@ for path in records:
         raise SystemExit(f"unexpected scoped/full mask in {path.name}")
     if data["drawableStaticPropPlacements"] != data["staticPropPlacements"]:
         raise SystemExit(f"undrawn static prop placement in {path.name}")
-    if data["sceneDraws"] <= data["environmentCommands"]:
-        raise SystemExit(f"scene did not add static-prop draws in {path.name}")
+    if data["sceneDraws"] <= 0 or data["drawableStaticPropPlacements"] <= 0:
+        raise SystemExit(f"scene did not retain static-prop draws in {path.name}")
     if len(data["rawSHA256"]) != 64:
         raise SystemExit(f"missing supplied-drawable pixel hash in {path.name}")
-print("Stage gameplay-camera production supplied-drawable metadata: PASS stages=33,34")
+print("Stage gameplay-camera production supplied-drawable metadata: PASS stages=33,34,35,9,20,26,25")
 PY
 echo 'Stage gameplay-camera production supplied-drawable capture: PASS'

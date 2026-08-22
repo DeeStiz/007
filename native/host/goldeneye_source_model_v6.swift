@@ -62,6 +62,54 @@ struct GoldenEyeSourceModelV6: Sendable {
         case opaque
     }
 
+    /// Source ModelNode opcode families retained by the bounded GESM graph.
+    /// The wire packet stores only the stable FNV handle; this typed view keeps
+    /// the source family explicit without retaining a C enum, pointer, or
+    /// display-list address. Unknown handles remain fail-closed at compile
+    /// time rather than being reclassified as drawable geometry.
+    enum NodeKind: String, Sendable, Equatable, CaseIterable {
+        case group
+        case groupSimple
+        case bbox
+        case displayList
+        case displayListPrimary
+        case displayListCollision
+        case bsp
+        case switchNode
+        case lod
+        case shadow
+        case head
+        case gunfire
+        case header
+        case unknown
+
+        init(opcodeHandle: UInt32) {
+            switch opcodeHandle {
+            case 0x80e8_9c4d, 0x0eca_2814: self = .group
+            case 0xe8cb_4877: self = .groupSimple
+            case 0x519d_a401: self = .bbox
+            case 0x2758_4762: self = .displayList
+            case 0x9951_8694: self = .displayListPrimary
+            case 0x7471_23d2: self = .displayListCollision
+            case 0x92c9_a8e3: self = .bsp
+            case 0x258d_b802: self = .switchNode
+            case 0xd0e8_4f89: self = .lod
+            case 0x8757_4832: self = .shadow
+            case 0xeb6d_7b14: self = .head
+            case 0x4666_45dc: self = .gunfire
+            case 0x074e_a903, 0x74ea_0903: self = .header
+            default: self = .unknown
+            }
+        }
+
+        /// The bounded M7 contract requires these families to be represented
+        /// by at least one source sidecar before the graph is promoted.
+        static let requiredM7: Set<Self> = [
+            .group, .bbox, .displayList, .bsp, .switchNode, .lod, .shadow,
+            .head, .gunfire,
+        ]
+    }
+
     enum TokenValue: Sendable, Equatable {
         case integer(Int64)
         case constant(name: String, value: UInt32)
@@ -84,6 +132,8 @@ struct GoldenEyeSourceModelV6: Sendable {
         let secondaryDisplayListID: UInt32
         let metadataHandle: UInt32
         let semantic: String
+
+        var kind: NodeKind { NodeKind(opcodeHandle: opcodeHandle) }
     }
 
     struct Scalar: Sendable, Equatable {
@@ -1062,25 +1112,20 @@ enum GESourceModelCompilerV6 {
         var visited = Set<UInt32>()
         var active = Set<UInt32>()
         func opcode(_ node: GoldenEyeSourceModelV6.Node) -> String {
-            switch node.opcodeHandle {
-            case 0x80e8_9c4d: return "GROUP"
-            case 0x0eca_2814: return "GROUP"
-            case 0x519d_a401: return "BBOX"
-            case 0x2758_4762: return "DL"
-            case 0x9951_8694: return "DL"
-            case 0x92c9_a8e3: return "BSP"
-            case 0x258d_b802: return "SWITCH"
-            case 0xd0e8_4f89: return "LOD"
-            case 0x8757_4832: return "SHADOW"
-            case 0xeb6d_7b14: return "HEAD"
-            case 0x7471_23d2: return "DLCOLLISION"
-            case 0xe8cb_4877: return "GROUPSIMPLE"
-            case 0x4666_45dc: return "GUNFIRE"
-            case 0x74ea_0903: return "HEADER"
-            // The regenerated character sidecars preserve the source header
-            // opcode with the low nibble from its MODELNODE opcode literal.
-            case 0x074e_a903: return "HEADER"
-            default: return "UNKNOWN"
+            switch node.kind {
+            case .group: return "GROUP"
+            case .groupSimple: return "GROUPSIMPLE"
+            case .bbox: return "BBOX"
+            case .displayList, .displayListPrimary: return "DL"
+            case .displayListCollision: return "DLCOLLISION"
+            case .bsp: return "BSP"
+            case .switchNode: return "SWITCH"
+            case .lod: return "LOD"
+            case .shadow: return "SHADOW"
+            case .head: return "HEAD"
+            case .gunfire: return "GUNFIRE"
+            case .header: return "HEADER"
+            case .unknown: return "UNKNOWN"
             }
         }
         func visit(_ id: UInt32, followSiblings: Bool) {

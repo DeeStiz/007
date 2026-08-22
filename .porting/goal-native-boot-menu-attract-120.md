@@ -96,29 +96,30 @@ or mutable object graphs.
 | M4 | Keyboard/controller input | Timestamped keyboard events, buffered GameController states, normalized mappings, once-only edges, focus loss, and disconnect recovery pass. | Implemented — mailbox/controller mapping smoke passes; host bridge remains additive. |
 | M5 | Native saves | Four logical folders support select/create/copy/erase, atomic replacement, backup recovery, corruption quarantine, and relaunch persistence. | Implemented — codec/store/recovery smoke passes. |
 | M6 | Title/attract asset catalog | Title, font, audio, cast, RAMROM, and demo-stage rows have source provenance and exact raw/decoded hashes; missing rows fail closed. | Implemented for the current boot/attract foundation — 31 guarded boot assets, 21 guarded stage resources, four source-derived title geometry packets, and the Rareware atlas pass; full cast/stage dependency catalog remains pending. |
-| M7 | Model/node ingestion | Bounded group, BBOX, DL, BSP, SWITCH, character, LOD, shadow, and attachment nodes copy into handle-based scene data. | In progress — additive GETN packets now copy the four frontend ModelNode trees (138 nodes, 92 texture metadata rows), parent/child/sibling links, source-local record/display-list/vertex offsets, model types, and malformed-link/hash guards; runtime loads the packets for title evidence while full geometry/material traversal remains pending. |
-| M8 | Texture/TMEM/TLUT lowering | Required RGBA/CI/IA/I formats, palettes, mip chains, wrapping, clamping, and samplers lower through bounded native records. | In progress — additive GETT packets validate 92 source-derived rows (Legal 5, Nintendo 1, GoldenEye 2, walletbond 84), decode bounded RGBA8 base levels, preserve source-byte hashes and GoldenEye’s 696-byte mip tail, and reject tampering in strict/ASan/UBSan C/Swift tests. Metal 4 binds the first validated record for Legal/Nintendo/GoldenEye/File/Mode title passes using GPU-private textures, shared staging, one-time compute copies, explicit barriers, and persistent residency; full mip-level upload, Rareware source mip/LOD, and generic TMEM/TLUT remain pending. |
-| M9 | Combiner/raster completion | General required one/two-cycle selectors, primitive/environment/fog colors, depth, alpha, coverage, culling, and render modes are explicit. | In progress — additive `GEClassicRasterStateV5` lowers the canonical ammo-crate modes `C4112078`/`C4104DD8` into explicit depth, fog, alpha, blender, and coverage policies; Metal 4 binds depth32 state, alpha compare/dither, source fog, alpha-to-coverage, and diagnostics. Additive title raster V5 now audits eight source tuples across Legal/Nintendo/GoldenEye/Rareware/wallet (`aggregate=11519430422207814888`); generic RDP raster coverage remains pending. |
-| M10 | Transforms and lighting | Projection/modelview, clipping, normals, lighting, look-at, texgen/reflection, and source quantization produce immutable draw packets. | In progress — additive Projection V10 provides fixed-width Q16.16 source-matrix quantization, modelview/projection transforms, six-plane clipping, culling, canonical 440×330 identity, rational widescreen inverse mapping, and deterministic packet hash `15192084148729639549`; `scripts/test_native_title_projection_evidence.sh` consumes all eight GETP packets (`aggregate=17378376777734745904`), and additive GETU consumes 1,251 signed-UV/material corners (Legal 36, Nintendo 192, GoldenEye 1,023) with source command/vertex hashes. Title/stage draw consumption and full lighting/look-at/texgen remain pending. |
-| M11 | 2D and adaptive layout | Fills, scissor, rectangles, fonts, icons, fades, 440×330 safe layout, wide anchors, and inverse hit testing pass at 4:3, 16:9, and ultrawide. | In progress — GETF/GETC font/catalog, seven guarded GETI icon rows (23,572 decoded RGBA8 bytes), direct Legal/File/Mode geometry, source UI bounds, reusable inverse-hit-test layout, alpha-blended File Select icon draws, and shader letterboxing pass; full source-identical layout remains pending. |
+| M7 | Model/node ingestion | Bounded group, BBOX, DL, BSP, SWITCH, character, LOD, shadow, and attachment nodes copy into handle-based scene data. | Implemented for the bounded source graph — eight GESM sidecars pass typed handle/relationship/metadata validation, all nine required node families are present (225 nodes), the four GETN title packets retain 138 nodes/92 texture rows, and strict/ASan/UBSan plus title-route loading pass. Full geometry/material consumption remains in M8–M10. |
+| M8 | Texture/TMEM/TLUT lowering | Required RGBA/CI/IA/I formats, palettes, mip chains, wrapping, clamping, and samplers lower through bounded native records. | Implemented for the bounded source-product path — all eight GESM models produce 122 unique texture descriptors, 322 validated mip levels, 25 TLUT records, exact source sampler/address state, and deterministic strict/ASan/UBSan plans; Metal 4 private full-mip uploads, staging, residency, barriers, and irregular authored dimensions pass. The legacy GETT title diagnostic remains base-level-only and GPU TLUT consumption is explicitly deferred to later material work. |
+| M9 | Combiner/raster completion | General required one/two-cycle selectors, primitive/environment/fog colors, depth, alpha, coverage, culling, and render modes are explicit. | Implemented for the bounded source-admitted tuples — `GEClassicRasterStateV5`, title raster V5, canonical combiner replay, source pipeline corpus, exact G_FOG blender admission, alpha/coverage guards, and Rareware/GoldenEye LOD policies pass strict/sanitized validation; unsupported generic RDP tuples fail closed and remain outside the bounded source contract. |
+| M10 | Transforms and lighting | Projection/modelview, clipping, normals, lighting, look-at, texgen/reflection, and source quantization produce immutable draw packets. | Implemented for the bounded source-admitted path — Projection V10 Q16.16 matrices, six-plane clipping/culling, explicit projection roles, normal transforms, ambient/directional lighting, reflection texgen, source fog coordinates, and per-draw model-view/geometry-mode records pass strict/ASan/UBSan and Metal 4 shader validation. Linear texgen and generic unclassified look-at/material variants remain typed fail-closed gaps. |
+| M11 | 2D and adaptive layout | Fills, scissor, rectangles, fonts, icons, fades, 440×330 safe layout, wide anchors, and inverse hit testing pass at 4:3, 16:9, and ultrawide. | Implemented for the bounded source 2D/layout path — guarded GETF/GETC/GETI packets, File/Mode fills/scissors/erase overlay, source font rows, 4:3 320×240 and Faithful-HD 1760×1320 layout checks, adaptive letterboxing, and inverse hit testing pass; physical visual presentation and complete source UI parity remain acceptance gates. |
 | M12 | Audio parsing | Guarded instrument/SFX banks and boot/menu sequences parse with bounded backreferences, loops, varints, and malformed-stream rejection. | Implemented — strict C smoke renders all three boot tracks and validates guarded banks. |
-| M13 | Native synth | 22,050 Hz deterministic synthesis supports voices, envelopes, loops, pitch/pan/gain, composite SFX, reverb, and block-size-independent hashes. | In progress — additive V6 fixed-point Small/Big Room reverb, composite graph, and title SFX IDs 18/77/79/111/258 pass strict/ASan/UBSan/Release vectors; the new `scripts/test_audio_long_soak_v5.sh` passes a 600-second-equivalent/72,000-tick deterministic soak (`13,230,000` frames, zero underruns/drops) with block-size-independent PCM hashes; complete source mix/reverb tuning and live AVAudio A/V evidence remain pending. |
-| M14 | Audio output | Sample-indexed events feed the realtime SPSC ring and `AVAudioSourceNode` with no realtime allocation, lock, logging, or Swift calls. | Implemented as a bounded output seam — C ring, Objective-C source node, preroll/refill, route recovery, and owner `tick(nativeTick:)` wiring pass; full mix fidelity/long-soak acceptance remains pending. |
+| M13 | Native synth | 22,050 Hz deterministic synthesis supports voices, envelopes, loops, pitch/pan/gain, composite SFX, reverb, and block-size-independent hashes. | Implemented for the bounded native synth/effects contract — V5 voices/envelopes/loops/pitch/pan/gain, V6 Small/Big Room fixed-point reverb, composite SFX graph/bank lowering, title SFX IDs 18/77/79/111/258, separate File/Mode SFX sequence forwarding, strict/ASan/UBSan/Release vectors, and the 600-second-equivalent block-size-independent soak pass; full source mix tuning and live AVAudio A/V acceptance remain open. |
+| M14 | Audio output | Sample-indexed events feed the realtime SPSC ring and `AVAudioSourceNode` with no realtime allocation, lock, logging, or Swift calls. | Implemented as a bounded output seam — C ring, Objective-C source node, preroll/refill, route recovery, File/Mode SFX forwarding, and owner `tick(nativeTick:)` wiring pass; current AVAudioSourceNode adapter passes, while full mix fidelity/live long-soak A/V acceptance remains pending. |
 | M15 | Boot state authority | Swift title state and immutable snapshots match an independent 60 Hz source adapter at every even anchor; rendering is pure. | Implemented for the bounded title route — paired Swift authority and C reference adapter pass 10,000 even-anchor comparisons, including cast→RAMROM at native tick 6788; gunbarrel dynamics, GoldenEye odd-tick projection, and render-hash parity remain explicit unsupported fields. |
-| M16 | Legal screen | Source text/save validation, exact 241-tick timing, and first-boot unskippable input rule pass. | In progress — exact paired timer/input rule, validated 287-string source catalog, and source-derived Legal geometry packet pass; font/material parity remains pending. |
-| M17 | Nintendo screen | Source rotation/scale/lighting, swoosh, duration, and skip rules pass with authentic audio. | In progress — exact paired duration/skip rule plus new fixed-point half-step rotation/1.07977 scale clamp and source ambient-light projection; boot-track output and geometry packet pass, while full texture/material/swoosh parity remains pending. |
-| M18 | Rareware screen | Source rotation/fade, mip/LOD behavior, composite SFX, and timing pass. | In progress — source-derived Rareware geometry plus a guarded 64×86 RGBA8 atlas, source timing/route seam, and guarded asset pass; full mip/LOD/composite SFX parity remains pending. |
-| M19 | Gunbarrel | Suit/head/PP7 animation, attachments, flash, background, blood/fades, intro music, and transitions pass. | In progress — prepared background, paired state machine, source attachment lowering, and immutable topology cache pass focused lanes; sustained dynamic cadence and full visual parity remain pending. |
-| M20 | GoldenEye logo | Lighting, texgen/reflection, fade timing, and File Select versus cast routing pass. | In progress — source-derived GoldenEye geometry plus exact two-cycle LOD/combiner tuple and deterministic Metal captures pass; full lighting/texgen/reflection/fade/material parity remains pending. |
-| M21 | File Select | Four wallets, source UI, idle return, full folder actions, and adaptive widescreen pass. | In progress — persistent four-folder actions, async save integration, two-stage erase confirmation (default Cancel), source-derived walletbond/icon geometry, 440×330 viewport, inverse hit bounds, and interactive UI pass; full source save/UI parity remains pending. |
-| M22 | Mode Select | Navigation, availability, back behavior, and persistence pass. | In progress — interactive navigation/back/persistence boundary and runtime screenshot pass; source model/text/multiplayer availability parity remains pending. |
-| M23 | Cast reel | Body/head/weapon selection, skeletal animation, source timing, random entries, and exit rules pass. | In progress — 34-entry source route, unlock/guest gates, random/explicit demo selection, source attachment lowering, Cast texture/render-mode fixtures, and abort/restore pass; live supplied-drawable Cast cadence remains unproven. |
-| M24 | Native platform services | Memory, DMA/file index, RZIP, arenas, stage lifecycle, and required platform services operate without the N64 scheduler. | In progress — bounded Swift stage catalog plus C 1172/rebase, metadata packet copy-out, decoded-arena views, value-only setup/portal packets, and owner-side scene-packet preparation validate all 21 prepared rows; full lifecycle/platform replacement remains pending. |
-| M25 | Demo-stage loading | Dam, Facility, Runway, Bunker I, Silo, Frigate, and Train scene/setup data load through deterministic handles. | In progress — all seven stage families load bounded decoded payloads, 468 background rooms, 2,225 setup objects, 2,230 pads/bound pads, 612 portals, source materials/TLUTs, and deterministic scene/setup hashes; source environment plus static-prop Metal lanes pass, while gameplay categories remain pending. |
-| M26 | Demo gameplay core | Demo-reachable player/camera/collision, props, doors, guards, AI, objectives, weapons, effects, and paired cadence run headlessly. | In progress — bounded runtime owns fixed-point player/camera state, pad lookup, room/portal traversal, door/guard/objective summaries, deterministic 120 Hz stepping, and abort/restore; V7 camera packets lower room/static-prop visibility, while collision/AI/weapons/effects remain explicit diagnostics. |
-| M27 | Demo renderer | Rooms, sky, props, characters, weapons, particles, glass, explosions, HUD/watch, and fades render through Metal 4. | In progress — all seven source environment/material Metal captures and V7 room/static-prop compositions pass with non-identity camera packets; character/effect/AI/HUD categories and a Release supplied-drawable gameplay capture remain pending. |
-| M28 | RAMROM playback | All 14 recordings parse, preserve source-anchor packet/RNG consumption and speedframes, support abort, and restore title state. | In progress — all 14 recordings now pass twice (`runs=28`) through strict/ASan/UBSan C and Swift owner-service abort/fade/return/restore validation with matching recording/packet/input/checksum/RNG hashes; all-14 native stage/gameplay execution remains explicitly unsupported. |
-| M29 | Integrated acceptance/handoff | Both launch routes, Release signing, 120/60 evidence, validation, sanitizers, capture inspection, and handoff artifacts pass. | In progress — fresh signed Release, frozen provenance, V7 owner/renderer integration, Cast attachment/texture/render-mode fixtures, Cast topology/first-packet prewarm, stage environment/static-prop Metal captures, strict/ASan/UBSan, and deterministic Cast reference capture pass; physical 120/60 presentation, live Cast supplied-drawable evidence, and full gameplay-category closure remain pending. |
+| M16 | Legal screen | Source text/save validation, exact 241-tick timing, and first-boot unskippable input rule pass. | Implemented for the bounded source Legal path — exact paired timer/input rule, 287-string catalog, 12 source text events/253 glyphs, 58 GBI commands/12 triangles, five texture/material groups, projection consumption 12/12, strict/ASan/UBSan frame validation, and deterministic 320×240 semantic capture pass; physical pixel parity remains an acceptance gate. |
+| M17 | Nintendo screen | Source rotation/scale/lighting, swoosh, duration, and skip rules pass with authentic audio. | Implemented for the bounded source Nintendo path — paired duration/skip authority, fixed-point half-step rotation/1.07977 scale clamp, source ambient-light projection, source node/GBI/material closure, Metal API/shader-validated 320×240 and Faithful-HD captures, and deterministic even/odd raw hashes pass; full N64 pixel/swoosh parity remains an acceptance boundary. |
+| M18 | Rareware screen | Source rotation/fade, mip/LOD behavior, composite SFX, and timing pass. | Implemented for the bounded source Rareware path — source 9-list/268-triangle graph, 26 mip levels across four chains, canonical LOD/FORCE_BLEND guards, paired rotation/fade phases, source SFX 258, and fresh Metal API/shader-validated 320×240/Faithful-HD captures pass; exact N64 mip/pixel and live audio parity remain acceptance boundaries. |
+| M19 | Gunbarrel | Suit/head/PP7 animation, attachments, flash, background, blood/fades, intro music, and transitions pass. | Implemented for the bounded source Gunbarrel path — 24 clips/three skeletons, source attachment/root-motion/pose lowering, 42-frame blood handshake, modes 2–9 and temporal timers, strict/ASan/UBSan, and fresh Metal API/shader-validated 320×240/1280×960 captures pass; sustained owner cadence and full N64 animation/pixel parity remain acceptance gates. |
+| M20 | GoldenEye logo | Lighting, texgen/reflection, fade timing, and File Select versus cast routing pass. | Implemented for the bounded source GoldenEye path — source 162-command/339-triangle graph, seven mip levels, exact two-cycle LOD/combiner/material closure, projection consumption, paired native ticks `3423/3424`, deterministic 320×240/Faithful-HD Metal API/shader captures, and source gold/red pixel checks pass; full N64 lighting/pixel parity remains an acceptance boundary. |
+| M21 | File Select | Four wallets, source UI, idle return, full folder actions, and adaptive widescreen pass. | Implemented for the bounded source File Select path — four-folder save/copy/erase authority, source Wallet SWITCH graph (42 nodes/43 records), source UI/text/icon/background packets, corrected erase-confirmation route, idle/Mode transition, adaptive layout, strict/ASan/UBSan/paired validation, and integration pass; full N64 save/UI parity remains an acceptance boundary. |
+| M22 | Mode Select | Navigation, availability, back behavior, and persistence pass. | Implemented for the bounded source Mode Select path — solo/multiplayer controller-gated rows, previous-tab/back behavior, selected-wallet SWITCH/material linkage, persistence route, exact 320×240/Faithful-HD/adaptive offscreen captures, Metal API/shader validation, and deterministic draw/pixel hashes pass; complete N64 mode/pixel parity remains an acceptance boundary. |
+| M23 | Cast reel | Body/head/weapon selection, skeletal animation, source timing, random entries, and exit rules pass. | In progress — 34-entry source route, unlock/guest gates, random/explicit demo selection, source attachment lowering, Cast texture/render-mode fixtures, abort/restore, and a validated byte-identical source-row-2 `spicebond` offscreen reference with explicit second random word `3` now pass; the canonical Release now records live supplied-drawable Cast submissions, while Metal-4/gputrace/physical cadence acceptance remains open. |
+| M24 | Native platform services | Memory, DMA/file index, RZIP, arenas, stage lifecycle, and required platform services operate without the N64 scheduler. | In progress — bounded Swift stage catalog plus C 1172/rebase/decompress callback, metadata packet copy-out, decoded-arena views, value-only setup/portal packets, owner-side chunked scene transfer, pointer-free lifecycle, stage-scoped decoded-payload ownership, and a source-parity file-index/transfer queue now validate all 21 rows with strict/ASan/UBSan range/digest/single-active/chunk guards; true async streaming/DMA and broad platform replacement remain pending. |
+| M25 | Demo-stage loading | Dam, Facility, Runway, Bunker I, Silo, Frigate, and Train scene/setup data load through deterministic handles. | In progress — all seven stage families load through the M24 lifecycle and corrected 21-resource root with 468 background rooms, 2,225 setup objects, 2,230 pads/bound pads, 612 portals, 436 textures/248 TLUTs/3,575 bindings, and deterministic scene/setup hashes; the source pad-backed static subset is drawable while collectables/ammo/monitors/autoguns/vehicles and gameplay categories remain pending. |
+| M26 | Demo gameplay core | Demo-reachable player/camera/collision, props, doors, guards, AI, objectives, weapons, effects, and paired cadence run headlessly. | In progress — all 14 routes now pass bounded fixed-point player/camera, pad/room/portal, dynamic-door, guard/weapon-page, non-model visual, weapon/effect, orchestrator, and abort/restore lanes under strict/ASan/UBSan; `sourceReady=0` and collision/AI/characters/weapons/effects remain explicit diagnostics. |
+| M27 | Demo renderer | Rooms, sky, props, characters, weapons, particles, glass, explosions, HUD/watch, and fades render through Metal 4. | In progress — V7 room/static-prop packets pass all seven stages with source pad-basis/model-scale transforms and the aligned current-room-plus-one-hop visibility contract, scoped `unsupportedMask=0`, and retained full-scene `0x38`; the canonical Release now records a supplied-drawable Facility room/static-prop frame, while current Metal-4 capture/gputrace/physical evidence and character/effect/AI/HUD/weapon categories remain pending. |
+| M28 | RAMROM playback | All 14 recordings parse, preserve source-anchor packet/RNG consumption and speedframes, support abort, and restore title state. | In progress — all 14 recordings pass twice (`runs=28`, `abort_restore=14`) through strict/ASan/UBSan C and Swift owner-service parser/playback/checksum/RNG validation; the canonical demo 4 / Facility Release route now reaches packet return and a repeated attract cycle with `sourceAuthorityFailure=none`, while full all-demo native gameplay/category closure remains pending. |
+| M29 | Integrated acceptance/handoff | Both launch routes, Release signing, 120/60 evidence, validation, sanitizers, capture inspection, and handoff artifacts pass. | In progress — rebuilt signed Release/provenance and V7 owner/renderer integration pass; current short cadence is near 120 Hz with zero dropped ticks but zero presented timestamps/FPS, current Metal 4 captures SKIP, live Cast supplied-drawable remains blocked, and full gameplay-category closure remains pending. |
+| M30 | Visual/window regression recovery | Nintendo/Rareware/Gunbarrel/Cast visual fixes and AppKit focus/window behavior pass source/Metal validation without weakening cadence or fail-closed contracts. | In progress — six-fix implementation, source/CPU suites, elevated GUI/input probes, and fresh Nintendo/Rareware/Cast Metal API/shader captures pass; physical focus/window migration, sustained presented cadence, live Cast supplied-drawable output, and stage gameplay capture remain open. |
 
 ## Fidelity Recovery Rebaseline — 2026-08-19
 
@@ -135,7 +136,7 @@ procedural title shader, partial GETP/GETU paths, or diagnostic stage overlay.
 | R4 | Consume complete source frames through the GE/F3D semantic lowerer and direct Metal 4 renderer with no visible unsupported commands. | In progress — the generic decoder/lowerer preserves source textures, render state, transforms, batching, and per-`gsSPVertex` matrix provenance without changing frozen layouts. Static frontend/Gunbarrel/Cast fixtures, exact GoldenEye LOD/combiner admission, exact stage G_FOG binding, and all-seven stage environment/material lanes pass Metal validation; dynamic skeletal and gameplay-category closure remain open. |
 | R5 | Close Legal, Nintendo, GoldenEye, Rareware, File/Mode, Gunbarrel, Cast, and all seven RAMROM-stage surfaces; remove Release fallbacks. | In progress — Cast attachment/texture/render-mode fixtures and deterministic seed-93e5 captures pass, and 76 immutable Cast topologies plus a first-route packet are prewarmed before cadence. Stage room/static-prop scoped frames and source fog pass with mask `0x0`; guard/weapon/effect/HUD pages remain unsupported. |
 | R6 | Use one 120 Hz title/menu/cast timeline, exact 60 Hz RAMROM authority with 120 Hz presentation, source-clock audio, and fixed-60 presentation. | In progress — owner, original-paired authority, Gunbarrel even-anchor parity, File/Mode half-step rebasing, audio source clock, BLOOD_COMPLETE handoff, and all-14 RAMROM orchestration pass focused tests. Physical 120/60 evidence, sustained live dynamic-scene cadence, and complete guard/weapon gameplay authority remain open. |
-| R7 | Validate Faithful HD, deterministic 320×240 reference output, opt-in adaptive widescreen, traces, screenshots, sanitizers, cadence, signing, and handoff. | In progress — fresh signed Release, deterministic Cast reference repeat, all-seven stage environment Metal validation, all-14 gameplay-camera checkpoints, inspected supplied-drawable stage trace, and sanitizer gates pass; active-display cadence and Release supplied-drawable Cast/gameplay capture remain blocked by the current login-window session. |
+| R7 | Validate Faithful HD, deterministic 320×240 reference output, opt-in adaptive widescreen, traces, screenshots, sanitizers, cadence, signing, and handoff. | In progress — fresh signed Release/provenance, deterministic Cast reference repeat, all-seven stage environment Metal validation, all-seven gameplay-camera packet sanitizers, and source visibility guards pass; the current post-visibility supplied-drawable harness explicitly SKIPs without Metal 4, while active-display cadence and Release supplied-drawable Cast/gameplay capture remain blocked by the current login-window session. |
 
 Selected defaults are Faithful HD with the authored 440×330 composition,
 deterministic 320×240 reference output, and opt-in adaptive widescreen. The
@@ -722,3 +723,578 @@ pushes, branches, resets, cleans, or removes unrelated artifacts.
   stage preparation `resources=21`, codesign, boot-release verification, and
   history/provenance pass. Executable SHA-256 is
   `5cf6baf72fed8f6ba855d924f111e0dad418c2c7b105306364e644eebf4b9f4f`.
+
+### Source/render gap audit refresh — 2026-08-21
+
+- The stage source/render lane is implemented behind the opt-in
+  `GOLDENEYE_STAGE_GAMEPLAY_CAMERA_V7=1` owner route. The product renderer
+  retains the full-scene `0x38` character/AI/effects contract and publishes only
+  the source-visible room/static-prop subset when its scoped mask is zero; the
+  audit made no stage-source edits.
+- Fresh strict/ASan/UBSan packet logs pass for demo 0 stages 33/34. Dam has
+  camera/packet hashes `17166107536987602611` /
+  `4344127377687538898`, `28` environment commands, `197/197` props, and
+  `1183` scene draws. Facility has camera/packet hashes
+  `9901855664259801205` / `2739797606600666455`, `48` environment commands,
+  `267/267` props, and `1444` scene draws. Both report scoped `0x0`, retained
+  full-scene `0x38`, deterministic `1`, and fail-closed `1`; reference capture
+  passes `14` demos / `42` checkpoints.
+- The fresh production supplied-drawable run has Metal API/shader validation
+  enabled but records `SKIP (Metal 4 device unavailable)`. No Release pixel,
+  supplied-drawable, gameplay gputrace, or physical validation evidence is
+  promoted. The remaining gate is a Metal 4-capable host; do not broaden this
+  route to characters/effects/AI or clear unsupported masks.
+- The canonical signed Release was rebuilt afterward with stage preparation
+  `resources=21`; executable SHA-256 is
+  `c4f4f4b9e4f3772f7c47052e32559084e1e9fb0869b3c4f037844b0e4c1516a7`, and the
+  Release history/provenance gate passes under the external ROM boundary.
+
+### Cast source/production evidence refresh — 2026-08-21
+
+- M23 Cast source contracts pass again on the full-weapons image-decoder root:
+  five source bodies pass texture aliases and exact attachment matrices;
+  chrfnp90 passes `64` commands, `7` setups, `10` vertex resources, and `7`
+  draws; oliveguard and Natalya texture packets pass with `505/56` and
+  `626/46` command/setup counts; and the Cast composer passes all `30`
+  identities, `22` animations, and `30` prepared model combinations.
+- Correctly parameterized Cast/RAMROM source-scene validation passes all `14`
+  recordings twice (`castIdentity=30`, `animations=22`, `demos=14`,
+  `runs=28`, `manifest=14`, aggregate `6107930928028985404`) while retaining
+  `stageVisual=FAIL_CLOSED` for the unclaimed stage categories.
+- The strict Cast reference capture at
+  `build/native/cast-reference-capture-v6/20260822T013921Z/` passes Metal
+  API/shader validation and byte-identical repeat. It is explicitly the
+  source-row-1 `boilerbond` identity (`1`), with reference raw hash
+  `878411975a89eb4290a0313794927756b719651e71b5f0dca45e6b5e6d7ff713` and
+  Faithful-HD raw hash
+  `ab49953288dd7eda553f47509e6146082d852fd71e0a27e690ab619f1202494a`;
+  it is not source-row-2 `spicebond` proof.
+- Two signed AppKit production attempts now retain explicit blockers under
+  `build/native/cast-production-route-v6/m23-current/` and `m23-long/`:
+  both record `castSubmit=0`, `latestCrash=none`; the longer bounded run
+  remains at source tick `2964`, Gunbarrel screen `3`, subphase `3`. No
+  supplied-drawable Cast frame, inspected `.gputrace`, or physical cadence
+  claim is promoted. The current login-window/headless WindowServer session
+  is the blocker; the source Cast guard remains fail-closed.
+
+### Native platform-service lifecycle continuation — 2026-08-21
+
+- Added `GoldenEyeStageLifecycleV6`, a value-only M24 service that consumes the
+  corrected 21-resource catalog and loader views, preserves source asset
+  handles and deterministic decoded-arena offsets, and exposes explicit
+  `unloaded → loaded → active → loaded → unloaded` transitions. It retains no
+  payload pointer or byte buffer and does not clear M25–M27 unsupported work.
+- `bash scripts/test_stage_lifecycle_v6.sh
+  build/native/stage-assets-image-decoder-v6` passes strict, ASan, and UBSan:
+  seven stages, decoded arena `2016864` bytes, resource-view hash
+  `15083698972971979799`, state hash `360802037447672111`, and invalid
+  double-load/active-reset/unload transitions fail closed.
+- Fresh corrected-root M24 foundation checks pass: stage C catalog strict/
+  ASan/UBSan (`stages=7`), catalog strict/ASan plus malformed-manifest guard
+  (`resources=21`), resource loader (`packets=21`, `views=21`), background
+  strict/ASan/UBSan (`stages=7`), setup packet strict/ASan/UBSan
+  (`objects=2225`, `pads=2230`, `portals=612`), and scene packet (`rooms=468`,
+  `payload_bytes=2016864`).
+- M24 remains open for the broader native memory/DMA/file-index/streaming
+  service replacement and production lifecycle integration. The C
+  `STUB(M24)` diagnostic remains explicit; no gameplay or renderer claim is
+  inferred from the lifecycle smoke.
+- `NativeTitleOwner.prepareStageScene` now integrates the lifecycle in the
+  production preparation seam: selected stages activate, replacement stages
+  deactivate/unload the prior owner, and game reset releases the lifecycle.
+  Owner/source-selection/runtime guards and SwiftPM build pass; broader
+  streaming/DMA replacement remains open.
+
+### Seven-stage loading continuation — 2026-08-21
+
+- M25 now consumes the bounded M24 lifecycle metadata and the corrected
+  image-decoder root for all seven stage families. Scene packet validation
+  passes `468` rooms and `payload_bytes=2016864`; setup packet validation passes
+  `2225` objects, `2230` pads, and `612` portals under strict/ASan/UBSan.
+- Stage texture/material validation passes `436` textures, `248` TLUTs,
+  `568` levels, `3575` bindings, `gpuRepresentable=1`, and
+  `unrepresentableMips=0`. Full seven-stage model composition keeps the
+  source-visible static-prop set drawable: Dam `197/197`, Facility `267/267`,
+  Runway `88/88`, Bunker I `123/123`, Silo `165/165`, Frigate `147/147`, and
+  Train `200/200`.
+- The model composer retains `unsupportedMask=0x38` and reports zero drawable
+  characters; no character/effect/AI/HUD/weapon/collision category is lowered
+  by inference. M26 gameplay ownership and M27 supplied-drawable renderer
+  evidence remain the next bounded gaps.
+
+### Gameplay-owner continuation — 2026-08-21
+
+- M26 strict/ASan/UBSan lanes pass all 14 RAMROM routes: the source-page
+  gameplay smoke reports `damEntities=238`, `sidecarComplete=1`,
+  `sourceReady=0`; the player/camera bridge passes `layout=176`, `direct=2`,
+  `eventHash=1`; and the dynamic-scene readiness matrix remains explicitly
+  incomplete with a fixture-only ordered composition.
+- The gameplay orchestrator passes `demos=14`, `runs=28`, aggregate
+  `3432588557158677409`, Dam movement, four environment dynamic doors,
+  deterministic restore, and source hashes. Guard/door pages pass `623`
+  guards, `397` doors, `152` transformed doors, `5104` pose rows, and `397`
+  resolved portal rows with portal hash `13325078266282593292`.
+- Weapon/effect integration, non-model authority/visuals, and the bounded
+  stage runtime pass strict/ASan/UBSan; the stage runtime reports
+  `1578` samples and aggregate `4774828755625742329` with explicit
+  `effects,ai,weapons,collision` diagnostics. No character/AI/effect/weapon
+  record is manufactured and no `0x38` renderer mask is cleared.
+
+### Scoped renderer evidence continuation — 2026-08-21
+
+- Fresh V7 packet strict/ASan/UBSan validation retains the exact corrected
+  Facility camera hash `9901855664259801205` and packet hash
+  `2739797606600666455`; Dam remains `17166107536987602611` /
+  `4344127377687538898`. Room/static-prop counts and scene draws remain
+  `197/197` + `1183` and `267/267` + `1444`, with scoped `0x0` and retained
+  full-scene `0x38`.
+- Current all-14 checkpoint and Release supplied-drawable attempts compile
+  with Metal API/shader validation but explicitly SKIP because this host has no
+  Metal 4 device. The seven-stage environment harness now records all-seven
+  clean SKIPs and exits successfully for that unavailable-device condition;
+  partial/unexpected capture outcomes still fail. Archived ignored PNG/RAW/
+  JSON captures remain separate from current production evidence.
+- M27 remains open for a Metal 4-capable supplied-drawable frame, inspected
+  `.gputrace`, and physical validation. Characters, AI, effects, HUD, weapons,
+  collision, sky, glass, and explosions remain explicit unsupported categories.
+
+### All-14 RAMROM playback continuation — 2026-08-21
+
+- Fresh all-14 playback validation passes strict and ASan/UBSan with
+  `demos=14`, `runs=28`, `abort_restore=14`, `unique_stages=7`, parser/playback/
+  checksum/RNG PASS, and explicit gameplay/renderer `STUB(M26/M27)` boundaries.
+  The Swift owner-service aggregate is `6851901412168630050`; Dam demo 1
+  retains `packets=454`, `records=1578`, and `terminal_tick=3156`.
+- Paired C playback and parser lanes pass strict/ASan/UBSan independently;
+  the same all-14 command prepares the corrected seven-stage scene packets
+  (`rooms=468`, `payload_bytes=2016864`, packet hash
+  `13284805027105908470`). Playback evidence remains separate from native
+  gameplay and supplied-drawable renderer acceptance.
+
+### Integrated Release/cadence refresh — 2026-08-21
+
+- Rebuilt the source-faithful Release after the M24/M26 harness changes;
+  stage preparation reports `resources=21`, executable SHA-256 is
+  `85a7c8f86abbba1709e30f5cc4689bf6ce1a59a22c941657729b1c1e262cd916`, and
+  the frozen Release history/provenance gate passes with final packet hash
+  `b9247beab28b0e101c471c1a94d0d4baebf8a3ea85e306981bef1365d3e485ad`.
+- Short current post-display-observer 120/fixed-60 supplied-drawable cadence
+  records retain logic `119.9975`/`119.9879` Hz and zero dropped ticks, but
+  only `5/6` callbacks, zero presented timestamps/FPS, and `pass=0` in the
+  current headless/login window. Physical 120/60 acceptance remains open.
+- Current stage environment, V7 reference, and V7 Release supplied-drawable
+  Metal attempts explicitly SKIP because no Metal 4 device is available; Cast
+  production remains blocked before `castSubmit=1`. Do not promote archived
+  captures or headless cadence to integrated acceptance.
+
+### M30 visual/window regression refresh — 2026-08-21
+
+- The final signed Release after the display-observer change is
+  `85a7c8f86abbba1709e30f5cc4689bf6ce1a59a22c941657729b1c1e262cd916`; its
+  external-ROM provenance and R0 gates pass.
+- Source/CPU regression validation passes title material strict/ASan/UBSan,
+  title route, Gunbarrel modes/blood/transition projection, and Rareware
+  LOD/FORCE_BLEND guards. Elevated AppKit keyboard/controller and synthetic
+  focus probes pass; physical focus notifications remain unavailable in the
+  headless session.
+- Fresh current Metal API/shader captures pass for Nintendo at
+  `build/native/nintendo-reference-capture-v6/20260822T024348Z/`, Rareware at
+  `build/native/rareware-reference-capture-v6/20260822T024429Z/`, and strict
+  Cast identity 1 at `build/native/cast-reference-capture-v6/20260822T024522Z/`.
+  The Cast artifact remains `boilerbond` row 1, not `spicebond` row 2.
+- The current Gunbarrel Metal temporal sweep passes modes `2...9` and the
+  authored timers through `400`, including the blood/muzzle timer-230 frame
+  (`71` draws, `874` triangles).
+- Physical focus/window migration, sustained presented FPS, live Cast
+  supplied-drawable output, and current stage gameplay Metal capture remain
+  unproven; keep those gates open.
+- A post-observer wake/fullscreen attempt at
+  `build/native/boot-runtime/cadence/runs/m30-wake-attempt/120/report.txt`
+  reached `119.9897` Hz with 64 callbacks and displays awake, but still had
+  `frontmost=loginwindow`, zero presented samples/FPS, 64 rejected samples,
+  and `pass=0`. This confirms the remaining blocker is the active desktop/
+  WindowServer session, not a missing logic-rate measurement.
+- Added explicit AppKit display-change routing for window screen, screen
+  profile, backing-property, and application screen-parameter notifications;
+  each refreshes drawable size/frame-rate configuration and records evidence.
+  Owner/runtime and GUI probes remain green, while physical migration still
+  requires a visible desktop exercise.
+
+### File/Mode audio sidecar continuation — 2026-08-21
+
+- File/Mode SFX events now forward through a separate
+  `GoldenEyeSourceAudioBindingV6` state in `GoldenEyeNativeAudioService`, so
+  menu sequence numbers cannot suppress frontend audio events. The owner
+  forwards the immutable sidecar events through the existing sample-indexed
+  scheduling path; realtime callback behavior is unchanged.
+- Namespace/duplicate binding tests, deterministic audio engine/effects
+  strict/ASan/UBSan/Release lanes, and the Swift debug build pass. Live
+  AVAudio output/A-V timing and exact source mix parity remain acceptance gaps.
+- The expanded bank smoke covers IDs `18,77,79,111,118,197,199,222,258`
+  with combined hash `9686333082073475502`; File/Mode session reset and
+  independent sequence cursors are tested.
+
+### M24 decoded-payload ownership continuation — 2026-08-22
+
+- Added and integrated `GoldenEyeStagePayloadStoreV6`. Explicit activation
+  owns the three decoded resources for one stage, rechecks decoded byte counts
+  and SHA-256 digests, exposes bounded fixed-width reads only while active,
+  and enforces single-active replacement, active-unload, and reset guards.
+- Strict/ASan/UBSan validation passes all seven corrected stage families with
+  first-stage aggregate `8556576272295209170` and all-stage aggregate
+  `15436731694462652841`; debug `GoldenEyeHost` and owner route guards pass.
+- The signed Release rebuild after this source change passes preparation,
+  production build, codesign/bundle gates, R0, and elevated Release
+  provenance. Current executable SHA-256 is
+  `fdc0f66a371e076398010e130df25c743905c64cf2639ce973e863182d6a778e`.
+- The canonical Release route still stops before Cast/V7 on the paired
+  Gunbarrel model-result timing boundary in the current headless run; the
+  separate seven-stage supplied-drawable harness remains non-canonical. Do
+  not infer physical presentation or full gameplay-category closure.
+- Fresh opt-in V7 cadence against this rebuilt Release reproduces
+  `authorityFailure=paired projection mismatch at tick 3072 field gunbarrelMode:
+  native 5 original 6`, while measuring `logicTickRateHz=120.001486`, zero
+  dropped ticks, five callbacks, and zero presented samples/FPS under the
+  login-window session.
+- The V7 owner now copies the camera adapter's guarded current-room-plus
+  one-hop portal-neighbor source-visible room set instead of declaring only
+  the current room. Source environment strict/ASan/UBSan validation remains
+  PASS (`stages=7`, `environmentTriangles=96084`, `metalDraws=12679`); this
+  is still a bounded visibility seed, not recursive portal/PVS parity.
+- The final rebuilt-Release opt-in cadence at
+  `build/native/boot-runtime/cadence/runs/m24-visible-current-20260822/120/`
+  still reports the paired Gunbarrel mismatch (`native 5`, `original 6`, tick
+  `3072`) with logic `120.001829 Hz`, zero dropped ticks, five callbacks, and
+  zero presented samples/FPS.
+- Updated all-seven packet hashes for the aligned room set, in stage order
+  `33,34,35,9,20,26,25`, are
+  `9691731936558540317`, `1361423520639327845`, `12839844755602817467`,
+  `18348473008274347972`, `16691602544368876791`, `16956423305747631152`, and
+  `6925925173978220218`; current production supplied-drawable capture is
+  explicitly SKIP without a Metal 4 device.
+
+### Source authority and canonical V7 reachability continuation — 2026-08-22
+
+- The hosted original title oracle now preserves the source blood stream: mode
+  5 primes frame 0 and completes only after 41 continuations. The paired
+  authority and full transition projection pass the source anchors through
+  mode 2...9 and GoldenEye at native tick `3582`; the optional paired Cast
+  route also passes the Cast-end transition. The original C/Swift reference
+  lane remains strict/ASan/UBSan green.
+- The source Cast interface now requests its copied timer-181 Cast transition;
+  hosted `HEAD_FIXED=-1`/`HEAD_RANDOM=-97` sentinels preserve the source's
+  signed enum semantics, and the value-only wallet fixture has 32 switch slots
+  for `GFXHIT0_PICS=21`. These are source/fixture correctness fixes, not
+  renderer fallbacks.
+- The product renderer latches the blood completion mailbox across native
+  draw-only substeps, serializes scene publication against the display-link
+  callback, and keeps the V7 scoped composer on an explicit `props` category.
+  The RAMROM guard-owner state is constructed directly in heap storage (the
+  1,972,424-byte C state no longer crosses the owner-thread stack); the selected
+  Cast route is prewarmed before cadence and rebased at the source handoff.
+- The final signed Release is
+  `build/native/boot-runtime/source-faithful/GoldenEyeHost.app`, executable
+  SHA-256 `289a98e3173fd3770ff081f3ef54d20310c63883a530ab2d7bcbc22bd5de6e0e`.
+  Release history/provenance, codesign, and R0 pass with the external ROM
+  boundary.
+- Canonical Release run
+  `build/native/boot-runtime/cadence/runs/m28-blood-reset-20260822-120/120/`
+  reaches a real supplied-drawable V7 frame: demo `4`, Facility stage `34`,
+  native tick `4324`, source room `68`, `158/158` visible static props,
+  `42` dynamic doors, `1191` scene draws, scoped unsupported `0`, retained
+  full-scene mask `0x38`, camera packet hash `4171253561713628972`, and
+  composition hash `9008813320083006498`. Archived owner/renderer logs are
+  `stage-gameplay-camera-owner.log` and `stage-gameplay-camera-renderer.log`;
+  RAMROM reaches packet `559/559` at tick `7678`.
+- The same bounded run measures logic `119.9994 Hz`, zero dropped ticks,
+  zero fatal debt, zero renderer failures, and a supplied-drawable contract;
+  presented timestamps/FPS remain `0` in the login-window/headless session;
+  this full-loop run ends with `sourceAuthorityFailure=none` after the
+  repeated-Gunbarrel blood reset; packet return and the second attract cycle
+  remain paired through the bounded window.
+- Current Metal-4 production/reference capture attempts remain explicit
+  `SKIP (Metal 4 device unavailable)`; no current `.gputrace` or physical
+  presentation claim is promoted. Characters, AI, effects, HUD, weapons,
+  collision, sky, glass, and explosions remain fail-closed.
+
+### M24 bounded file-index and transfer-queue continuation — 2026-08-22
+
+- Added `GoldenEyeStageFileIndexV6`, a deterministic value-only index over the
+  corrected seven-stage/21-resource catalog. Each row preserves the source
+  offset/size, decoded size, compression flag, asset handle, and verified
+  source/decoded digests; no ROM path, pointer, or retained file descriptor
+  crosses the contract.
+- Added `GoldenEyeStageTransferQueueV6`, a bounded submit/complete queue over
+  the active decoded payload store. It rejects missing active stages, cross-
+  stage requests, queue overflow, invalid decoded ranges, replayed request
+  IDs, and replacement/reset while work is pending. Completion copies bytes
+  into caller-owned values and hashes the deterministic request/byte stream;
+  it is explicitly not an N64 scheduler or asynchronous DMA implementation.
+- `bash scripts/test_stage_transfer_queue_v6.sh
+  build/native/stage-assets-image-decoder-v6` passes strict/ASan/UBSan:
+  `stages=7`, `entries=21`, `fileIndexHash=12969746555383168713`, three
+  completed requests, `transferHash=16820286361146389937`, and queue/range/
+  single-active/reset guards. The debug `GoldenEyeHost` build, owner route
+  guard, source boot-route smoke, payload-store/lifecycle smokes, and the
+  source-faithful Release rebuild also pass.
+- The current Release executable SHA-256 is
+  `0738a1202ea27a5949fb7fe10e1889d5c7d27f53ed634d5594ab81f61d535f33`;
+  preparation reports `resources=21`, Release history/provenance, codesign,
+  and R0 pass. This lane does not promote M24's C `STUB(M24)`, gameplay or
+  renderer categories, or any physical/Metal-4 acceptance claim.
+- The fresh stage gameplay-camera production harness remains an explicit
+  `SKIP (Metal 4 device unavailable)`; stale ignored `gputrace/` files remain
+  non-current evidence. Presented timestamps/FPS remain unavailable under the
+  login-window session.
+
+### Repeated Gunbarrel source-authority continuation — 2026-08-22
+
+- The authoritative 120-second Release run had a repeated-entry mismatch at
+  tick `14370` because renderer-local blood state could remain stale while
+  Cast/SWITCH frames bypassed renderer submission. The source owner now resets
+  the copied Gunbarrel blood stream on the authoritative transition into the
+  Gunbarrel screen, rather than inferring entry from the renderer's last frame.
+- The reset is a narrow lifecycle operation: it clears only the copied blood
+  frame index, continuation count, and completion latch. The paired authority,
+  original source oracle, source C state, and fail-closed renderer masks remain
+  unchanged.
+- Fresh signed Release:
+  `build/native/boot-runtime/source-faithful/GoldenEyeHost.app`, executable
+  SHA-256 `fcc912c92170f2943a8981d5e87e08460e0d38b0c31696b89e11d35b55d62279`.
+  Preparation, codesign, Release history/provenance, and R0 pass.
+- Fresh 120-second route:
+  `build/native/boot-runtime/cadence/runs/m28-repeat-reset-20260822-120/120/`.
+  It records `sourceAuthorityFailure=none`, logic `119.9999 Hz`, zero dropped
+  ticks, zero renderer failures, and supplied-drawable Facility V7 at tick
+  `4324` (`158/158` props, `1191` draws, scoped unsupported `0`, retained
+  full-scene `0x38`). At tick `14370`, the renderer remains in source mode 5
+  with blood visible; mode 6 appears later after the 41-continuation stream.
+- The post-fix production capture reran with API/shader validation and remains
+  `SKIP (Metal 4 device unavailable)` at `2026-08-22 06:19:43`. Presented
+  timestamps/FPS remain unavailable under `frontmost=loginwindow`.
+
+### M23 row-2 live probe refresh — 2026-08-22
+
+- The correctly parameterized live Cast probe used
+  `GE_CAST_SOURCE_INDEX=2 GE_CAST_RANDOM_WORD=3` and archived
+  `build/native/cast-production-route-v6/m23-spicebond-row2-current2/`.
+  It records `castSubmit=0`, `latestCrash=none`, and stops in the first
+  Gunbarrel cycle at tick `2952` under the current headless/login-window
+  session. No supplied-drawable Cast frame or trace is promoted.
+
+### M23 live-launch policy refresh — 2026-08-22
+
+- The Cast production launcher now forwards explicit fullscreen/stress policy
+  instead of relying on hidden defaults. A fresh row-2 probe with
+  `GE_CAST_SOURCE_INDEX=2 GE_CAST_RANDOM_WORD=3` and windowed/non-stress policy
+  still records `castSubmit=0`, `latestCrash=none`, stopping at Gunbarrel tick
+  `2960`; no live Cast frame or trace is claimed.
+
+### M27 gameplay-camera source-anchor window continuation — 2026-08-22
+
+- The opt-in V7 owner now publishes a bounded source-anchor window instead of
+  a single frame. `GOLDENEYE_STAGE_GAMEPLAY_CAMERA_ANCHORS` defaults to `4`,
+  and `GOLDENEYE_STAGE_GAMEPLAY_CAMERA_ANCHOR_INTERVAL` defaults to `120`
+  native ticks. Submission is coalesced with an in-flight guard and failure
+  mailbox; reset drains the queue before clearing route state.
+- Adjacent-anchor bursts were rejected by the measured owner debt guard
+  (`fatalDebtTicks=241`). The spaced contract preserves cadence: two
+  independent 30-second Release runs record the same four ticks
+  `4324,4444,4564,4684`, identical camera/packet/environment/composition
+  hashes, scoped unsupported `0`, retained full-scene `0x38`, and
+  `sourceAuthorityFailure=none`. The final run measures `119.9982 Hz`, zero
+  dropped/fatal debt ticks, and zero renderer failures.
+- Evidence paths:
+  `build/native/boot-runtime/cadence/runs/m27-anchor-window-spaced-20260822-30/120/`
+  and its `...-repeat...` counterpart. Current signed Release SHA-256 is
+  `aadf9c2bfcda56eef17ee5efa34b70271c5f87d3cd325be5d15704f5b12bc681`;
+  preparation, codesign, provenance, and R0 pass.
+- A fresh windowed 120-second run at
+  `build/native/boot-runtime/cadence/runs/m27-anchor-window-long-windowed-20260822-120/120/`
+  also records the same four submissions and `sourceAuthorityFailure=none`,
+  logic `120.0003 Hz`, zero dropped/fatal debt ticks, and zero renderer
+  failures. The command remains `pass=0` only because the login-window
+  session supplies no presented timestamps/FPS.
+- A post-build production capture rerun at `2026-08-22 07:16:57` enables API
+  and shader validation but cleanly records `SKIP (Metal 4 device unavailable)`.
+- The diagnostic rerun at `2026-08-22 07:33:00` now distinguishes the blocker:
+  `MTLDevice unavailable device=nil`; no Metal device exists in this CLI
+  session, so no trace or supplied-drawable claim is possible.
+
+### RAMROM authority evidence retention continuation — 2026-08-22
+
+- RAMROM owner authority/gameplay logs now append instead of atomically
+  overwriting each event. The windowed 120-second Release route at
+  `build/native/boot-runtime/cadence/runs/m28-ramrom-append-long-20260822-120/120/`
+  retains `packet=0/559`, `558/559`, `559/559`, and the next-cycle `packet=0/559`,
+  plus all four V7 anchor submissions. It records
+  `sourceAuthorityFailure=none`, logic `119.9997 Hz`, zero dropped/fatal debt,
+  and zero renderer failures; `pass=0` remains only the no-presented-FPS
+  login-window boundary.
+- Current signed Release SHA-256 is
+  `ca09b6cb290ebb62f0874678a1dcabbf6278730beb62ec89e39d0c6f3de1af30`;
+  provenance, codesign, and R0 pass.
+- The route remains explicitly room/static-prop scoped: each frame retains
+  `158/158` props, `42` dynamic doors, `1191` scene draws, and no character,
+  AI, effects, HUD, weapons, or collision mask is cleared. Physical presented
+  timestamps/FPS and Metal-4 supplied-drawable capture remain open.
+
+### M24 source-catalog parity continuation — 2026-08-22
+
+- `GoldenEyeStageFileIndexV6` now validates its public value catalog against
+  every C `ge_stage_v5_resource_packet` row and its `ge_stage_v5_find_stage`
+  identity before a transfer queue can be constructed. The index emits the
+  C RAMROM source order (`33,34,35,9,20,26,25`) rather than silently sorting
+  numeric stage IDs, and rejects stage/resource drift with typed
+  `sourceCatalogMismatch` diagnostics.
+- The transfer smoke exercises a tampered stage identity and confirms the
+  fail-closed path. Strict/ASan/UBSan pass with
+  `fileIndexHash=14890358892990385005`, `transferHash=16820286361146389937`,
+  three completed requests, and `sourceParity=1`. Loader, payload-store, and
+  lifecycle strict/ASan/UBSan checks also pass; the loader reports
+  `packets=21 views=21`, and lifecycle reports
+  `viewHash=15083698972971979799` / `stateHash=360802037447672111`.
+- The debug `GoldenEyeHost` build and engine-owner smoke pass with the
+  writable module cache. The freshly rebuilt signed Release executable is
+  `425ee3d6f88d86b3318a61fc80ef12175f3c9153621914fa34e99cdb6d95e635`;
+  Release history/provenance, codesign, bundle guards, and R0 pass.
+- The source parity change does not broaden M24's C `STUB(M24)`, V7 opt-in,
+  scoped unsupported masks, or gameplay categories. The post-build Metal API/
+  shader capture at `2026-08-22 07:51:38` remains an explicit
+  `SKIP (MTLDevice unavailable device=nil)`; physical presented cadence and
+  the full-scene `0x38` categories remain open.
+
+### M24 transfer-backed scene-owner continuation — 2026-08-22
+
+- `GoldenEyeStageScenePacket.loadAll` now has a transfer-backed path. It
+  activates one stage at a time in C file-index order, submits/completes the
+  three decoded resources through `GoldenEyeStageTransferQueueV6`, parses the
+  copied bytes with the existing C background/setup validators, then unloads
+  the stage before continuing. The direct file-backed loader remains for
+  comparison; no asynchronous scheduler or ROM access was introduced.
+- `NativeTitleOwner` now owns that queue for stage preparation, replacement,
+  activation, and reset. Current owner telemetry records
+  `completedRequests=21`, `transferHash=13486978902238770849`, and active
+  Facility payload `decodedBytes=380848`; the scene packet remains identical
+  to the direct path (`468` rooms, `2016864` payload bytes,
+  `13284805027105908470`).
+- Fresh Release owner evidence at
+  `build/native/boot-runtime/cadence/runs/m24-transfer-owner-final-20260822-50/120/`
+  records four V7 anchors (`4324,4444,4564,4684`), `158/158` props,
+  `1191` draws, scoped `unsupportedMask=0`, retained full-scene `0x38`,
+  `sourceAuthorityFailure=none`, and zero dropped/fatal/renderer failures.
+  Logic is `120.0005896 Hz`; presented samples remain zero under the
+  login-window session.
+- The current signed Release executable SHA-256 is
+  `28a7aef35302c753aec800db6f1c61a7b3a2a5fea9dace950e95114edc226d61`;
+  Release history/provenance, codesign, bundle guards, and R0 pass. The
+  post-build Metal API/shader harness at `2026-08-22 08:36:49` remains
+  `SKIP (MTLDevice unavailable device=nil)`.
+
+### M24 chunked transfer and RZIP bridge continuation — 2026-08-22
+
+- The owner transfer queue now uses a bounded 64 KiB chunk size. Every decoded
+  resource is reassembled from sequential source-ordered requests before the
+  existing C background/setup parsers consume it; no asynchronous scheduler,
+  retained callback, or ROM pointer was introduced.
+- Direct/transfer scene equality remains `468` rooms, `2016864` payload bytes,
+  packet hash `13284805027105908470`. The chunked scene smoke passes
+  strict/ASan/UBSan with `44` completed requests and transfer hash
+  `10384286454254812603`.
+- The catalog's compressed 1172 rows now route through the existing C
+  `ge_stage_v5_decompress_1172` callback contract with a borrowed,
+  no-capture Apple Compression callback. Strict/ASan/UBSan catalog checks
+  preserve catalog hash `16694764706485246250` and all seven stage hashes.
+- Final signed Release SHA-256 is
+  `759a84bf47bfe37870942474b8ce01314d1f453e014f5fe61187fec02f14c869`;
+  Release history/provenance, codesign, bundle guards, and R0 pass. Fresh
+  owner evidence at
+  `build/native/boot-runtime/cadence/runs/m24-rzip-chunked-20260822-45/120/`
+  records four Facility V7 anchors, `sourceAuthorityFailure=none`, zero
+  dropped/fatal/renderer failures, and logic `120.0024038 Hz`.
+- The current Metal API/shader harness remains
+  `SKIP (MTLDevice unavailable device=nil)` and presented FPS remains
+  unavailable under the login-window session.
+
+### M29/M30 GPU-capture boundary audit — 2026-08-22
+
+- A fresh signed Release launch with `MTL_CAPTURE_ENABLED=1` is visible to
+  `gpucapture` but explicitly `non-debuggable` because the Release bundle has
+  no `get-task-allow` entitlement; `gpucapture boundaries` therefore cannot
+  capture the canonical Release process without changing its signing policy.
+- A separate debuggable SwiftPM Debug owner was launched without shader
+  validation (required by gpucapture). Its Layer-boundary trace
+  `build/native/m29-debug-owner-capture-20260822/debug-owner-layer.gputrace`
+  completed but contains `0 command buffers`, `0 API calls`, and `0 resources`
+  under the login-window session. It is retained as diagnostic evidence only,
+  not promoted to Release or physical acceptance.
+
+### Release-gate harness refresh — 2026-08-22
+
+- `test_release_renderer_environment_guard_v6.sh` now uses a writable build
+  module cache for its Swift frontend parse, eliminating a sandbox-only
+  `~/.cache/clang/ModuleCache` failure. The complete
+  `test_native_boot_release_gate.sh` now passes its renderer-policy,
+  fidelity-policy, prepared dry-run, shader/resource, preserved-catalog, and
+  forbidden-bundle checks.
+
+### RZIP callback negative-path refresh — 2026-08-22
+
+- The C stage V5 smoke now asserts undersized output, malformed marker,
+  callback-produced byte-count mismatch (`GE_STATUS_ASSET_MISMATCH`), and
+  callback failure (`GE_STATUS_INTERNAL_ERROR`) in strict plus ASan/UBSan
+  builds. The Apple Compression catalog callback remains borrowed and
+  no-capture; no scheduler or renderer scope changed.
+
+### M29 Aqua acceptance and trace continuation — 2026-08-22
+
+- After unlock, fresh signed Release short cadence passed both displays:
+  120 mode `120.000946 FPS` and fixed-60 mode `59.951023 FPS`, with zero
+  dropped ticks, rejected samples, render failures, focus pauses, or migration
+  errors. The longer route reached Cast and the V7 handoff.
+- The 120-second route did not sustain the gate: 120 mode measured
+  `113.190118 FPS`, fixed-60 `57.633275 FPS`; a no-V7 control measured
+  `112.338963 FPS` with a `3515 ms` target stall and `fatalDebtTicks=241`.
+  Logic remained near 120 Hz with zero dropped ticks, so this is retained as a
+  sustained WindowServer/scheduling regression, not visual/category acceptance.
+- A separate copy of the current Release bundle signed only with capture
+  entitlements produced
+  `build/native/m29-release-capture-entitled-20260822/release-code-layer.gputrace`.
+  Static `gpudebug` inspection confirms one command buffer, one labeled MTL4
+  source-scene render encoder, six draws, 960x540 BGRA8 + Depth32Float, and a
+  representative 54-index draw. It is Release-code diagnostic evidence, not
+  canonical Release signing evidence.
+
+### Current Release rebuild and unlocked-session follow-up — 2026-08-22
+
+- The source-faithful Release was rebuilt after moving immutable stage catalog,
+  material, and 64 KiB transfer preparation before the measured owner starts.
+  The executable SHA-256 is
+  `803dc0db99e4786b7eb03893191d1c24a3330fcb90cbf063f5e2be4457990dfa`.
+  Release history/provenance, codesign, R0, renderer-environment, fidelity,
+  prepared dry-run, shader/resource, preserved-catalog, and forbidden-bundle
+  gates all pass.
+- The stage source lane remains deterministic and memory-clean: scene packet,
+  transfer queue, asset catalog, and gameplay-camera packet strict/ASan/UBSan
+  smokes pass. The current packet values remain `468` rooms,
+  `2016864` payload bytes, packet hash `13284805027105908470`, `44` chunked
+  requests, transfer hash `10384286454254812603`, catalog hash
+  `16694764706485246250`, and V7 `unsupportedMask=0` with retained
+  full-scene `0x38`.
+- The current V7 Release route reached the intended four source-anchor
+  submissions at ticks `4324,4444,4564,4684`; each was presentable with
+  `158/158` props, `1191` scene draws, scoped unsupported `0`, and retained
+  full-scene `0x38`. Its preflight was nevertheless `frontmost=loginwindow`,
+  so the run has no valid presented-FPS or physical-Aqua claim.
+- The no-V7 control confirms the remaining pacing seam is the uncached
+  `GoldenEyeRamRomGameplayOrchestratorV6.fromEnvironment` at source-begin
+  tick `4322` (target stall about `3413 ms`, `fatalDebtTicks=241`). The V7
+  prewarm is therefore kept opt-in; the legacy route is not made to consume a
+  V7 gameplay owner, and no unsupported category bit is cleared.
+- A normal-audio control also produced a macOS code-signature invalid-page
+  termination in the Core Audio callback (`ge_audio_source_node_v5.m:156`);
+  that crash is retained as a separate runtime diagnostic, not treated as
+  source-scene evidence or silently masked by disabling audio.
+- The next acceptance step is a shorter rerun after the desktop is unlocked:
+  capture active foreground/display state first, then obtain supplied-drawable
+  Release presentation timestamps and a Metal-4 API/shader-validated trace.

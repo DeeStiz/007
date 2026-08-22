@@ -6,6 +6,39 @@ import Foundation
 import GoldenEyeNative
 #endif
 
+/// Local Apple Compression adapter for the C stage 1172 callback. The
+/// callback is never stored in an ABI record: every pointer is borrowed for
+/// this call, and the C decompressor validates the exact decoded count.
+private func goldeneyeStageInflate1172(
+    _ compressedBytes: UnsafePointer<UInt8>?,
+    _ compressedByteCount: UInt32,
+    _ decodedBytes: UnsafeMutablePointer<UInt8>?,
+    _ decodedCapacity: UInt32,
+    _ decodedByteCount: UnsafeMutablePointer<UInt32>?
+) -> GEStatusV1 {
+    guard let compressedBytes,
+          let decodedBytes,
+          let decodedByteCount,
+          compressedByteCount > 0,
+          decodedCapacity > 0 else {
+        return UInt32(GE_STATUS_INVALID_ARGUMENT)
+    }
+    let produced = compression_decode_buffer(
+        decodedBytes,
+        Int(decodedCapacity),
+        compressedBytes,
+        Int(compressedByteCount),
+        nil,
+        COMPRESSION_ZLIB
+    )
+    guard produced > 0, produced <= Int(decodedCapacity) else {
+        decodedByteCount.pointee = UInt32(clamping: produced)
+        return UInt32(GE_STATUS_MALFORMED_STREAM)
+    }
+    decodedByteCount.pointee = UInt32(produced)
+    return UInt32(GE_STATUS_OK)
+}
+
 public enum GoldenEyeStageAssetCatalogError: Error, Sendable, Equatable, CustomStringConvertible {
     case missingManifest
     case malformedManifest(String)
@@ -266,6 +299,7 @@ public struct GoldenEyeStageAssetCatalog: Sendable, Equatable {
             if row.compressed1172 {
                 checkedDecoded = try decode1172(
                     sourceData,
+                    resource: &cResource,
                     expectedBytes: Int(row.decodedBytes),
                     name: resourceKey
                 )
@@ -644,49 +678,47 @@ public struct GoldenEyeStageAssetCatalog: Sendable, Equatable {
         }
     }
 
-    private static func decode1172(_ source: Data, expectedBytes: Int, name: String) throws -> Data {
-        var info = GEStage1172InfoV5()
-        let status = source.withUnsafeBytes { rawBytes -> UInt32 in
-            guard let baseAddress = rawBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
-                return UInt32(GE_STATUS_INVALID_ARGUMENT)
-            }
-            return UInt32(ge_stage_v5_read_1172(
-                baseAddress,
-                UInt32(source.count),
-                UInt32(expectedBytes),
-                &info
-            ))
-        }
-        guard status == UInt32(GE_STATUS_OK) else {
-            throw GoldenEyeStageAssetCatalogError.assetStatus(name, status)
-        }
-        let prefixBytes = Int(info.prefix_bytes)
-        guard prefixBytes <= source.count else {
-            throw GoldenEyeStageAssetCatalogError.assetStatus(name, UInt32(GE_STATUS_INVALID_SIZE))
+    private static func decode1172(
+        _ source: Data,
+        resource: inout GEStageResourceV5,
+        expectedBytes: Int,
+        name: String
+    ) throws -> Data {
+        guard expectedBytes > 0, expectedBytes <= Int(UInt32.max) else {
+            throw GoldenEyeStageAssetCatalogError.decodeFailure(
+                name, 0, UInt32(clamping: expectedBytes)
+            )
         }
         var output = Data(count: expectedBytes)
-        let payload = source.dropFirst(prefixBytes)
-        let produced = output.withUnsafeMutableBytes { outputBytes -> Int in
-            payload.withUnsafeBytes { inputBytes -> Int in
-                guard let outputBase = outputBytes.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                      let inputBase = inputBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
-                    return 0
+        var decodedCount: UInt32 = 0
+        let status = source.withUnsafeBytes { rawBytes -> UInt32 in
+            output.withUnsafeMutableBytes { outputBytes -> UInt32 in
+                guard let inputBase = rawBytes.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                      let outputBase = outputBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                    return UInt32(GE_STATUS_INVALID_ARGUMENT)
                 }
-                return compression_decode_buffer(
-                    outputBase,
-                    outputBytes.count,
+                return UInt32(ge_stage_v5_decompress_1172(
+                    &resource,
                     inputBase,
-                    inputBytes.count,
-                    nil,
-                    COMPRESSION_ZLIB
-                )
+                    UInt32(source.count),
+                    outputBase,
+                    UInt32(outputBytes.count),
+                    &decodedCount,
+                    goldeneyeStageInflate1172
+                ))
             }
         }
-        guard produced == expectedBytes else {
+        guard status == UInt32(GE_STATUS_OK) else {
+            if status == UInt32(GE_STATUS_ASSET_MISMATCH) {
+                throw GoldenEyeStageAssetCatalogError.decodeFailure(
+                    name, decodedCount, UInt32(expectedBytes)
+                )
+            }
+            throw GoldenEyeStageAssetCatalogError.assetStatus(name, status)
+        }
+        guard decodedCount == UInt32(expectedBytes) else {
             throw GoldenEyeStageAssetCatalogError.decodeFailure(
-                name,
-                UInt32(clamping: produced),
-                UInt32(expectedBytes)
+                name, decodedCount, UInt32(expectedBytes)
             )
         }
         return output

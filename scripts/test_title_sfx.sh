@@ -14,5 +14,5 @@ CFLAGS=(-target arm64-apple-macosx27.0 -isysroot "${SDKROOT}" -std=c11 -Wall -We
     "${PROJECT_ROOT}/native/tests/goldeneye_title_sfx_smoke.c" \
     -o "${BUILD_DIR}/goldeneye_title_sfx_smoke"
 "${BUILD_DIR}/goldeneye_title_sfx_smoke" "${ASSET_ROOT}/audio" | tee "${BUILD_DIR}/title-sfx.log"
-grep -Fq 'goldeneye_title_sfx_smoke: PASS count=5' "${BUILD_DIR}/title-sfx.log"
+grep -Fq 'goldeneye_title_sfx_smoke: PASS count=9' "${BUILD_DIR}/title-sfx.log"
 echo 'Title SFX validation: PASS'

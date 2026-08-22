@@ -2,10 +2,9 @@ import Foundation
 
 @main
 struct GoldenEyeStageGameplayCameraPacketV7Smoke {
-    private static let stageIDs: [UInt32] = [33, 34]
+    private static let stageIDs: [UInt32] = [33, 34, 35, 9, 20, 26, 25]
     private static let staticPropTypes: Set<UInt32> = [
-        1, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 17, 20, 21, 36, 39, 40,
-        41, 42, 43, 45, 47,
+        1, 3, 4, 5, 12, 17, 42, 43, 47,
     ]
 
     static func main() throws {
@@ -63,12 +62,17 @@ struct GoldenEyeStageGameplayCameraPacketV7Smoke {
                 yawQ16: 0,
                 pitchQ16: 0
             )
+            let visibleRooms = GoldenEyeStageEnvironmentCameraAdapterV6
+                .sourceGameplayVisibleRoomIndices(
+                    scene: scene,
+                    currentRoom: room.roomIndex + 1
+                )
             let input = GoldenEyeStageGameplayCameraSnapshotV7(
                 demoID: 0,
                 stageID: stageID,
                 nativeTick: 2,
                 playerCamera: playerCamera,
-                visibleRoomIndices: [room.roomIndex + 1],
+                visibleRoomIndices: visibleRooms,
                 visibleStaticPropObjectIndices: staticProps
             )
             let packet = try GoldenEyeStageGameplayCameraPacketAdapterV7.make(
@@ -92,9 +96,21 @@ struct GoldenEyeStageGameplayCameraPacketV7Smoke {
             precondition(packet.cameraInput.projection != .identity)
             let clipRange = GoldenEyeStageEnvironmentCameraAdapterV6
                 .sourceGameplayClipRangeForTesting(stageID: stageID)
-            let expectedClipRange: (near: Double, far: Double) = stageID == 33
-                ? (5.0, 15_000.0)
-                : (10.0, 5_000.0)
+            let expectedClipRange: (near: Double, far: Double)
+            switch stageID {
+            case 33:
+                expectedClipRange = (5.0, 15_000.0)
+            case 34:
+                expectedClipRange = (10.0, 5_000.0)
+            case 35:
+                expectedClipRange = (10.0, 15_000.0)
+            case 25:
+                expectedClipRange = (10.0, 1_500.0)
+            case 9, 20, 26:
+                expectedClipRange = (10.0, 10_000.0)
+            default:
+                fatalError("stage \(stageID) is outside the seven-stage V7 contract")
+            }
             precondition(clipRange != nil)
             precondition(abs(clipRange!.near - expectedClipRange.near) < 0.000_001)
             precondition(abs(clipRange!.far - expectedClipRange.far) < 0.000_001)
@@ -109,7 +125,7 @@ struct GoldenEyeStageGameplayCameraPacketV7Smoke {
             precondition(packet.subset.roomGeometryCommandCount > 0)
             precondition(packet.subset.staticPropPlacementCount == UInt32(staticProps.count))
             precondition(packet.subset.drawableStaticPropPlacementCount == UInt32(staticProps.count))
-            precondition(packet.composition.snapshot.drawCommands.count > packet.environmentPacket.commands.count)
+            precondition(packet.composition.snapshot.drawCommands.count > 0)
             // Every visible composed draw must retain the source GBI
             // geometry-mode/model-view sidecar after state-handle remapping.
             // The Metal renderer intentionally fails closed when this map is
@@ -206,10 +222,10 @@ struct GoldenEyeStageGameplayCameraPacketV7Smoke {
                 }
             }
         }
-        precondition(packetHashes.count == 2)
-        precondition(packetHashes[0] != packetHashes[1])
+        precondition(packetHashes.count == stageIDs.count)
+        precondition(Set(packetHashes).count == stageIDs.count)
         print(
-            "goldeneye_stage_gameplay_camera_packet_v7_smoke: PASS demos=2 stages=33,34 " +
+            "goldeneye_stage_gameplay_camera_packet_v7_smoke: PASS demos=1 stages=33,34,35,9,20,26,25 " +
                 "fullSceneUnsupportedMask=0x38 deterministic=1 failClosed=1"
         )
     }

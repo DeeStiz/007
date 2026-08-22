@@ -61,6 +61,10 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
     private var resumeCount: UInt64 = 0
     private var sfxNodeSampleOrigin: Int64?
     private var sourceAudioBinding = GoldenEyeSourceAudioBindingV6()
+    /// File/Mode is an additive source sidecar with its own C event-sequence
+    /// namespace. Keep a separate once-only binding so a menu sequence cannot
+    /// suppress or reorder an authoritative frontend audio event.
+    private var fileModeAudioBinding = GoldenEyeSourceAudioBindingV6()
 
     private struct ScheduledSFX {
         let startSampleIndex: UInt64
@@ -287,6 +291,7 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
     func resetForGame() {
         guard started else {
             sourceAudioBinding.reset()
+            fileModeAudioBinding.reset()
             return
         }
         stopSourceMusic(at: 0, nativeTick: 0)
@@ -343,12 +348,67 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
                 encoding: .utf8
             )
         }
+        applySourceAudioCommands(result.commands, nativeTick: nativeTick, paused: paused)
+    }
+
+    /// Forward source File/Mode SFX sidecar events through the same
+    /// sample-indexed scheduling path. The sidecar has an independent binding
+    /// sequence namespace, so menu actions cannot consume frontend sequence
+    /// numbers or replay after a pause/reset.
+    func consume(
+        fileModeSFXEvents: [GoldenEyeFileModeEventSnapshotV6],
+        nativeTick: UInt64,
+        paused: Bool = false
+    ) {
+        let inputs = fileModeSFXEvents
+            .filter { $0.kind == GE_FILE_MODE_V6_EVENT_SFX.rawValue }
+            .map {
+                GoldenEyeSourceAudioInputV6(
+                    operation: GoldenEyeSourceAudioBindingV6.playSFXOperation,
+                    assetID: $0.command,
+                    nativeTick: $0.nativeTick,
+                    sequence: $0.sequence
+                )
+            }
+        guard !inputs.isEmpty else { return }
+        let result = fileModeAudioBinding.consume(inputs, nativeTick: nativeTick, paused: paused)
+        if !result.rejections.isEmpty || result.duplicateCount != 0 || result.suppressedCount != 0 {
+            let rejectionText = result.rejections.map {
+                "\($0.sequence):\($0.reason)"
+            }.joined(separator: ",")
+            let line = "fileMode nativeTick=\(nativeTick) rejected=\(rejectionText.isEmpty ? "-" : rejectionText) "
+                + "duplicates=\(result.duplicateCount) suppressed=\(result.suppressedCount)\n"
+            try? line.write(
+                toFile: "/tmp/goldeneye-native-audio-binding.log",
+                atomically: false,
+                encoding: .utf8
+            )
+        }
+        applySourceAudioCommands(result.commands, nativeTick: nativeTick, paused: paused)
+    }
+
+    /// Reset only the additive File/Mode event cursor when the source menu
+    /// authority is recreated after leaving and re-entering the menu.
+    func resetFileModeAudioSession() {
+        fileModeAudioBinding.reset()
+        try? "event=fileModeAudioSessionReset=1\n".write(
+            toFile: "/tmp/goldeneye-native-audio-binding.log",
+            atomically: false,
+            encoding: .utf8
+        )
+    }
+
+    private func applySourceAudioCommands(
+        _ commands: [GoldenEyeSourceAudioCommandV6],
+        nativeTick: UInt64,
+        paused: Bool
+    ) {
         guard started, !paused else { return }
         guard realtimeActive else {
             recordSuppressedImmediateCue("source-events-without-realtime-output nativeTick=\(nativeTick)")
             return
         }
-        for command in result.commands {
+        for command in commands {
             switch command.kind {
             case .stopMusic:
                 stopSourceMusic(at: command.sampleIndex, nativeTick: command.nativeTick)
@@ -382,6 +442,7 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
         realtimeActive = false
         audioPaused = false
         sourceAudioBinding.reset()
+        fileModeAudioBinding.reset()
         scheduledSFX.removeAll(keepingCapacity: false)
         let node = sourceNode
         lock.unlock()
@@ -636,11 +697,7 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
         for track in Track.allCases {
             _ = try? renderedMusic(for: track)
         }
-        for soundIndex in [
-            GoldenEyeSourceAudioBindingV6.sfxRarewareLogo,
-            GoldenEyeSourceAudioBindingV6.sfxOptionClick2,
-            GoldenEyeSourceAudioBindingV6.sfxGunRifle7Big1,
-        ] {
+        for soundIndex in GoldenEyeSourceAudioBindingV6.supportedSFXIDs {
             _ = try? renderedSFX(soundIndex: soundIndex)
         }
     }
@@ -885,6 +942,7 @@ final class GoldenEyeNativeAudioService: @unchecked Sendable {
         renderedSamples.removeAll(keepingCapacity: false)
         scheduledSFX.removeAll(keepingCapacity: false)
         sourceAudioBinding.reset()
+        fileModeAudioBinding.reset()
         sfxNodeSampleOrigin = nil
         renderedFrameCount = 0
         trackStartSampleIndex = 0

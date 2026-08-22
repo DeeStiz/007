@@ -30,6 +30,8 @@ done
 
 SOURCES=(
     "${ROOT}/native/host/goldeneye_stage_asset_catalog.swift"
+    "${ROOT}/native/host/goldeneye_stage_payload_store_v6.swift"
+    "${ROOT}/native/host/goldeneye_stage_transfer_queue_v6.swift"
     "${ROOT}/native/host/goldeneye_stage_setup_packet.swift"
     "${ROOT}/native/host/goldeneye_stage_scene_packet.swift"
     "${ROOT}/native/host/goldeneye_source_model_v6.swift"

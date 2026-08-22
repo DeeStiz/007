@@ -70,10 +70,17 @@ PY
 # Sorting makes this snapshot deterministic for a fixed worktree.
 git -C "${PROJECT_ROOT}" status --short --untracked-files=all | LC_ALL=C sort \
     > "${STATUS_PATH}"
-[[ -s "${STATUS_PATH}" ]] || fail "worktree status unexpectedly clean"
 STATUS_SHA256=$(digest_sha256 "${STATUS_PATH}")
+if [[ -s "${STATUS_PATH}" ]]; then
+    STATUS_STATE=dirty
+else
+    # A clean committed checkout is a valid provenance input.  Keep the empty
+    # status capture and record the state explicitly so this does not weaken
+    # any of the ROM, frozen-contract, ABI, or bundle-boundary checks below.
+    STATUS_STATE=clean
+fi
 
-echo "[R0] status entries=$(wc -l < "${STATUS_PATH}" | tr -d '[:space:]') sha256=${STATUS_SHA256}" \
+echo "[R0] status state=${STATUS_STATE} entries=$(wc -l < "${STATUS_PATH}" | tr -d '[:space:]') sha256=${STATUS_SHA256}" \
     > "${LOG_PATH}"
 
 echo "[R0] checking frozen V1/V2/V3/V4 evidence" | tee -a "${LOG_PATH}"
@@ -355,6 +362,7 @@ done
 
 cat > "${MANIFEST_PATH}" <<EOF
 status_entries=$(wc -l < "${STATUS_PATH}" | tr -d '[:space:]')
+status_state=${STATUS_STATE}
 status_sha256=${STATUS_SHA256}
 rom_path=${ROM_REAL_PATH}
 rom_inside_checkout=false

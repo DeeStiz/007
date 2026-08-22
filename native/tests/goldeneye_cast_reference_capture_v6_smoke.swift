@@ -28,7 +28,13 @@ struct GoldenEyeCastReferenceCaptureV6Smoke {
         let sourceIndex = UInt16(
             ProcessInfo.processInfo.environment["GE_CAST_SOURCE_INDEX"] ?? "1"
         ) ?? 1
-        let randomWord = UInt32(sourceIndex)
+        // front.c consumes a second random word for Natalya's alternate
+        // jungle-fatigues body. Keep the ordinary identity fixture stable,
+        // while allowing a capture to carry that copied source word
+        // explicitly instead of silently equating it with the row index.
+        let randomWord = UInt32(
+            ProcessInfo.processInfo.environment["GE_CAST_RANDOM_WORD"] ?? String(sourceIndex)
+        ) ?? UInt32(sourceIndex)
         let identity = try GoldenEyeCastSourceTableV6.identity(sourceIndex: sourceIndex)
         let animation = try GoldenEyeCastSceneComposerV6.animation(randomWord: randomWord)
         let handles = preparation.models.reduce(into: [String: UInt32]()) { result, entry in
@@ -152,7 +158,8 @@ struct GoldenEyeCastReferenceCaptureV6Smoke {
         if strictRegression {
             let captureOnlyEnvironment: [String] = [
                 "GE_CAST_ISOLATE_MODEL", "GE_CAST_DRAW_INDEX", "GE_CAST_DRAW_LIMIT",
-                "GE_CAST_LEGACY_TEXTURES", "GE_CAST_WINDING", "GE_CAST_MODELS"
+                "GE_CAST_LEGACY_TEXTURES", "GE_CAST_WINDING", "GE_CAST_MODELS",
+                "GE_CAST_RANDOM_WORD"
             ]
             guard captureOnlyEnvironment.allSatisfy({
                 ProcessInfo.processInfo.environment[$0] == nil
@@ -464,6 +471,7 @@ struct GoldenEyeCastReferenceCaptureV6Smoke {
             "screen": "Cast",
             "identityCount": GoldenEyeCastSceneComposerV6.validIdentityIndices.count,
             "capturedIdentity": identity.sourceIndex,
+            "randomWord": randomWord,
             "capturedBody": binding.bodyName,
             "capturedHead": binding.headName,
             "capturedWeapon": binding.weaponName,

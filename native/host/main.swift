@@ -752,8 +752,26 @@ private final class GoldenEyeViewController: NSViewController {
                     name: NSWindow.didChangeBackingPropertiesNotification,
                     object: window
                 )
+                NotificationCenter.default.addObserver(
+                    self,
+                    selector: #selector(windowDidChangeScreen(_:)),
+                    name: NSWindow.didChangeScreenNotification,
+                    object: window
+                )
+                NotificationCenter.default.addObserver(
+                    self,
+                    selector: #selector(windowDidChangeScreen(_:)),
+                    name: NSWindow.didChangeScreenProfileNotification,
+                    object: window
+                )
                 focusState = NSApp.isActive && window.isKeyWindow
             }
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(applicationDidChangeScreenParameters(_:)),
+                name: NSApplication.didChangeScreenParametersNotification,
+                object: NSApp
+            )
             didRegisterFocusObserver = true
         }
         if (nativeTitleRuntimeEnabled || stageBackgroundRuntimeEnabled), let frameRenderer {
@@ -1033,7 +1051,28 @@ private final class GoldenEyeViewController: NSViewController {
 
     @objc private func windowDidChangeBackingProperties(_ notification: Notification) {
         guard notification.object as AnyObject? === view.window else { return }
+        refreshDisplayConfiguration(source: notification.name.rawValue)
+    }
+
+    @objc private func windowDidChangeScreen(_ notification: Notification) {
+        guard notification.object as AnyObject? === view.window else { return }
+        refreshDisplayConfiguration(source: notification.name.rawValue)
+    }
+
+    @objc private func applicationDidChangeScreenParameters(_ notification: Notification) {
+        refreshDisplayConfiguration(source: notification.name.rawValue)
+    }
+
+    private func refreshDisplayConfiguration(source: String) {
         gameView.updateDrawableSize()
+        nativeTitleOwner?.requestPreferredFrameRateRange(
+            CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        )
+        recordInputEvidence(
+            "event=displayDidChange source=\(source) "
+                + "screen=\(view.window?.screen?.localizedName ?? "none") "
+                + "scale=\(view.window?.backingScaleFactor ?? 1.0)"
+        )
     }
 
     private func scheduleInputProbe() {

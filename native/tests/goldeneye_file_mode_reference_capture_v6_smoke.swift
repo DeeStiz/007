@@ -111,7 +111,7 @@ struct GoldenEyeFileModeReferenceCaptureV6Smoke {
 
         var eraseAuthority = try GoldenEyeFileModeAuthorityV6(saveState: completed)
         var eraseTick: UInt64 = 0
-        for _ in 0..<21 {
+        for _ in 0..<41 {
             eraseTick += 1
             _ = try eraseAuthority.step(.init(nativeTick: eraseTick, sequence: eraseTick, stickX: 75, stickY: 75, synthetic: true))
         }

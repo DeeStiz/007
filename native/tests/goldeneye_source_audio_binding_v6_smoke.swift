@@ -108,6 +108,56 @@ let stop = binding.consume(
 require(stop.commands.count == 1 && stop.commands[0].kind == .stopMusic, "stop command")
 require(stop.commands[0].sampleIndex == 918, "stop sample index")
 
+// File/Mode owns a separate source event-sequence namespace. The service
+// forwards these sidecar SFX through an independent binding so a menu event
+// with sequence 1 cannot suppress frontend sequence 1.
+var menuBinding = GoldenEyeSourceAudioBindingV6()
+for (offset, soundIndex) in GoldenEyeSourceAudioBindingV6.supportedSFXIDs.enumerated() {
+    let menuEvent = menuBinding.consume(
+        [input(
+            operation: GoldenEyeSourceAudioBindingV6.playSFXOperation,
+            assetID: soundIndex,
+            nativeTick: UInt64(6 + offset),
+            sequence: UInt64(offset + 1)
+        )],
+        nativeTick: UInt64(6 + offset)
+    )
+    require(menuEvent.commands.count == 1, "menu namespace SFX (soundIndex) accepted")
+    require(menuEvent.commands[0].kind == .sfx, "menu namespace SFX command kind")
+}
+let menuDuplicate = menuBinding.consume(
+    [input(
+        operation: GoldenEyeSourceAudioBindingV6.playSFXOperation,
+        assetID: GoldenEyeSourceAudioBindingV6.sfxRarewareLogo,
+        nativeTick: 6,
+        sequence: 1
+    )],
+    nativeTick: 20
+)
+require(menuDuplicate.commands.isEmpty && menuDuplicate.duplicateCount == 1, "menu SFX duplicate suppressed")
+menuBinding.reset()
+let menuSessionReset = menuBinding.consume(
+    [input(
+        operation: GoldenEyeSourceAudioBindingV6.playSFXOperation,
+        assetID: GoldenEyeSourceAudioBindingV6.sfxOptionClick2,
+        nativeTick: 21,
+        sequence: 1
+    )],
+    nativeTick: 21
+)
+require(menuSessionReset.commands.count == 1, "menu session reset accepts sequence one")
+var independentFrontendBinding = GoldenEyeSourceAudioBindingV6()
+let independentFrontend = independentFrontendBinding.consume(
+    [input(
+        operation: GoldenEyeSourceAudioBindingV6.playSFXOperation,
+        assetID: GoldenEyeSourceAudioBindingV6.sfxOptionClick2,
+        nativeTick: 6,
+        sequence: 1
+    )],
+    nativeTick: 6
+)
+require(independentFrontend.commands.count == 1, "frontend namespace remains independent")
+
 print("goldeneye_source_audio_binding_v6_smoke: PASS")
     }
 }

@@ -32,6 +32,31 @@ struct GoldenEyeCastSceneComposerV6Smoke {
         precondition(binding.bodyName == "boilerbond")
         precondition(binding.headName == "headbrosnanboiler")
         precondition(binding.weaponName == "chrwppk")
+
+        // Source front.c consumes a second random word for identity row 2:
+        // even selects Natalya's embedded body, while odd selects the
+        // source-prepared Spicebond alternate. Keep this authority separate
+        // from the identity row and prove both branches against the same
+        // prepared model catalog.
+        let row2 = try GoldenEyeCastSourceTableV6.identity(sourceIndex: 2)
+        let row2Animation = try GoldenEyeCastSceneComposerV6.animation(for: row2)
+        let evenRow2 = try GoldenEyeCastSceneComposerV6.resolveModels(
+            identity: row2,
+            animation: row2Animation,
+            availableModelNames: Set(names),
+            availableHandles: handles,
+            randomWord: 2
+        )
+        let oddRow2 = try GoldenEyeCastSceneComposerV6.resolveModels(
+            identity: row2,
+            animation: row2Animation,
+            availableModelNames: Set(names),
+            availableHandles: handles,
+            randomWord: 3
+        )
+        precondition(evenRow2.bodyName == "natalya")
+        precondition(oddRow2.bodyName == "spicebond")
+        precondition(evenRow2.headName.isEmpty && oddRow2.headName.isEmpty)
         let bodyGroups = try GoldenEyeCastSkeletonTransformV6.groups(
             model: try GoldenEyeSourceModelV6.load(
                 from: root.appendingPathComponent("boilerbond.gesm")
@@ -114,7 +139,7 @@ struct GoldenEyeCastSceneComposerV6Smoke {
         print(
             "goldeneye_cast_scene_composer_v6_smoke: PASS identities=30 "
                 + "animations=22 preparedModelCombinations=30 missingClosed=0"
-                + " castTextFade=PASS"
+                + " castTextFade=PASS row2RandomBody=natalya/spicebond"
         )
     }
 }

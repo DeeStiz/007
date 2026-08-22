@@ -7,14 +7,18 @@ record is `scripts/test_fidelity_recovery_r0.sh`.
 
 ## Scope and preservation rule
 
-- Existing dirty worktree changes and every prior artifact remain in place.
+- Existing worktree changes and every prior artifact remain in place. A clean
+  committed checkout is also a valid R0 input; the guard records an empty
+  status snapshot with `status_state=clean` instead of treating cleanliness as
+  a provenance failure.
 - This lane performs no Git mutation: no commit, push, branch, reset, clean, or
   deletion.
 - The guard writes only ignored output beneath
   `build/native/fidelity-recovery/`.
 - The status capture is a point-in-time inventory. Later additive work may add
   status entries; the guard always records the current sorted status before
-  validating the immutable provenance and ABI checks.
+  validating the immutable provenance and ABI checks. The status state is
+  `dirty` when entries are present and `clean` when the capture is empty.
 
 ## External ROM and reference evidence
 
@@ -163,6 +167,10 @@ status entry and completed with 192 entries and status SHA-256
 The status file is intentionally a snapshot: concurrent additive work may add
 entries after this capture. Re-running the guard records a new deterministic
 status hash while keeping the frozen ABI/provenance checks fail-closed.
+
+A later run from the committed M30 checkout may legitimately have zero status
+entries. That run still records the empty capture and `status_state=clean`; all
+other R0 checks remain unchanged and fail closed.
 
 ## Reproduction
 

@@ -247,17 +247,23 @@ public struct GoldenEyeRamRomGuardDoorPagesV6: @unchecked Sendable {
 
     public static func routeTable() -> [(demo: UInt8, stage: UInt32, slot: UInt32)] { route }
 
-    /// Compile the guarded initial pages into the portable owner state.  The
-    /// large C state is returned by value so callers can place it in their own
-    /// owner-thread storage; this builder never retains a pointer.
-    static func makeOwnerState(
+    /// Compile the guarded initial pages directly into heap-backed owner
+    /// storage.  `GEGuardDoorOwnerStateV6` is 1,972,424 bytes; returning it by
+    /// value creates an owner-thread stack temporary and can bus-error the
+    /// AppKit scheduler stack before gameplay begins.
+    static func makeOwnerStatePointer(
         from pages: Self,
         rngSeed: UInt64
-    ) throws -> GEGuardDoorOwnerStateV6 {
+    ) throws -> UnsafeMutablePointer<GEGuardDoorOwnerStateV6> {
         guard pages.sourceReady else {
             throw Error.malformedSetup(pages.stageID, pages.missingFields.joined(separator: ","))
         }
-        var state = GEGuardDoorOwnerStateV6()
+        let rawPointer = UnsafeMutableRawPointer.allocate(
+            byteCount: MemoryLayout<GEGuardDoorOwnerStateV6>.stride,
+            alignment: MemoryLayout<GEGuardDoorOwnerStateV6>.alignment
+        )
+        let statePointer = rawPointer.assumingMemoryBound(to: GEGuardDoorOwnerStateV6.self)
+        statePointer.initialize(to: GEGuardDoorOwnerStateV6())
         var event = GEGuardDoorOwnerEventV6()
         let status: UInt32 = pages.guards.withUnsafeBufferPointer { guardBuffer in
             pages.doors.withUnsafeBufferPointer { doorBuffer in
@@ -269,7 +275,7 @@ public struct GoldenEyeRamRomGuardDoorPagesV6: @unchecked Sendable {
                                 doorBuffer.baseAddress, UInt32(doorBuffer.count),
                                 poseBuffer.baseAddress, UInt32(poseBuffer.count),
                                 attachmentBuffer.baseAddress, UInt32(attachmentBuffer.count),
-                                rngSeed, &state, &event
+                                rngSeed, statePointer, &event
                             )
                         }
                     }
@@ -277,9 +283,11 @@ public struct GoldenEyeRamRomGuardDoorPagesV6: @unchecked Sendable {
             }
         }
         guard status == UInt32(GE_STATUS_OK) else {
+            statePointer.deinitialize(count: 1)
+            rawPointer.deallocate()
             throw Error.malformedSetup(pages.stageID, "owner status " + String(status))
         }
-        return state
+        return statePointer
     }
 
     /// Allocate a zero-guard door owner on the heap. The C state is large and

@@ -57,6 +57,13 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
     private var stageScenePackets: [UInt32: GoldenEyeStageScenePacket] = [:]
     private var stageEnvironmentPackets: [UInt32: GoldenEyeStageBackgroundDrawPacket] = [:]
     private var stageMaterialPackets: [UInt32: GoldenEyeStageSourceMaterialPacketV6] = [:]
+    private var gameplayVisiblePropModelIndices: [UInt32: Set<UInt32>] = [:]
+    private var stageLifecycle: GoldenEyeStageLifecycleV6?
+    /// The production owner consumes decoded stage bytes through the bounded
+    /// source-ordered transfer queue. It is synchronous and owner-thread-only;
+    /// it does not emulate the N64 scheduler or expose a ROM pointer.
+    private var stageTransferQueue: GoldenEyeStageTransferQueueV6?
+    private var activeStageLifecycleID: UInt32?
     private var stageScenePreparationAttempted = false
     /// Explicit opt-in for the source gameplay-camera room+static-prop route.
     /// The default Release path remains the existing RAMROM environment
@@ -65,9 +72,44 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
         ProcessInfo.processInfo.environment["GOLDENEYE_STAGE_GAMEPLAY_CAMERA_V7"] == "1"
     }
     private var didPlayGunbarrelRifleSFX = false
+    private var fileModeAudioSessionActive = false
     private var sourceRamRomEndNeedsMenuInput = false
     private var ramRomGameplayOrchestrator: GoldenEyeRamRomGameplayOrchestratorV6?
     private var ramRomGameplayLastFrame: GoldenEyeRamRomGameplayFrameV6?
+    private let gameplayCameraSubmissionQueue = DispatchQueue(
+        label: "GoldenEye.V7.GameplayCameraSubmission",
+        qos: .userInitiated
+    )
+    private let gameplayCameraSubmissionStateLock = NSLock()
+    private var gameplayCameraSubmissionInFlight = false
+    private var gameplayCameraSubmissionFailure: String?
+    private var gameplayCameraFramePublished = false
+    /// The V7 evidence lane retains the first stage scene for Cast/SWITCH
+    /// ownership, but it may publish a bounded source-anchor window so camera,
+    /// portal, and dynamic-door hashes are observed across more than one frame.
+    /// The window is opt-in V7 evidence only; the default is four even anchors.
+    private var gameplayCameraSubmissionCount: UInt32 = 0
+    private var gameplayCameraNextSubmissionTick: UInt64 = 0
+    private var gameplayCameraAnchorWindow: UInt32 {
+        let raw = ProcessInfo.processInfo.environment[
+            "GOLDENEYE_STAGE_GAMEPLAY_CAMERA_ANCHORS"
+        ]
+        guard let raw, let value = UInt32(raw), (1...8).contains(value) else {
+            return 4
+        }
+        return value
+    }
+    private var gameplayCameraAnchorInterval: UInt64 {
+        let raw = ProcessInfo.processInfo.environment[
+            "GOLDENEYE_STAGE_GAMEPLAY_CAMERA_ANCHOR_INTERVAL"
+        ]
+        guard let raw, let value = UInt64(raw), (2...1_200).contains(value) else {
+            return 120
+        }
+        return value & ~UInt64(1)
+    }
+    private var prewarmedRamRomGameplayRequest: GoldenEyeRamRomLaunchRequest?
+    private var prewarmedRamRomGameplay: GoldenEyeRamRomGameplayOrchestratorV6?
     private var productionCastRoute: GoldenEyeAttractRoute?
     private var productionCastSourceIndex: UInt16?
     private var productionCastSeed: UInt64 = 0
@@ -125,6 +167,36 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
             box?.owner?.step(tick)
         }
         box.owner = self
+        if !diagnosticTitleFlowEnabled {
+            // Stage packet/material preparation is source-owned launch work,
+            // not a measured 120 Hz step. Doing it before the owner starts
+            // prevents the first RAMROM handoff from creating a multi-second
+            // catch-up debt on the owner thread.
+            stageScenePreparationAttempted = true
+            do {
+                try prepareStageSceneCatalog()
+            } catch {
+                stageScenePreparationAttempted = false
+                try? "scenePrewarmError=\(error)\n".write(
+                    toFile: "/tmp/goldeneye-stage-scene-owner.log",
+                    atomically: false,
+                    encoding: .utf8
+                )
+            }
+        }
+        if gameplayCameraSubmissionEnabled,
+           !diagnosticTitleFlowEnabled,
+           let request = makeSourceRamRomRequest() {
+            do {
+                prewarmedRamRomGameplay = try GoldenEyeRamRomGameplayOrchestratorV6.fromEnvironment(
+                    request: request, atNativeTick: 0
+                )
+                prewarmedRamRomGameplayRequest = request
+            } catch {
+                prewarmedRamRomGameplayRequest = nil
+                prewarmedRamRomGameplay = nil
+            }
+        }
         if diagnosticTitleFlowEnabled,
            let rawDemo = ProcessInfo.processInfo.environment["GOLDENEYE_NATIVE_RAMROM_DEMO_INDEX"],
            let demoIndex = UInt8(rawDemo), demoIndex < 14 {
@@ -210,6 +282,8 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
 
     func stop() {
         engineOwner.stopAndWait()
+        gameplayCameraSubmissionQueue.sync { }
+        releaseStageServices()
         // Drain the two completion-fenced Metal slots before taking the
         // display telemetry snapshot. Presented handlers are asynchronous and
         // may only receive their non-zero presentedTime while the final GPU
@@ -339,6 +413,30 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
         _ = ramRomPlayback?.stopAfterFailure()
     }
 
+    private func releaseStageServices() {
+        if var lifecycle = stageLifecycle,
+           let activeStageLifecycleID {
+            _ = try? lifecycle.deactivate(stageID: activeStageLifecycleID)
+            _ = try? lifecycle.unload(stageID: activeStageLifecycleID)
+        }
+        if var transferQueue = stageTransferQueue,
+           let activeStageLifecycleID {
+            _ = try? transferQueue.deactivate(stageID: activeStageLifecycleID)
+            _ = try? transferQueue.unload(stageID: activeStageLifecycleID)
+        }
+        stageLifecycle = nil
+        stageTransferQueue = nil
+        activeStageLifecycleID = nil
+    }
+
+    private func takeGameplayCameraSubmissionFailure() -> String? {
+        gameplayCameraSubmissionStateLock.lock()
+        defer { gameplayCameraSubmissionStateLock.unlock() }
+        let failure = gameplayCameraSubmissionFailure
+        gameplayCameraSubmissionFailure = nil
+        return failure
+    }
+
     private func takeInput() -> GoldenEyeKeyboardSnapshot {
         lock.lock()
         let input = pendingInput
@@ -357,6 +455,15 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
     /// reused; its next submitted frame replaces the old scene snapshot.
     private func resetGameState() -> Bool {
         precondition(engineOwner.isOwnerThread, "Game reset belongs to the owner thread")
+
+        // Drain the bounded V7 submission queue before clearing its route
+        // counters so an old composition cannot publish after the new source
+        // authority starts.
+        gameplayCameraSubmissionQueue.sync { }
+        gameplayCameraSubmissionStateLock.lock()
+        gameplayCameraSubmissionInFlight = false
+        gameplayCameraSubmissionFailure = nil
+        gameplayCameraSubmissionStateLock.unlock()
 
         if didInitializeNative {
             let shutdownStatus = ge_native_shutdown()
@@ -407,14 +514,22 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
         lastSaveRuntimeRevision = 0
         lastAudioScreen = .legal
         didPlayGunbarrelRifleSFX = false
+        fileModeAudioSessionActive = false
         sourceRamRomEndNeedsMenuInput = false
         _ = ramRomPlayback?.stopAfterFailure()
         stageScenePackets.removeAll(keepingCapacity: true)
         stageEnvironmentPackets.removeAll(keepingCapacity: true)
         stageMaterialPackets.removeAll(keepingCapacity: true)
+        releaseStageServices()
         stageScenePreparationAttempted = false
         ramRomGameplayOrchestrator = nil
         ramRomGameplayLastFrame = nil
+        prewarmedRamRomGameplayRequest = nil
+        prewarmedRamRomGameplay = nil
+        gameplayVisiblePropModelIndices.removeAll(keepingCapacity: true)
+        gameplayCameraFramePublished = false
+        gameplayCameraSubmissionCount = 0
+        gameplayCameraNextSubmissionTick = 0
         productionCastRoute = nil
         productionCastSourceIndex = nil
         productionCastSeed = 0
@@ -500,8 +615,10 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
                     )
                 }
                 let modelResult = sourceModelHandshake.takeForAuthority()
+                let wasGunbarrel = sourceAuthority!.nativeAuthority.state.screen ==
+                    UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_GUNBARREL)
                 let effectiveButtonsPressed: UInt32
-                if sourceRamRomEndNeedsMenuInput {
+                if sourceRamRomEndNeedsMenuInput && tick.nativeTick & 1 == 0 {
                     effectiveButtonsPressed = sourceInput.buttonsPressed | UInt32(
                         GE_SOURCE_FRONTEND_RUNTIME_V6_BUTTON_ANY
                     )
@@ -530,6 +647,16 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
                     modelResultValue1: modelResult.value1
                 )
                 let frame = pairedFrame.authoritativeFrame
+                let enteringGunbarrel = !wasGunbarrel &&
+                    frame.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_GUNBARREL)
+                if enteringGunbarrel,
+                   let lifecycle = renderer as? GoldenEyeSourceFrontendModelLifecycleV6 {
+                    // Cast/SWITCH frames are consumed by their own source
+                    // owners and therefore do not pass through renderer.submit.
+                    // Reset on the authoritative source transition instead of
+                    // inferring entry from the renderer's stale last frame.
+                    lifecycle.resetGunbarrelBloodStream()
+                }
                 sourceLastStateHash = frame.stateHash
                 sourceLastRenderHash = frame.renderHash
                 sourceLastAudioHash = frame.audioHash
@@ -550,16 +677,25 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
                 sourceModelHandshake.retainSuccessfulResult(
                     (renderer as? GoldenEyeSourceFrontendModelResultProviderV6)?.takeModelExecutionResult()
                 )
+                let hasFileModeAudioSession = frame.fileModeFrame != nil
+                if hasFileModeAudioSession && !fileModeAudioSessionActive {
+                    audioService?.resetFileModeAudioSession()
+                }
+                fileModeAudioSessionActive = hasFileModeAudioSession
                 audioService?.consume(
                     sourceAudioEvents: frame.audioEvents,
                     nativeTick: tick.nativeTick
                 )
+                if let fileModeFrame = frame.fileModeFrame {
+                    audioService?.consume(
+                        fileModeSFXEvents: fileModeFrame.events,
+                        nativeTick: tick.nativeTick
+                    )
+                }
             } catch {
                 sourceAuthorityFailure = String(describing: error)
-                try? "authorityFailure=\(sourceAuthorityFailure ?? "unknown") nativeTick=\(tick.nativeTick)\n".write(
-                    toFile: "/tmp/goldeneye-source-frontend-owner.log",
-                    atomically: true,
-                    encoding: .utf8
+                appendSourceOwnerEvidence(
+                    "authorityFailure=\(sourceAuthorityFailure ?? "unknown") nativeTick=\(tick.nativeTick)"
                 )
                 return
             }
@@ -880,6 +1016,18 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
         }
     }
 
+    private func appendGameplayCameraOwnerEvidence(_ body: String) {
+        let line = body + "\n"
+        let url = URL(fileURLWithPath: "/tmp/goldeneye-stage-gameplay-camera-owner.log")
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            try? handle.write(contentsOf: Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? Data(line.utf8).write(to: url, options: .atomic)
+        }
+    }
+
     /// Called by the owner thread exactly at the measurement boundary. The
     /// source authority hash values are retained as an explicit warmup-end
     /// boundary; source failure remains sticky and is never hidden by reset.
@@ -948,6 +1096,13 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
               let renderer = renderer as? GoldenEyeCastSourceSceneFrameRendererV6 else {
             return false
         }
+        if gameplayCameraSubmissionEnabled && gameplayCameraFramePublished {
+            // The bounded V7 production lane retains its first submitted
+            // gameplay frame for supplied-drawable inspection; source Cast
+            // authority/playback continues, but later Cast packets must not
+            // replace the published stage scene before it is observed.
+            return true
+        }
         do {
             let explicitIndex = ProcessInfo.processInfo.environment[
                 "GOLDENEYE_NATIVE_CAST_SOURCE_INDEX"
@@ -988,11 +1143,18 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
             let identity = try GoldenEyeCastSourceTableV6.identity(
                 sourceIndex: sourceIndex
             )
-            let randomWord = Self.sourceCastWord(
+            let generatedRandomWord = Self.sourceCastWord(
                 seed: productionCastSeed == 0 ? Self.sourceCastSeed() : productionCastSeed,
                 sourceIndex: sourceIndex,
                 nativeTick: nativeTick
             )
+            // A deterministic source-index override may also carry the
+            // copied second random word used by front.c's Natalya variant.
+            // Keep this test-only seam opt-in and ignore it for the normal
+            // source-ordered route so production never invents roster state.
+            let randomWord = explicitIndex == nil
+                ? generatedRandomWord
+                : (Self.sourceCastRandomWordOverride() ?? generatedRandomWord)
             let animation = try GoldenEyeCastSceneComposerV6.animation(
                 randomWord: randomWord
             )
@@ -1080,6 +1242,17 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
         ) ?? 1
     }
 
+    private static func sourceCastRandomWordOverride() -> UInt32? {
+        guard let raw = ProcessInfo.processInfo.environment[
+            "GOLDENEYE_NATIVE_CAST_RANDOM_WORD"
+        ], !raw.isEmpty else { return nil }
+        let isHex = raw.hasPrefix("0x") || raw.hasPrefix("0X")
+        return UInt32(
+            isHex ? String(raw.dropFirst(2)) : raw,
+            radix: isHex ? 16 : 10
+        )
+    }
+
     private static func sourceCastWord(
         seed: UInt64,
         sourceIndex: UInt16,
@@ -1102,13 +1275,23 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
         mailboxInput: GoldenEyeInputSnapshot?,
         keyboardInput: GoldenEyeKeyboardSnapshot
     ) -> Bool {
+        let castEndTransition = sourceFrame.screen ==
+            UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_SWITCH)
+            && sourceFrame.screenEvents.contains {
+                $0.event == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_EVENT_TRANSITION)
+                    && $0.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_CAST)
+                    && $0.targetScreen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_CAST)
+            }
         guard !diagnosticTitleFlowEnabled,
-              sourceFrame.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_CAST),
               let ramRomPlayback,
               let ramRomAuthority else { return false }
+        let activeSwitchPlayback = ramRomAuthority.isActive
+            && sourceFrame.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_SWITCH)
+        guard sourceFrame.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_CAST)
+                || castEndTransition || activeSwitchPlayback else { return false }
 
         if !ramRomAuthority.isActive,
-           sourceFrame.sourceTimer >= 181,
+           (sourceFrame.sourceTimer >= 181 || castEndTransition),
            let request = makeSourceRamRomRequest() {
             do {
                 _ = prepareStageScene(stageID: request.stageID)
@@ -1124,15 +1307,28 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
                 }
                 let beginFrame = try ramRomAuthority.begin(
                     request: request,
-                    atNativeTick: nativeTick,
+                    // A Cast-end transition spends four source anchors in
+                    // SWITCH before the next Cast frame is visible. Start
+                    // the playback clock at that next Cast anchor so the C
+                    // service's first relative sample remains zero.
+                    atNativeTick: castEndTransition ? nativeTick &+ 8 : nativeTick,
                     stageCoverage: coverage,
                     environmentPacket: environmentPacket
                 )
-                let gameplayStartTick = (nativeTick | 1) &+ 1
+                let gameplayStartTick = ((castEndTransition ? nativeTick &+ 8 : nativeTick) | 1) &+ 1
                 do {
-                    ramRomGameplayOrchestrator = try GoldenEyeRamRomGameplayOrchestratorV6.fromEnvironment(
-                        request: request, atNativeTick: gameplayStartTick
-                    )
+                    if let prewarmedRequest = prewarmedRamRomGameplayRequest,
+                       prewarmedRequest == request,
+                       let prewarmedGameplay = prewarmedRamRomGameplay {
+                        try prewarmedGameplay.rebaseStartNativeTick(gameplayStartTick)
+                        ramRomGameplayOrchestrator = prewarmedGameplay
+                        prewarmedRamRomGameplayRequest = nil
+                        prewarmedRamRomGameplay = nil
+                    } else {
+                        ramRomGameplayOrchestrator = try GoldenEyeRamRomGameplayOrchestratorV6.fromEnvironment(
+                            request: request, atNativeTick: gameplayStartTick
+                        )
+                    }
                     ramRomGameplayLastFrame = nil
                 } catch {
                     if gameplayCameraSubmissionEnabled {
@@ -1152,7 +1348,7 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
             } catch {
                 sourceAuthorityFailure = "source RAMROM begin: \(error)"
                 writeRamRomFailure(error)
-                return true
+                return false
             }
         }
 
@@ -1168,7 +1364,7 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
                     focused: titleInput.focused,
                     sourceMask: mailboxInput?.sourceFlags ?? 0
                 )
-            ) else { return true }
+            ) else { return false }
             var didSubmitGameplayCamera = false
             if let gameplayOrchestrator = ramRomGameplayOrchestrator {
                 do {
@@ -1189,17 +1385,33 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
                     ramRomGameplayLastFrame = gameplayFrame
                     writeRamRomGameplayFrame(gameplayFrame, prefix: "source-runtime")
                     if gameplayCameraSubmissionEnabled {
+                        if let failure = takeGameplayCameraSubmissionFailure() {
+                            throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
+                                "V7 gameplay-camera submission failed: \(failure)"
+                            )
+                        }
                         guard let gameplayRenderer = renderer as? GoldenEyeStageGameplayCameraFrameRendererV7 else {
                             throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
                                 "V7 gameplay-camera route requires the source product renderer"
                             )
                         }
-                        try submitGameplayCamera(
-                            frame: gameplayFrame,
-                            nativeTick: nativeTick,
-                            receiver: gameplayRenderer
-                        )
-                        didSubmitGameplayCamera = true
+                        if nativeTick & 1 == 0,
+                           nativeTick >= gameplayCameraNextSubmissionTick,
+                           gameplayCameraSubmissionCount < gameplayCameraAnchorWindow {
+                            let accepted = try submitGameplayCamera(
+                                frame: gameplayFrame,
+                                nativeTick: nativeTick,
+                                receiver: gameplayRenderer,
+                                windowIndex: gameplayCameraSubmissionCount
+                            )
+                            if accepted {
+                                gameplayCameraFramePublished = true
+                                gameplayCameraSubmissionCount &+= 1
+                                gameplayCameraNextSubmissionTick = nativeTick &+
+                                    gameplayCameraAnchorInterval
+                            }
+                        }
+                        didSubmitGameplayCamera = gameplayCameraSubmissionCount > 0
                     }
                 } catch {
                     sourceAuthorityFailure = "source RAMROM gameplay step: \(error)"
@@ -1238,7 +1450,7 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
             sourceAuthorityFailure = "source RAMROM step: \(error)"
             _ = ramRomAuthority.stopAfterFailure()
             writeRamRomFailure(error)
-            return true
+            return false
         }
     }
 
@@ -1406,8 +1618,24 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
     private func submitGameplayCamera(
         frame: GoldenEyeRamRomGameplayFrameV6,
         nativeTick: UInt64,
-        receiver: GoldenEyeStageGameplayCameraFrameRendererV7
-    ) throws {
+        receiver: GoldenEyeStageGameplayCameraFrameRendererV7,
+        windowIndex: UInt32
+    ) throws -> Bool {
+        gameplayCameraSubmissionStateLock.lock()
+        guard !gameplayCameraSubmissionInFlight else {
+            gameplayCameraSubmissionStateLock.unlock()
+            return false
+        }
+        gameplayCameraSubmissionInFlight = true
+        gameplayCameraSubmissionStateLock.unlock()
+        var enqueued = false
+        defer {
+            if !enqueued {
+                gameplayCameraSubmissionStateLock.lock()
+                gameplayCameraSubmissionInFlight = false
+                gameplayCameraSubmissionStateLock.unlock()
+            }
+        }
         let source = frame.playerCamera.sourceSnapshot
         guard UInt32(source.stage_id) == frame.stageID,
               source.current_room != UInt32.max,
@@ -1415,6 +1643,34 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
             throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
                 "V7 gameplay-camera source snapshot or prepared stage is invalid"
             )
+        }
+        let visiblePropModelIndices: Set<UInt32>
+        if let cached = gameplayVisiblePropModelIndices[frame.stageID] {
+            visiblePropModelIndices = cached
+        } else {
+            let environment = ProcessInfo.processInfo.environment
+            guard let rawRoot = environment["GOLDENEYE_NATIVE_RAMROM_VISIBLE_ROOT"]
+                    ?? environment["GOLDENEYE_NATIVE_VISIBLE_DEPENDENCY_ROOT"],
+                  !rawRoot.isEmpty else {
+                throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
+                    "V7 gameplay-camera visible dependency root is unavailable"
+                )
+            }
+            let catalog = try GoldenEyeRamRomVisibleDependencyCatalogV6.load(
+                rootURL: URL(fileURLWithPath: rawRoot, isDirectory: true)
+            )
+            let indices = Set(catalog.dependencies.compactMap { dependency -> UInt32? in
+                guard dependency.category == "props",
+                      dependency.stages.contains(scene.stageName) else { return nil }
+                return dependency.modelIndex
+            })
+            guard !indices.isEmpty else {
+                throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
+                    "V7 gameplay-camera visible prop dependency set is empty for stage \(scene.stageName)"
+                )
+            }
+            gameplayVisiblePropModelIndices[frame.stageID] = indices
+            visiblePropModelIndices = indices
         }
 
         func vector<T>(_ tuple: T) -> SIMD3<Int32> {
@@ -1459,83 +1715,72 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
             // V7 adapter validates that room against the source table and
             // lowerer; it never invents portal visibility from an identity
             // camera. Static prop indices come from the guarded setup rows.
-            visibleRoomIndices: [UInt32(source.current_room)],
+            visibleRoomIndices:
+                GoldenEyeStageEnvironmentCameraAdapterV6.sourceGameplayVisibleRoomIDs(
+                    scene: scene,
+                    currentRoom: UInt32(source.current_room)
+                ),
             visibleStaticPropObjectIndices:
-                GoldenEyeStageGameplayCameraPacketAdapterV7.staticPropObjectIndices(in: scene),
+                GoldenEyeStageGameplayCameraPacketAdapterV7.staticPropObjectIndices(
+                    in: scene, visiblePropModelIndices: visiblePropModelIndices
+                ),
             dynamicPropTransforms: dynamicDoorProps
         )
-        try receiver.submit(stageGameplayCameraSnapshot: snapshot)
-        try? "stageGameplayCameraOwner=1 demo=\(snapshot.demoID) stage=\(snapshot.stageID) nativeTick=\(snapshot.nativeTick) room=\(source.current_room) props=\(snapshot.visibleStaticPropObjectIndices.count) dynamicDoors=\(dynamicDoorProps.count)\n".write(
-            toFile: "/tmp/goldeneye-stage-gameplay-camera-owner.log",
-            atomically: false,
-            encoding: .utf8
-        )
+        guard let productRenderer = receiver as? GoldenEyeSourceProductRendererV6 else {
+            throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
+                "V7 gameplay-camera submission requires the source product renderer"
+            )
+        }
+        let capturedRoom = source.current_room
+        let capturedDynamicDoorCount = dynamicDoorProps.count
+        let capturedWindowIndex = windowIndex
+        gameplayCameraSubmissionQueue.async {
+            defer {
+                self.gameplayCameraSubmissionStateLock.lock()
+                self.gameplayCameraSubmissionInFlight = false
+                self.gameplayCameraSubmissionStateLock.unlock()
+            }
+            do {
+                try productRenderer.submit(stageGameplayCameraSnapshot: snapshot)
+                self.appendGameplayCameraOwnerEvidence(
+                    "stageGameplayCameraOwner=1 windowIndex=\(capturedWindowIndex) demo=\(snapshot.demoID) stage=\(snapshot.stageID) nativeTick=\(snapshot.nativeTick) room=\(capturedRoom) props=\(snapshot.visibleStaticPropObjectIndices.count) dynamicDoors=\(capturedDynamicDoorCount)"
+                )
+            } catch {
+                self.gameplayCameraSubmissionStateLock.lock()
+                self.gameplayCameraSubmissionFailure = String(describing: error)
+                self.gameplayCameraSubmissionStateLock.unlock()
+                self.appendGameplayCameraOwnerEvidence(
+                    "stageGameplayCameraOwner=0 error=\(error)"
+                )
+            }
+        }
+        enqueued = true
+        return true
     }
 
     /// Loads one guarded stage scene packet at the RAMROM handoff. The packet
     /// contains copied background rooms and bounded decoded resource bytes;
     /// it deliberately does not start gameplay or claim a renderer path.
     private func prepareStageScene(stageID: UInt32) -> Bool {
-        if stageScenePackets[stageID] != nil { return true }
+        if stageScenePackets[stageID] != nil {
+            do {
+                _ = try activateStageLifecycle(stageID: stageID)
+                return true
+            } catch {
+                try? "stageLifecycleError=\(error) stage=\(stageID)\n".write(
+                    toFile: "/tmp/goldeneye-stage-scene-owner.log",
+                    atomically: false,
+                    encoding: .utf8
+                )
+                return false
+            }
+        }
         if !stageScenePreparationAttempted {
             stageScenePreparationAttempted = true
             do {
-                    let catalog: GoldenEyeStageAssetCatalog
-                    if let root = ProcessInfo.processInfo.environment["GOLDENEYE_NATIVE_STAGE_ASSET_ROOT"],
-                       !root.isEmpty {
-                        catalog = try GoldenEyeStageAssetCatalog.load(
-                            stageAssetRoot: URL(fileURLWithPath: root, isDirectory: true)
-                        )
-                    } else {
-                        catalog = try GoldenEyeStageAssetCatalog.fromEnvironment().get()
-                    }
-                    for packet in try GoldenEyeStageScenePacket.loadAll(catalog: catalog) {
-                        stageScenePackets[packet.stageID] = packet
-                        guard let viewport = GoldenEyeProjectionV10.ViewportV10(
-                            drawableWidth: 440, drawableHeight: 330
-                        ), let projection = GoldenEyeProjectionV10.PacketV10(
-                            viewport: viewport,
-                            modelView: .identity,
-                            projection: .identity
-                        ) else {
-                            throw GoldenEyeStageSourceEnvironmentDrawPacketError.noPortalGeometry
-                        }
-                        let environmentPacket = try GoldenEyeStageSourceEnvironmentDrawPacketBuilderV6.make(
-                            scene: packet,
-                            viewport: viewport,
-                            projection: projection
-                        )
-                        stageEnvironmentPackets[packet.stageID] = environmentPacket
-                        stageMaterialPackets[packet.stageID] = try GoldenEyeStageSourceMaterialLowererV6.make(
-                            scene: packet
-                        )
-                    }
-                    let expectedStageIDs: Set<UInt32> = [9, 20, 25, 26, 33, 34, 35]
-                    guard Set(stageScenePackets.keys) == expectedStageIDs,
-                          Set(stageEnvironmentPackets.keys) == expectedStageIDs,
-                          Set(stageMaterialPackets.keys) == expectedStageIDs else {
-                        throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
-                            "corrected stage catalog did not produce the complete seven-stage packet set"
-                        )
-                    }
-                    let environmentAggregate = expectedStageIDs.sorted().reduce(UInt64(14_695_981_039_346_656_037)) { hash, id in
-                        GoldenEyeCastSceneV6Hash.mix(
-                            GoldenEyeCastSceneV6Hash.mix(hash, UInt64(id)),
-                            stageEnvironmentPackets[id]?.packetHash ?? 0
-                        )
-                    }
-                    let materialAggregate = expectedStageIDs.sorted().reduce(UInt64(14_695_981_039_346_656_037)) { hash, id in
-                        GoldenEyeCastSceneV6Hash.mix(
-                            GoldenEyeCastSceneV6Hash.mix(hash, UInt64(id)),
-                            stageMaterialPackets[id]?.packetHash ?? 0
-                        )
-                    }
-                    try? "catalogHash=\(catalog.catalogHash) stages=\(stageScenePackets.count) allSeven=1 environmentAggregate=\(environmentAggregate) materialAggregate=\(materialAggregate)\n".write(
-                        toFile: "/tmp/goldeneye-stage-scene-owner.log",
-                        atomically: false,
-                        encoding: .utf8
-                    )
+                try prepareStageSceneCatalog()
             } catch {
+                stageScenePreparationAttempted = false
                 try? "scenePreparationError=\(error)\n".write(
                     toFile: "/tmp/goldeneye-stage-scene-owner.log",
                     atomically: false,
@@ -1543,7 +1788,142 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
                 )
             }
         }
-        return stageScenePackets[stageID] != nil
+        guard stageScenePackets[stageID] != nil else { return false }
+        do {
+            _ = try activateStageLifecycle(stageID: stageID)
+            return true
+        } catch {
+            try? "stageLifecycleError=\(error) stage=\(stageID)\n".write(
+                toFile: "/tmp/goldeneye-stage-scene-owner.log",
+                atomically: false,
+                encoding: .utf8
+            )
+            return false
+        }
+    }
+
+    /// Prepare all seven immutable stage packets before the RAMROM handoff.
+    /// Release invokes this during owner initialization when the V7 route is
+    /// enabled, keeping the expensive catalog/transfer/material work outside
+    /// the measured 120 Hz source timeline. The owner still activates only
+    /// the requested stage at the handoff and retains all fail-closed guards.
+    private func prepareStageSceneCatalog() throws {
+        let catalog: GoldenEyeStageAssetCatalog
+        if let root = ProcessInfo.processInfo.environment["GOLDENEYE_NATIVE_STAGE_ASSET_ROOT"],
+           !root.isEmpty {
+            catalog = try GoldenEyeStageAssetCatalog.load(
+                stageAssetRoot: URL(fileURLWithPath: root, isDirectory: true)
+            )
+        } else {
+            catalog = try GoldenEyeStageAssetCatalog.fromEnvironment().get()
+        }
+        stageLifecycle = try GoldenEyeStageLifecycleV6(catalog: catalog)
+        var transferQueue = try GoldenEyeStageTransferQueueV6(
+            catalog: catalog,
+            maxPending: 8,
+            maxChunkBytes: 64 * 1024
+        )
+        let packets = try GoldenEyeStageScenePacket.loadAll(
+            catalog: catalog,
+            transferQueue: &transferQueue
+        )
+        stageTransferQueue = transferQueue
+        for packet in packets {
+            stageScenePackets[packet.stageID] = packet
+            guard let viewport = GoldenEyeProjectionV10.ViewportV10(
+                drawableWidth: 440, drawableHeight: 330
+            ), let projection = GoldenEyeProjectionV10.PacketV10(
+                viewport: viewport,
+                modelView: .identity,
+                projection: .identity
+            ) else {
+                throw GoldenEyeStageSourceEnvironmentDrawPacketError.noPortalGeometry
+            }
+            let environmentPacket = try GoldenEyeStageSourceEnvironmentDrawPacketBuilderV6.make(
+                scene: packet,
+                viewport: viewport,
+                projection: projection
+            )
+            stageEnvironmentPackets[packet.stageID] = environmentPacket
+            stageMaterialPackets[packet.stageID] = try GoldenEyeStageSourceMaterialLowererV6.make(
+                scene: packet
+            )
+        }
+        let expectedStageIDs: Set<UInt32> = [9, 20, 25, 26, 33, 34, 35]
+        guard Set(stageScenePackets.keys) == expectedStageIDs,
+              Set(stageEnvironmentPackets.keys) == expectedStageIDs,
+              Set(stageMaterialPackets.keys) == expectedStageIDs else {
+            throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
+                "corrected stage catalog did not produce the complete seven-stage packet set"
+            )
+        }
+        let environmentAggregate = expectedStageIDs.sorted().reduce(UInt64(14_695_981_039_346_656_037)) { hash, id in
+            GoldenEyeCastSceneV6Hash.mix(
+                GoldenEyeCastSceneV6Hash.mix(hash, UInt64(id)),
+                stageEnvironmentPackets[id]?.packetHash ?? 0
+            )
+        }
+        let materialAggregate = expectedStageIDs.sorted().reduce(UInt64(14_695_981_039_346_656_037)) { hash, id in
+            GoldenEyeCastSceneV6Hash.mix(
+                GoldenEyeCastSceneV6Hash.mix(hash, UInt64(id)),
+                stageMaterialPackets[id]?.packetHash ?? 0
+            )
+        }
+        appendOwnerEvidenceLine(
+            "catalogHash=\(catalog.catalogHash) stages=\(stageScenePackets.count) allSeven=1 environmentAggregate=\(environmentAggregate) materialAggregate=\(materialAggregate)\n",
+            path: "/tmp/goldeneye-stage-scene-owner.log"
+        )
+    }
+
+    private func activateStageLifecycle(
+        stageID: UInt32
+    ) throws -> GoldenEyeStageLifecycleSnapshotV6 {
+        guard var lifecycle = stageLifecycle else {
+            throw GoldenEyeStageLifecycleErrorV6.unknownStage(stageID)
+        }
+        if let activeStageLifecycleID, activeStageLifecycleID != stageID {
+            _ = try lifecycle.deactivate(stageID: activeStageLifecycleID)
+            _ = try lifecycle.unload(stageID: activeStageLifecycleID)
+            if var transferQueue = stageTransferQueue {
+                _ = try transferQueue.deactivate(stageID: activeStageLifecycleID)
+                _ = try transferQueue.unload(stageID: activeStageLifecycleID)
+                stageTransferQueue = transferQueue
+            }
+        }
+        let current = try lifecycle.snapshot(stageID: stageID)
+        let snapshot: GoldenEyeStageLifecycleSnapshotV6
+        switch current.phase {
+        case .unloaded:
+            _ = try lifecycle.load(stageID: stageID)
+            snapshot = try lifecycle.activate(stageID: stageID)
+        case .loaded:
+            snapshot = try lifecycle.activate(stageID: stageID)
+        case .active:
+            snapshot = current
+        }
+        stageLifecycle = lifecycle
+        if var transferQueue = stageTransferQueue {
+            let payloadSnapshot = try transferQueue.activate(stageID: stageID)
+            let transferSnapshot = transferQueue.snapshot
+            stageTransferQueue = transferQueue
+            let payloadLine = "stageTransferQueue=active stage=\(payloadSnapshot.stageID) "
+                + "resources=\(payloadSnapshot.resourceCount) "
+                + "decodedBytes=\(payloadSnapshot.decodedBytes) "
+                + "decodedHash=\(payloadSnapshot.decodedHash) "
+                + "loadCount=\(payloadSnapshot.loadCount) "
+                + "completedRequests=\(transferSnapshot.completedCount) "
+                + "transferHash=\(transferSnapshot.transferHash)\n"
+            appendOwnerEvidenceLine(
+                payloadLine,
+                path: "/tmp/goldeneye-stage-scene-owner.log"
+            )
+        }
+        activeStageLifecycleID = stageID
+        appendOwnerEvidenceLine(
+            "stageLifecycle=active stage=\(snapshot.stageID) phase=\(snapshot.phase.rawValue) loadCount=\(snapshot.loadCount) handles=\(snapshot.resourceHandles.count) stateHash=\(snapshot.stateHash)\n",
+            path: "/tmp/goldeneye-stage-scene-owner.log"
+        )
+        return snapshot
     }
 
     private func writeRamRomEvent(
@@ -1555,10 +1935,9 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
             + "demo=\(event.demoID) stage=\(event.stageID) packet=\(event.packetIndex)/\(event.packetCount) "
             + "flags=\(event.flags) diagnostic=\(event.diagnosticCode) "
             + "recordingHash=\(event.recordingHash) rngHash=\(event.rngHash)\n"
-        try? line.write(
-            toFile: "/tmp/goldeneye-ramrom-playback-owner.log",
-            atomically: true,
-            encoding: .utf8
+        appendOwnerEvidenceLine(
+            line,
+            path: "/tmp/goldeneye-ramrom-playback-owner.log"
         )
     }
 
@@ -1579,10 +1958,9 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
             + "unsupportedVisibleMask=\(coverage?.unsupportedVisibleCommandMask ?? UInt32.max) "
             + "unsupportedVisibleCount=\(coverage?.unsupportedVisibleCommandCount ?? UInt32.max) "
             + "flags=\(frame.eventFlags) diagnostic=\(frame.diagnosticCode)\n"
-        try? line.write(
-            toFile: "/tmp/goldeneye-ramrom-playback-owner.log",
-            atomically: true,
-            encoding: .utf8
+        appendOwnerEvidenceLine(
+            line,
+            path: "/tmp/goldeneye-ramrom-playback-owner.log"
         )
     }
 
@@ -1601,11 +1979,21 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
             + "ownerHash=\(frame.stateHash) "
             + "readiness=\(frame.readiness.isReady ? 1 : 0) "
             + "missing=\(frame.readiness.missingFields.joined(separator: ","))\n"
-        try? line.write(
-            toFile: "/tmp/goldeneye-ramrom-gameplay-owner.log",
-            atomically: true,
-            encoding: .utf8
+        appendOwnerEvidenceLine(
+            line,
+            path: "/tmp/goldeneye-ramrom-gameplay-owner.log"
         )
+    }
+
+    private func appendOwnerEvidenceLine(_ line: String, path: String) {
+        let url = URL(fileURLWithPath: path)
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            try? handle.write(contentsOf: Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? Data(line.utf8).write(to: url, options: .atomic)
+        }
     }
 
     private func writeRamRomFailure(_ error: Error) {

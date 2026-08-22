@@ -194,6 +194,11 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     private let presentationTreatment: GoldenEyeSourceScenePresentationTreatmentV6
     private let state: GoldenEyeMetalDeviceState
     private let stageAssetRootURL: URL?
+    /// Owner submissions and the display-link callback share the immutable
+    /// scene slots below. Keep publication/read atomic so a renderer cannot
+    /// observe the intentional pre-build invalidation window as a missing
+    /// frame while a complete replacement is being lowered.
+    private let frameStateLock = NSLock()
     private var latestTitleSnapshot: GoldenEyeTitleSnapshot?
     private var latestSourceFrame: GoldenEyeSourceFrontendFrameV6?
     private var latestSource2DFrame: GoldenEyeSource2DFrameV6?
@@ -260,6 +265,12 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     /// decode.
     private var gunbarrelBloodFrameIndex: UInt32 = 0
     private var gunbarrelBloodTickCount: UInt32 = 0
+    /// The source callback that decodes continuation 41 is observed after
+    /// the authority step has already consumed the previous mailbox value.
+    /// Latch completion after continuation 40 and carry it across the
+    /// intervening native draw-only frames so continuation 41 consumes it at
+    /// the exact source transition tick.
+    private var gunbarrelBloodCompletionPending = false
 
 
     var stageTextureDependenciesReady: Bool {
@@ -652,6 +663,7 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         gunbarrelCurrentAnchorScene = nil
         gunbarrelCurrentAnchorPass = nil
         gunbarrelTransitionXQ16 = -100 * 65_536
+        gunbarrelBloodCompletionPending = false
         pendingModelExecutionResult = nil
     }
 
@@ -1002,7 +1014,22 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     /// resource set is propagated as a typed failure before any drawable is
     /// touched.
     func submit(sourceFrontendFrame: GoldenEyeSourceFrontendFrameV6) throws {
-        if sourceFrontendFrame.screen != UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_GUNBARREL) {
+        frameStateLock.lock()
+        defer { frameStateLock.unlock() }
+        let wasGunbarrel = latestSourceFrame?.screen ==
+            UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_GUNBARREL)
+        let isGunbarrel = sourceFrontendFrame.screen ==
+            UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_GUNBARREL)
+        if !wasGunbarrel && isGunbarrel {
+            // The source model-load ledger is intentionally one-shot, but the
+            // attract loop may re-enter Gunbarrel after a completed Cast/demo.
+            // Reset the copied blood stream at each screen entry so a prior
+            // 41-frame completion cannot authorize the next cycle early.
+            gunbarrelBloodFrameIndex = 0
+            gunbarrelBloodTickCount = 0
+            gunbarrelBloodCompletionPending = false
+        }
+        if !isGunbarrel {
             gunbarrelPreviousAnchorScene = nil
             gunbarrelCurrentAnchorScene = nil
             gunbarrelCurrentAnchorPass = nil
@@ -1065,6 +1092,8 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     func submit(
         stageGameplayCameraSnapshot snapshot: GoldenEyeStageGameplayCameraSnapshotV7
     ) throws {
+        frameStateLock.lock()
+        defer { frameStateLock.unlock() }
         // Clear the previous route before validating the replacement. A
         // rejected camera/catalog packet must leave no stale title or stage
         // frame available to the supplied-drawable render callback.
@@ -1165,7 +1194,7 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         pendingModelExecutionResult = nil
         lastRenderableSceneScreen = UInt32(GE_SOURCE_FRAME_V6_SCREEN_RAMROM)
 
-        try? (
+        appendEvidenceLine(
             "stageGameplayCameraSubmit=1 releaseStageSubmission=1 "
             + "demo=\(gameplayPacket.demoID) nativeTick=\(gameplayPacket.nativeTick) "
             + "stage=\(gameplayPacket.stageID) cameraPacketHash=\(gameplayPacket.packetHash) "
@@ -1177,11 +1206,8 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             + "subsetHash=\(gameplayPacket.subset.metadataHash) "
             + "unsupportedMask=0x\(String(gameplayPacket.subset.unsupportedMask, radix: 16)) "
             + "fullSceneUnsupportedMask=0x\(String(gameplayPacket.subset.fullSceneUnsupportedMask, radix: 16)) "
-            + "draws=\(gameplayPacket.composition.snapshot.drawCommands.count) presentable=1\n"
-        ).write(
-            toFile: "/tmp/goldeneye-source-product-renderer-v6-stage-gameplay-camera.log",
-            atomically: false,
-            encoding: .utf8
+            + "draws=\(gameplayPacket.composition.snapshot.drawCommands.count) presentable=1\n",
+            path: "/tmp/goldeneye-source-product-renderer-v6-stage-gameplay-camera.log"
         )
     }
 
@@ -1193,6 +1219,8 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         sourceEnvironmentPacket packet: GoldenEyeStageBackgroundDrawPacket,
         nativeTick: UInt64
     ) throws {
+        frameStateLock.lock()
+        defer { frameStateLock.unlock() }
         latestStageComposition = nil
         latestStageScene = try composedStageSnapshot(
             packet: packet,
@@ -1229,6 +1257,8 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         materialPacket: GoldenEyeStageSourceMaterialPacketV6,
         nativeTick: UInt64
     ) throws {
+        frameStateLock.lock()
+        defer { frameStateLock.unlock() }
         latestStageComposition = nil
         latestStageScene = try composedStageSnapshot(
             packet: packet,
@@ -1344,6 +1374,8 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     /// copied source values; no source-index or diagnostic-character gate is
     /// used here.
     func submit(castSceneRequest request: GoldenEyeCastSourceSceneRequestV6) throws {
+        frameStateLock.lock()
+        defer { frameStateLock.unlock() }
         guard let sidecar = gunbarrelSidecar, sidecar.resolvesGunbarrelModels else {
             throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
                 "Cast animation/attachment sidecar is missing"
@@ -1611,6 +1643,8 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         castFrame: GoldenEyeCastSceneFrameV6,
         frameResources: GoldenEyeSourceProductFrameResourcesV6
     ) throws {
+        frameStateLock.lock()
+        defer { frameStateLock.unlock() }
         latestStageFrameResources = frameResources
         latestScene = nil
         latestStageScene = nil
@@ -1844,8 +1878,7 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
                     "validated Gunbarrel animation/attachment sidecar is missing"
                 )
             }
-            gunbarrelBloodFrameIndex = 0
-            gunbarrelBloodTickCount = 0
+            resetGunbarrelBloodStream()
             return
         }
         guard let modelName = Self.modelNameForID[model],
@@ -1854,6 +1887,14 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
                 "prepared model load is missing for source model \(model)"
             )
         }
+    }
+
+    func resetGunbarrelBloodStream() {
+        frameStateLock.lock()
+        defer { frameStateLock.unlock() }
+        gunbarrelBloodFrameIndex = 0
+        gunbarrelBloodTickCount = 0
+        gunbarrelBloodCompletionPending = false
     }
 
     /// The source owner submits a complete copied event frame.  A frame whose
@@ -2029,6 +2070,8 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         modelRequest request: GoldenEyeSourceProductModelRequestV6,
         frameResources: GoldenEyeSourceProductFrameResourcesV6
     ) throws -> GoldenEyeSourceProductModelExecutionResultV6 {
+        frameStateLock.lock()
+        defer { frameStateLock.unlock() }
         // Preserve the last complete scene until the replacement model build
         // reaches its publication point.
         latestGunbarrelPass = nil
@@ -2053,6 +2096,8 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     /// The owner consumes this value and passes its five fixed-width fields
     /// to ``GoldenEyeSourceFrontendAuthorityV6.step`` on the next tick.
     func takeModelExecutionResult() -> GoldenEyeSourceProductModelExecutionResultV6? {
+        frameStateLock.lock()
+        defer { frameStateLock.unlock() }
         defer { pendingModelExecutionResult = nil }
         return pendingModelExecutionResult
     }
@@ -2401,6 +2446,9 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             )
         }
         let gunbarrelMode = request.subphase &+ 2
+        if gunbarrelMode != 5 {
+            gunbarrelBloodCompletionPending = false
+        }
         let pipelineEvent = sourceFrame?.renderEvents.first {
             $0.operation == GE_SOURCE_FRONTEND_RUNTIME_V6_RENDER_GUNBARREL_PIPELINE
         }
@@ -2539,6 +2587,14 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             // displays frame one and the 41st continuation displays frame 41.
             gunbarrelBloodTickCount = min(gunbarrelBloodTickCount &+ 1, 41)
             gunbarrelBloodFrameIndex = gunbarrelBloodTickCount
+            // The result mailbox is consumed one native tick before the
+            // source callback that can advance the state. Once continuation
+            // 40 is visible, retain completion through draw-only substeps so
+            // continuation 41 can consume it without changing the source
+            // frame count.
+            if gunbarrelBloodTickCount >= 40 {
+                gunbarrelBloodCompletionPending = true
+            }
         }
         let bloodFrameIndex = gunbarrelBloodFrameIndex
         let bodyModel = try preparation.model(named: "suitbond")
@@ -2793,7 +2849,10 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
                 } == true
                 && (sourceFrame?.nativeTick ?? 0) & 1 == 1
         )
-        guard bloodTickRequested, !sidecar.bloodEncoded.isEmpty else {
+        let bloodPlaybackFrame = request.subphase == 3
+            && sourceFrame?.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_GUNBARREL)
+        guard (bloodTickRequested || (bloodPlaybackFrame && gunbarrelBloodCompletionPending)),
+              !sidecar.bloodEncoded.isEmpty else {
             return .executed(
                 model: request.model,
                 operation: request.operation,
@@ -2801,7 +2860,7 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
                 value1: snapshot.summary.draw_count
             )
         }
-        let complete = gunbarrelBloodFrameIndex >= 41
+        let complete = gunbarrelBloodCompletionPending || gunbarrelBloodFrameIndex >= 41
         return .sourceResult(
             model: request.model,
             operation: UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_OP_BLOOD_TICK),
@@ -3655,6 +3714,8 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     /// rendering authority: without a complete source frame and explicit
     /// transforms, the next render remains fail-closed.
     func submit(titleSnapshot: GoldenEyeTitleSnapshot) {
+        frameStateLock.lock()
+        defer { frameStateLock.unlock() }
         latestTitleSnapshot = titleSnapshot
         latestStageScene = nil
         latestStagePacketHash = 0
@@ -3672,6 +3733,8 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     }
 
     func render(drawable: any CAMetalDrawable, timing: GE120DisplayTiming) -> Bool {
+        frameStateLock.lock()
+        defer { frameStateLock.unlock() }
         _ = timing
         guard !didShutdown else { return false }
         let stageScene = latestStageScene
@@ -3860,19 +3923,22 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             + "visibleProps=\(visibleProps) visibleGuards=\(visibleGuards) "
             + "visibleEffects=\(visibleEffects) visibleHUD=\(visibleHUD) "
             + "slot=\(evidence.slotIndex) signal=\(evidence.signalValue)\n"
-        try? line.write(
-            to: URL(fileURLWithPath: "/tmp/goldeneye-source-product-renderer-v6-frames.log"),
-            atomically: false,
-            encoding: .utf8
-        )
+        appendEvidenceLine(line, path: "/tmp/goldeneye-source-product-renderer-v6-frames.log")
     }
 
     private func recordFailure(_ error: Error) {
         let line = "failure=\(error)\n"
-        try? line.write(
-            to: URL(fileURLWithPath: "/tmp/goldeneye-source-product-renderer-v6-failures.log"),
-            atomically: false,
-            encoding: .utf8
-        )
+        appendEvidenceLine(line, path: "/tmp/goldeneye-source-product-renderer-v6-failures.log")
+    }
+
+    private func appendEvidenceLine(_ line: String, path: String) {
+        let url = URL(fileURLWithPath: path)
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            try? handle.write(contentsOf: Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? Data(line.utf8).write(to: url, options: .atomic)
+        }
     }
 }

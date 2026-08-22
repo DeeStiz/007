@@ -2,3 +2,8 @@
 #include "ge_player_camera_owner_v6.h"
 #include "ge_guard_door_owner_v6.h"
 #include "ge_weapon_effect_owner_v6.h"
+#include "ge_ramrom_playback_v5.h"
+#include "ge_source_gbi_v6.h"
+#include "ge_source_texture_coordinates_v6.h"
+#include "ge_source_frontend_runtime_v6.h"
+#include "ge_stage_v5.h"

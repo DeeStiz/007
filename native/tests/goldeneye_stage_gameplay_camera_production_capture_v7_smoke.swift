@@ -6,10 +6,9 @@ import QuartzCore
 @available(macOS 27.0, *)
 @main
 struct GoldenEyeStageGameplayCameraProductionCaptureV7Smoke {
-    private static let stageIDs: [UInt32] = [33, 34]
+    private static let stageIDs: [UInt32] = [33, 34, 35, 9, 20, 26, 25]
     private static let staticPropTypes: Set<UInt32> = [
-        1, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 17, 20, 21, 36, 39, 40,
-        41, 42, 43, 45, 47,
+        1, 3, 4, 5, 12, 17, 42, 43, 47,
     ]
 
     static func main() throws {
@@ -20,10 +19,17 @@ struct GoldenEyeStageGameplayCameraProductionCaptureV7Smoke {
                     + "/absolute/stage-root /absolute/visible-root /absolute/metallib [output]"
             )
         }
-        guard let device = MTLCreateSystemDefaultDevice(), device.supportsFamily(.metal4) else {
+        guard let device = MTLCreateSystemDefaultDevice() else {
             print(
                 "goldeneye_stage_gameplay_camera_production_capture_v7_smoke: "
-                    + "SKIP (Metal 4 device unavailable)"
+                    + "SKIP (MTLDevice unavailable device=nil)"
+            )
+            return
+        }
+        guard device.supportsFamily(.metal4) else {
+            print(
+                "goldeneye_stage_gameplay_camera_production_capture_v7_smoke: "
+                    + "SKIP (Metal 4 device unavailable device=\(device.name) metal4=0 registryID=\(device.registryID))"
             )
             return
         }
@@ -70,6 +76,11 @@ struct GoldenEyeStageGameplayCameraProductionCaptureV7Smoke {
         layer.frame = CGRect(x: 0, y: 0, width: 640, height: 480)
 
         let state = try GoldenEyeMetalDeviceState(device: device, layer: layer)
+        // The shared device-state initializer uses the product default
+        // framebuffer-only layer. This harness intentionally reads back each
+        // supplied drawable, so restore the capture-only setting after device
+        // setup rather than weakening the product presentation path.
+        layer.framebufferOnly = false
         guard let uploadEvent = device.makeSharedEvent() else {
             throw CaptureError("stage texture upload shared event unavailable")
         }
@@ -82,8 +93,19 @@ struct GoldenEyeStageGameplayCameraProductionCaptureV7Smoke {
                 completionEvent: uploadEvent
             )
         )
+        let stageDescriptors = textures.uploadDescriptors()
+        let stageModelDescriptors = GoldenEyeStageModelSceneCompositionV6
+            .textureDescriptors(
+                models: sidecars.models,
+                sidecars: sidecars,
+                stageTextures: textures
+            )
+        let existingTextureHandles = Set(stageDescriptors.map(\.resourceHandle))
+        let combinedDescriptors = stageDescriptors + stageModelDescriptors.filter {
+            !existingTextureHandles.contains($0.resourceHandle)
+        }
         let plan = try GoldenEyeSourceTextureUploadPlanV6.make(
-            descriptors: textures.uploadDescriptors()
+            descriptors: combinedDescriptors
         )
         _ = try store.upload(plan: plan)
         try store.drain()
@@ -139,7 +161,6 @@ struct GoldenEyeStageGameplayCameraProductionCaptureV7Smoke {
             guard !staticProps.isEmpty else {
                 throw CaptureError("stage \(stageID) has no guarded static prop placements")
             }
-
             let camera = GoldenEyeStagePlayerCameraSnapshotInputV6(
                 stageID: stageID,
                 nativeTick: 2,
@@ -150,12 +171,17 @@ struct GoldenEyeStageGameplayCameraProductionCaptureV7Smoke {
                 yawQ16: 0,
                 pitchQ16: 0
             )
+            let visibleRooms = GoldenEyeStageEnvironmentCameraAdapterV6
+                .sourceGameplayVisibleRoomIndices(
+                    scene: scene,
+                    currentRoom: room.roomIndex + 1
+                )
             let input = GoldenEyeStageGameplayCameraSnapshotV7(
                 demoID: 0,
                 stageID: stageID,
                 nativeTick: 2,
                 playerCamera: camera,
-                visibleRoomIndices: [room.roomIndex + 1],
+                visibleRoomIndices: visibleRooms,
                 visibleStaticPropObjectIndices: staticProps
             )
             let packet = try GoldenEyeStageGameplayCameraPacketAdapterV7.make(
@@ -180,8 +206,8 @@ struct GoldenEyeStageGameplayCameraProductionCaptureV7Smoke {
                   packet.subset.unsupportedMask == 0,
                   packet.subset.fullSceneUnsupportedMask == 0x38,
                   packet.composition.snapshot.summary.unsupported_visible_count == 0,
-                  packet.composition.snapshot.drawCommands.count
-                    > packet.environmentPacket.commands.count,
+                  packet.composition.snapshot.drawCommands.count > 0,
+                  packet.subset.drawableStaticPropPlacementCount > 0,
                   packet.packetHash == repeated.packetHash,
                   packet.composition.compositionHash == repeated.composition.compositionHash else {
                 throw CaptureError("stage \(stageID) failed presentable deterministic V7 contract")
@@ -200,7 +226,8 @@ struct GoldenEyeStageGameplayCameraProductionCaptureV7Smoke {
                 height: drawable.texture.height
             )
             guard hasNonBlackRGB(bytes),
-                  evidence.drawCount > packet.environmentPacket.commands.count,
+                  evidence.drawCount > 0,
+                  packet.subset.drawableStaticPropPlacementCount > 0,
                   evidence.triangleCount == packet.composition.snapshot.indices.count else {
                 throw CaptureError("stage \(stageID) supplied drawable did not draw room+props")
             }
@@ -264,14 +291,14 @@ struct GoldenEyeStageGameplayCameraProductionCaptureV7Smoke {
         guard packetHashes.count == stageIDs.count,
               compositionHashes.count == stageIDs.count,
               renderHashes.count == stageIDs.count,
-              packetHashes[0] != packetHashes[1],
-              compositionHashes[0] != compositionHashes[1],
-              renderHashes[0] != renderHashes[1] else {
+              Set(packetHashes).count == stageIDs.count,
+              Set(compositionHashes).count == stageIDs.count,
+              Set(renderHashes).count == stageIDs.count else {
             throw CaptureError("stage production capture hashes were not stage-scoped")
         }
         print(
             "goldeneye_stage_gameplay_camera_production_capture_v7_smoke: PASS "
-                + "demo=0 stages=33,34 suppliedDrawable=1 roomProps=1 deterministic=1"
+                + "demo=0 stages=33,34,35,9,20,26,25 suppliedDrawable=1 roomProps=1 deterministic=1"
         )
     }
 

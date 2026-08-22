@@ -65,6 +65,7 @@ for name in expected.keys.sorted() {
     }
     for node in model.nodes {
         check(model.node(id: node.id) == node, "\(name) node lookup")
+        check(node.kind != .unknown, "\(name) unknown ModelNode opcode")
     }
     for list in model.displayLists {
         check(model.displayList(handle: list.handle) == list, "\(name) display-list lookup")
@@ -75,6 +76,17 @@ for name in expected.keys.sorted() {
     models[name] = model
         print("source-model-v6: \(name) counts=\(actual) packet=\(model.header.packetHash.map { String(format: "%02x", $0) }.joined()) PASS")
 }
+
+let nodeKinds = Set(models.values.flatMap { $0.nodes.map(\.kind) })
+check(GoldenEyeSourceModelV6.NodeKind.requiredM7.isSubset(of: nodeKinds),
+      "M7 required ModelNode families missing: \(GoldenEyeSourceModelV6.NodeKind.requiredM7.subtracting(nodeKinds))")
+let nodeKindCounts = GoldenEyeSourceModelV6.NodeKind.allCases.compactMap { kind -> String? in
+    let count = models.values.reduce(0) { total, model in
+        total + model.nodes.filter { $0.kind == kind }.count
+    }
+    return count == 0 ? nil : "\(kind.rawValue)=\(count)"
+}.joined(separator: ",")
+print("source-model-v6 M7 node families: \(nodeKindCounts) required=\(GoldenEyeSourceModelV6.NodeKind.requiredM7.count) PASS")
 
 let supported = GESourceModelCompilerV6.supportedMacros
 check(macros.isSubset(of: supported), "exercised macro coverage unknown=\(macros.subtracting(supported))")

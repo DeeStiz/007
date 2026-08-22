@@ -286,6 +286,36 @@ enum GoldenEyeStageEnvironmentCameraAdapterV6 {
         )
     }
 
+    /// Returns the source background visibility seed for a gameplay camera:
+    /// the authoritative current room plus its directly connected portal
+    /// neighbors. The returned IDs are copied source room IDs; no recursive
+    /// visibility or guessed category is introduced at this boundary.
+    static func sourceGameplayVisibleRoomIndices(
+        scene: GoldenEyeStageScenePacket,
+        currentRoom: UInt32
+    ) -> [UInt32] {
+        oneHopVisibleRooms(scene: scene, currentRoom: currentRoom)
+    }
+
+    /// Source-facing room IDs for live gameplay snapshots. The historical
+    /// `sourceGameplayVisibleRoomIndices` helper returns zero-based packet
+    /// indices for structural fixtures; the production camera contract
+    /// carries setup/STAN IDs and the `input` adapter maps them once.
+    static func sourceGameplayVisibleRoomIDs(
+        scene: GoldenEyeStageScenePacket,
+        currentRoom: UInt32
+    ) -> [UInt32] {
+        var sourceIDs: Set<UInt32> = [currentRoom]
+        for portal in scene.setup.portals {
+            if portal.connectedRoom1 == currentRoom {
+                sourceIDs.insert(portal.connectedRoom2)
+            } else if portal.connectedRoom2 == currentRoom {
+                sourceIDs.insert(portal.connectedRoom1)
+            }
+        }
+        return sourceIDs.sorted()
+    }
+
     /// Source level table values are the setup/background ``levelscale``.
     /// ``bg.c`` stores ``room_data_float2 = 1 / levelscale`` and
     /// ``prop.c:1355-1361`` multiplies setup-pad positions by it before the

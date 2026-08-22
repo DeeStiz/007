@@ -190,6 +190,14 @@ struct GoldenEyeStageSourceEnvironmentV6Smoke {
                     precondition(runtimeInput.projection == derivedInput.projection)
                     precondition(derivedInput.currentRoom == firstRoom.roomIndex)
                     precondition(derivedInput.visibleRoomIndices.contains(firstRoom.roomIndex))
+                    precondition(
+                        derivedInput.visibleRoomIndices ==
+                            GoldenEyeStageEnvironmentCameraAdapterV6
+                                .sourceGameplayVisibleRoomIndices(
+                                    scene: scene,
+                                    currentRoom: firstRoom.roomIndex
+                                )
+                    )
                     precondition(derivedInput.projection != .identity)
                     precondition(derivedInput.roomCoordinateScaleQ16 == Int32(
                         (1.0 / 0.23363999 * 65_536.0).rounded()

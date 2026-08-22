@@ -33,7 +33,7 @@ int main(int argc, char **argv)
     uint8_t *ctl = read_file(ctl_path, &ctl_count);
     uint8_t *tbl = read_file(tbl_path, &tbl_count);
 
-    const uint32_t title_sfx[] = {18u, 77u, 79u, 111u, 258u};
+    const uint32_t title_sfx[] = {18u, 77u, 79u, 111u, 118u, 197u, 199u, 222u, 258u};
     int16_t stereo[2048u * 2u];
     uint64_t combined_hash = UINT64_C(1469598103934665603);
     for (size_t index = 0; index < sizeof(title_sfx) / sizeof(title_sfx[0]); index++) {
@@ -57,7 +57,7 @@ int main(int argc, char **argv)
     }
     free(ctl);
     free(tbl);
-    printf("goldeneye_title_sfx_smoke: PASS count=5 combined_hash=%llu\n",
+    printf("goldeneye_title_sfx_smoke: PASS count=9 combined_hash=%llu\n",
            (unsigned long long)combined_hash);
     return 0;
 }

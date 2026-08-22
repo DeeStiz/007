@@ -205,6 +205,8 @@ def check_git_boundary() -> None:
 
 
 def check_frozen_contracts(values: dict[str, str], rom: Path) -> None:
+    if expect(values, "r0_status_policy") != "clean-or-dirty":
+        fail("Release history fixture does not authorize the R0 clean/dirty status contract")
     # Re-run the existing R0 guard so its C layout probe remains the authority
     # for the complete V5 record set.  This lane adds the exact value checks
     # below, rather than duplicating its compiler probe.

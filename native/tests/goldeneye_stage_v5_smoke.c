@@ -28,6 +28,37 @@ static GEStatusV1 copy_inflate(const uint8_t *compressed_bytes,
     return GE_STATUS_OK;
 }
 
+static GEStatusV1 short_inflate(const uint8_t *compressed_bytes,
+                                uint32_t compressed_byte_count,
+                                uint8_t *decoded_bytes,
+                                uint32_t decoded_capacity,
+                                uint32_t *decoded_byte_count)
+{
+    GEStatusV1 status = copy_inflate(compressed_bytes, compressed_byte_count,
+                                     decoded_bytes, decoded_capacity,
+                                     decoded_byte_count);
+    if (status == GE_STATUS_OK && *decoded_byte_count > 0u) {
+        *decoded_byte_count -= 1u;
+    }
+    return status;
+}
+
+static GEStatusV1 failing_inflate(const uint8_t *compressed_bytes,
+                                  uint32_t compressed_byte_count,
+                                  uint8_t *decoded_bytes,
+                                  uint32_t decoded_capacity,
+                                  uint32_t *decoded_byte_count)
+{
+    (void)compressed_bytes;
+    (void)compressed_byte_count;
+    (void)decoded_bytes;
+    (void)decoded_capacity;
+    if (decoded_byte_count != NULL) {
+        *decoded_byte_count = 0u;
+    }
+    return GE_STATUS_INTERNAL_ERROR;
+}
+
 static int check_catalog(void)
 {
     static const uint32_t expected_stage_ids[GE_STAGE_V5_STAGE_COUNT] = {
@@ -130,6 +161,22 @@ static int check_1172_and_asset_view(void)
                                         2u,
                                         &decoded_count,
                                         copy_inflate) == GE_STATUS_INVALID_SIZE);
+    REQUIRE(ge_stage_v5_decompress_1172(&resource,
+                                        compressed,
+                                        (uint32_t)sizeof(compressed),
+                                        decoded,
+                                        (uint32_t)sizeof(decoded),
+                                        &decoded_count,
+                                        short_inflate) == GE_STATUS_ASSET_MISMATCH);
+    REQUIRE(decoded_count == 0u);
+    REQUIRE(ge_stage_v5_decompress_1172(&resource,
+                                        compressed,
+                                        (uint32_t)sizeof(compressed),
+                                        decoded,
+                                        (uint32_t)sizeof(decoded),
+                                        &decoded_count,
+                                        failing_inflate) == GE_STATUS_INTERNAL_ERROR);
+    REQUIRE(decoded_count == 0u);
     REQUIRE(ge_stage_v5_read_1172(compressed + 1u,
                                   (uint32_t)sizeof(compressed) - 1u,
                                   3u,

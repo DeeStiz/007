@@ -74,6 +74,8 @@ fi
     "${ROOT}/native/host/goldeneye_attract_route.swift" \
     "${ROOT}/native/host/goldeneye_ramrom_playback_service.swift" \
     "${ROOT}/native/host/goldeneye_stage_asset_catalog.swift" \
+    "${ROOT}/native/host/goldeneye_stage_payload_store_v6.swift" \
+    "${ROOT}/native/host/goldeneye_stage_transfer_queue_v6.swift" \
     "${ROOT}/native/host/goldeneye_stage_setup_packet.swift" \
     "${ROOT}/native/host/goldeneye_stage_scene_packet.swift" \
     "${ROOT}/native/host/goldeneye_projection_v10.swift" \

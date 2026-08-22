@@ -11,6 +11,11 @@ mkdir -p "$EVIDENCE_ROOT"
 FRONT_SHA_BEFORE=$(shasum -a 256 "$ROOT/src/game/front.c" | awk '{print $1}')
 TITLE_SHA_BEFORE=$(shasum -a 256 "$ROOT/src/game/title.c" | awk '{print $1}')
 
+SWIFT_BUILD_ARGS=()
+if [[ "${GOLDENEYE_SWIFT_BUILD_DISABLE_SANDBOX:-0}" == "1" ]]; then
+    SWIFT_BUILD_ARGS+=(--disable-sandbox)
+fi
+
 audit_variant() {
     local variant="$1"
     local build_log="$EVIDENCE_ROOT/build-$variant.log"
@@ -22,13 +27,24 @@ audit_variant() {
     local target_object="$ROOT/.build/out/Products/$product_config/GoldenEyeOriginalFrontend.o"
     local unresolved="$EVIDENCE_ROOT/unresolved-$variant.txt"
 
-    if ! swift build --target GoldenEyeOriginalFrontend -c "$variant" >"$build_log" 2>&1; then
-        cat "$build_log" >&2
-        return 1
-    fi
-    if ! swift run GoldenEyeOriginalFrontendSmoke -c "$variant" >"$smoke_log" 2>&1; then
-        cat "$smoke_log" >&2
-        return 1
+    if [[ "${#SWIFT_BUILD_ARGS[@]}" -gt 0 ]]; then
+        if ! swift build "${SWIFT_BUILD_ARGS[@]}" --target GoldenEyeOriginalFrontend -c "$variant" >"$build_log" 2>&1; then
+            cat "$build_log" >&2
+            return 1
+        fi
+        if ! swift run "${SWIFT_BUILD_ARGS[@]}" GoldenEyeOriginalFrontendSmoke -c "$variant" >"$smoke_log" 2>&1; then
+            cat "$smoke_log" >&2
+            return 1
+        fi
+    else
+        if ! swift build --target GoldenEyeOriginalFrontend -c "$variant" >"$build_log" 2>&1; then
+            cat "$build_log" >&2
+            return 1
+        fi
+        if ! swift run GoldenEyeOriginalFrontendSmoke -c "$variant" >"$smoke_log" 2>&1; then
+            cat "$smoke_log" >&2
+            return 1
+        fi
     fi
     if [[ ! -f "$target_object" ]]; then
         target_object=$(find "$ROOT/.build" -path "*/$product_config/*/GoldenEyeOriginalFrontend.o" -type f | sort | tail -n 1)

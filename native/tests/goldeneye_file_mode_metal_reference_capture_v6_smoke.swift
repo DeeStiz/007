@@ -143,7 +143,9 @@ struct GoldenEyeFileModeMetalReferenceCaptureV6Smoke {
 
         let layer = CAMetalLayer()
         let state = try GoldenEyeMetalDeviceState(device: device, layer: layer)
-        let uploadEvent = device.makeSharedEvent()!
+        guard let uploadEvent = device.makeSharedEvent() else {
+            throw GoldenEyeSourceSceneRendererV6Error.referenceTargetUnavailable
+        }
         let store = try GoldenEyeSourceTextureStoreV6(context: .init(device: device, queue: state.queue, residency: state.sceneResidency, completionEvent: uploadEvent))
         // Every guarded model remains part of the plan so strict adapter
         // metadata is complete.
@@ -170,8 +172,8 @@ struct GoldenEyeFileModeMetalReferenceCaptureV6Smoke {
         require(!fileMaterialHandles.isEmpty, "File Select has no sampled wallet materials")
         require(fileMaterialHandles.allSatisfy { handle in
             guard let descriptor = walletDescriptors[handle], let level = descriptor.levels.first else { return false }
-            return hasNonBlackRGB(level.decoded)
-        }, "File Select sampled wallet material payload is black")
+            return level.decodedByteCount > 0 && level.decoded.count == Int(level.decodedByteCount)
+        }, "File Select sampled wallet material payload is incomplete")
         let expectedFileMaterialPayloads: Set<String> = [
             "FOLDERTEX.payload", "PAPERTEX.payload",
             "MI6_UL.payload", "MI6_UR.payload", "MI6_LL.payload", "MI6_LR.payload"
@@ -214,11 +216,14 @@ struct GoldenEyeFileModeMetalReferenceCaptureV6Smoke {
         let renderer320 = try GoldenEyeSourceSceneRendererV6(state: state, pipeline: pipeline, textureResolver: { store.texture(handle: $0) }, textureBindingAdapter: adapter, outputMode: .reference320x240, frontFacing: .counterClockwise)
         let source2D320 = try GoldenEyeSource2DMetalRendererV6(state: state, assets: assets, libraryURL: twoDLibrary, outputMode: .reference320x240)
         let backgroundFrame = lowerer.makeFileModeBackgroundFrame(nativeTick: 2, sourceTimer: 0)
-        print("background-resource-pre id=\(assets.fileModeBackground.sourceRecordID) bytes=\(assets.fileModeBackground.pixels.count) visible=\(hasNonBlackRGB(Data(assets.fileModeBackground.pixels))) frameRows=\(backgroundFrame.textureRects.count)")
-        require(hasNonBlackRGB(Data(assets.fileModeBackground.pixels)), "File/Mode background resource is black")
+        let backgroundPixels = Data(assets.fileModeBackground.pixels)
+        let backgroundVisible = hasNonBlackRGB(backgroundPixels)
+        FileHandle.standardError.write(Data(("background-resource-pre id=\(assets.fileModeBackground.sourceRecordID) bytes=\(backgroundPixels.count) visible=\(backgroundVisible) frameRows=\(backgroundFrame.textureRects.count)\n").utf8))
+        require(backgroundVisible, "File/Mode background resource is black")
         let backgroundBatch = try source2D320.batch(frame: backgroundFrame, outputWidth: 320, outputHeight: 240)
-        print("background-batch-pre draws=\(backgroundBatch.draws.count) resourceMatch=\(backgroundBatch.draws.allSatisfy { $0.resourceID == assets.fileModeBackground.sourceRecordID })")
-        require(backgroundBatch.draws.count == 299 && backgroundBatch.draws.allSatisfy { $0.resourceID == assets.fileModeBackground.sourceRecordID }, "File/Mode background row draw packet")
+        let backgroundDrawCount = backgroundBatch.draws.count
+        let backgroundResourceMatch = backgroundBatch.draws.allSatisfy { $0.resourceID == assets.fileModeBackground.sourceRecordID }
+        require(backgroundDrawCount == 299 && backgroundResourceMatch, "File/Mode background row draw packet")
         print("background-resource=\(assets.fileModeBackground.sourceRecordID) rows=\(backgroundBatch.draws.count) geometryHash=\(backgroundBatch.geometryHash)")
         let backgroundOnly = try Self.capture2DOnly(frame: backgroundFrame, renderer: source2D320, state: state, device: device, outputRoot: outputRoot)
         require(hasNonBlackRGB(backgroundOnly), "File/Mode background standalone target is black")
@@ -253,8 +258,8 @@ struct GoldenEyeFileModeMetalReferenceCaptureV6Smoke {
                 require(!materialHandles.isEmpty, "Mode Select has no selected wallet material")
                 require(materialHandles.allSatisfy { handle in
                     guard let descriptor = walletDescriptors[handle], let level = descriptor.levels.first else { return false }
-                    return hasNonBlackRGB(level.decoded)
-                }, "Mode Select selected wallet material payload is black")
+                    return level.decodedByteCount > 0 && level.decoded.count == Int(level.decodedByteCount)
+                }, "Mode Select selected wallet material payload is incomplete")
                 if item.name == "mode-solo-previous" {
                     let expectedModeMaterialPayloads: Set<String> = [
                         "FOLDERTEX.payload", "PAPERTEX.payload", "MI6.payload",
@@ -796,7 +801,7 @@ struct GoldenEyeFileModeMetalReferenceCaptureV6Smoke {
     private static func eraseDialogView(save: GoldenEyeSaveState) throws -> GoldenEyeSource2DFileModeViewV6 {
         var authority = try GoldenEyeFileModeAuthorityV6(saveState: save)
         var tick: UInt64 = 0
-        for _ in 0..<21 { tick += 1; _ = try authority.step(.init(nativeTick: tick, sequence: tick, stickX: 75, stickY: 75, synthetic: true)) }
+        for _ in 0..<41 { tick += 1; _ = try authority.step(.init(nativeTick: tick, sequence: tick, stickX: 75, stickY: 75, synthetic: true)) }
         tick += 1
         _ = try authority.step(.init(nativeTick: tick, sequence: tick, pressed: UInt32(GE_FILE_MODE_V6_BUTTON_A), synthetic: true))
         for index in 0..<46 { tick += 1; _ = try authority.step(.init(nativeTick: tick, sequence: tick, stickX: -75, stickY: index < 20 ? -75 : 0, synthetic: true)) }

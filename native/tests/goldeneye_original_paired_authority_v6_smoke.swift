@@ -168,15 +168,26 @@ struct GoldenEyeOriginalPairedAuthorityV6Smoke {
         var capturedScreens: Set<UInt32> = []
         var productionFailure: GoldenEyeOriginalPairedAuthorityV6Error?
         var sawBloodAcknowledgement = false
+        let castRouteProbe = ProcessInfo.processInfo.environment["GE_PAIRED_CAST_ROUTE"] == "1"
+        let castRouteFullProbe = ProcessInfo.processInfo.environment["GE_PAIRED_CAST_FULL"] == "1"
+        var reachedCast = false
+        var bloodContinuationCount: UInt32 = 0
+        var bloodStartTick: UInt64?
         while authority.nativeAuthority.state.native_tick < 5_000 {
             let tick = UInt64(authority.nativeAuthority.state.native_tick) + 1
             do {
-                let buttons: UInt32 = tick >= 3_423 && tick < 3_800
+                // The source-host blood oracle reaches GoldenEye at paired
+                // tick 3582. The normal route sends one even-anchor input to
+                // File Select; the optional Cast probe leaves the attract
+                // input untouched so the source Cast transition is audited.
+                let buttons: UInt32 = !castRouteProbe && tick == 3_584
                     ? UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_BUTTON_ANY)
                     : UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_BUTTON_NONE)
-                let result = modelResultForSourceState(
+                let result = modelResultForSourceStateWithBloodStream(
                     authority.nativeAuthority.state,
-                    nativeTick: tick
+                    nativeTick: tick,
+                    bloodContinuationCount: &bloodContinuationCount,
+                    bloodStartTick: &bloodStartTick
                 )
                 if !sawBloodAcknowledgement,
                    authority.nativeAuthority.state.screen ==
@@ -241,11 +252,19 @@ struct GoldenEyeOriginalPairedAuthorityV6Smoke {
                     UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_FILE_SELECT) {
                     reachedFileSelect = true
                 }
+                if frame.projection.screen ==
+                    UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_CAST) {
+                    reachedCast = true
+                    if castRouteProbe && !castRouteFullProbe && tick > 4_314 {
+                        break
+                    }
+                }
                 if frame.originalExecuted,
                    frame.projection.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_NINTENDO) ||
                    frame.projection.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_RAREWARE) ||
                    frame.projection.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_GUNBARREL) ||
                    frame.projection.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_GOLDENEYE) ||
+                   frame.projection.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_CAST) ||
                    frame.projection.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_FILE_SELECT) {
                     precondition(frame.originalRenderEventCount > 0)
                     capturedScreens.insert(frame.projection.screen)
@@ -262,6 +281,11 @@ struct GoldenEyeOriginalPairedAuthorityV6Smoke {
                     break
                 }
             }
+        }
+        if castRouteProbe {
+            precondition(reachedCast)
+            precondition(capturedScreens.contains(UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_CAST)))
+            return
         }
         precondition(reachedNintendo)
         precondition(reachedGoldenEye)
@@ -451,4 +475,41 @@ struct GoldenEyeOriginalPairedAuthorityV6Smoke {
             executed, 0, 0
         )
     }
+    /// The source model callback requests one blood decode every two 60 Hz
+    /// anchors (four native ticks). Mirror that copied completion clock in the
+    /// paired smoke; the production renderer supplies the same result mailbox.
+    private static func modelResultForSourceStateWithBloodStream(
+        _ state: GEFrontendRuntimeV6State,
+        nativeTick: UInt64,
+        bloodContinuationCount: inout UInt32,
+        bloodStartTick: inout UInt64?
+    ) -> (model: UInt32, operation: UInt32, flags: UInt32, value0: UInt32, value1: UInt32) {
+        let executed = UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_RESULT_EXECUTED)
+        let bloodComplete = UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_RESULT_BLOOD_COMPLETE)
+        if state.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_GUNBARREL),
+           state.gunbarrel_mode == 5,
+           nativeTick & 1 == 0 {
+            if bloodStartTick == nil {
+                bloodStartTick = nativeTick
+            }
+            if (nativeTick - (bloodStartTick ?? nativeTick)) % 4 == 0 {
+                if bloodContinuationCount < 41 {
+                    bloodContinuationCount += 1
+                }
+                return (
+                    UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_GUNBARREL),
+                    UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_MODEL_OP_BLOOD_TICK),
+                    executed | (bloodContinuationCount >= 41 ? bloodComplete : 0),
+                    bloodContinuationCount,
+                    0
+                )
+            }
+        }
+        return modelResultForSourceState(
+            state,
+            nativeTick: nativeTick,
+            acknowledgeBlood: false
+        )
+    }
+
 }

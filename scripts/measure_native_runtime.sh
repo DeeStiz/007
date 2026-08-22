@@ -148,6 +148,10 @@ run_case() {
     local source_owner_log="${case_root}/source-frontend-owner.log"
     local renderer_failure_log="${case_root}/source-product-renderer-failures.log"
     local renderer_log="${case_root}/source-product-renderer.log"
+    local stage_camera_owner_log="${case_root}/stage-gameplay-camera-owner.log"
+    local stage_camera_renderer_log="${case_root}/stage-gameplay-camera-renderer.log"
+    local stage_renderer_frames_log="${case_root}/source-product-renderer-frames.log"
+    local ramrom_authority_log="${case_root}/ramrom-authority.log"
     local audio_pause_log="${case_root}/audio-pause.log"
     local wake_pid=""
     mkdir -p "${case_root}"
@@ -159,6 +163,10 @@ run_case() {
     : > /tmp/goldeneye-source-frontend-owner.log
     : > /tmp/goldeneye-source-product-renderer-v6-failures.log
     : > /tmp/goldeneye-source-product-renderer-v6.log
+    : > /tmp/goldeneye-stage-gameplay-camera-owner.log
+    : > /tmp/goldeneye-source-product-renderer-v6-stage-gameplay-camera.log
+    : > /tmp/goldeneye-source-product-renderer-v6-frames.log
+    : > /tmp/goldeneye-ramrom-playback-owner.log
     : > /tmp/goldeneye-native-audio-pause.log
 
     echo "Running ${mode}: display=${display} warmup=${WARMUP}s duration=${DURATION}s"
@@ -256,6 +264,10 @@ run_case() {
     [[ -f /tmp/goldeneye-source-frontend-owner.log ]] && cp -f /tmp/goldeneye-source-frontend-owner.log "${source_owner_log}"
     [[ -f /tmp/goldeneye-source-product-renderer-v6-failures.log ]] && cp -f /tmp/goldeneye-source-product-renderer-v6-failures.log "${renderer_failure_log}"
     [[ -f /tmp/goldeneye-source-product-renderer-v6.log ]] && cp -f /tmp/goldeneye-source-product-renderer-v6.log "${renderer_log}"
+    [[ -f /tmp/goldeneye-stage-gameplay-camera-owner.log ]] && cp -f /tmp/goldeneye-stage-gameplay-camera-owner.log "${stage_camera_owner_log}"
+    [[ -f /tmp/goldeneye-source-product-renderer-v6-stage-gameplay-camera.log ]] && cp -f /tmp/goldeneye-source-product-renderer-v6-stage-gameplay-camera.log "${stage_camera_renderer_log}"
+    [[ -f /tmp/goldeneye-source-product-renderer-v6-frames.log ]] && cp -f /tmp/goldeneye-source-product-renderer-v6-frames.log "${stage_renderer_frames_log}"
+    [[ -f /tmp/goldeneye-ramrom-playback-owner.log ]] && cp -f /tmp/goldeneye-ramrom-playback-owner.log "${ramrom_authority_log}"
     [[ -f /tmp/goldeneye-native-audio-pause.log ]] && cp -f /tmp/goldeneye-native-audio-pause.log "${audio_pause_log}"
 
     local ticks callbacks logic_rate presented_samples presented_fps

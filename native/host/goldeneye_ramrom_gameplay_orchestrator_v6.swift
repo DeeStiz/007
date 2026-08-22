@@ -109,13 +109,26 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
     private var weaponEffectOwner: GERamRomWeaponEffectOwnerStateV6?
     private let weaponFrames: [UInt64: GERamRomWeaponEffectFrameV6]
     private var expectedRelativeTick: UInt64 = 0
-    private let startNativeTick: UInt64
+    private var startNativeTick: UInt64
     private var active = true
     private var lastFrame: GoldenEyeRamRomGameplayFrameV6?
     private var restoreSnapshot: GoldenEyeRamRomGameplayRestoreSnapshotV6?
 
     public var isActive: Bool { active }
     public var currentFrame: GoldenEyeRamRomGameplayFrameV6? { lastFrame }
+
+    /// Move a fully prepared route from startup staging onto the live owner
+    /// timeline before its first gameplay step. Preparation is intentionally
+    /// done once on the launch thread; this rebases only the copied relative
+    /// clock and never replays or skips a source sample.
+    func rebaseStartNativeTick(_ nativeTick: UInt64) throws {
+        guard expectedRelativeTick == 0 else {
+            throw GoldenEyeRamRomGameplayOrchestratorErrorV6.invalidTick(
+                startNativeTick, nativeTick
+            )
+        }
+        startNativeTick = nativeTick
+    }
 
     init(
         request: GoldenEyeRamRomLaunchRequest,
@@ -369,11 +382,9 @@ public final class GoldenEyeRamRomGameplayOrchestratorV6: @unchecked Sendable {
                 .first(where: { $0.demo == request.demoID })?.slot ?? sourceSlot(stageID: request.stageID)
         )
         if guardPages.sourceReady {
-            let state = try GoldenEyeRamRomGuardDoorPagesV6.makeOwnerState(
+            let pointer = try GoldenEyeRamRomGuardDoorPagesV6.makeOwnerStatePointer(
                 from: guardPages, rngSeed: UInt64(header.randomizer_seed)
             )
-            let pointer = UnsafeMutablePointer<GEGuardDoorOwnerStateV6>.allocate(capacity: 1)
-            pointer.initialize(to: state)
             guardPointer = pointer
         } else {
             missing.append(contentsOf: guardPages.missingFields)
