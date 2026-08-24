@@ -199,6 +199,10 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     /// observe the intentional pre-build invalidation window as a missing
     /// frame while a complete replacement is being lowered.
     private let frameStateLock = NSLock()
+    /// Serializes Metal encoding/presentation while allowing the owner to
+    /// publish the next immutable scene without waiting for a drawable's GPU
+    /// work. The publication lock is held only while copying this state.
+    private let renderLock = NSLock()
     /// Stage packet loading can happen on the bounded V7 submission queue
     /// while the display-link callback renders the last published frame.
     private let stageScenePacketCacheLock = NSLock()
@@ -230,6 +234,21 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     private var lastRenderEvidence: GoldenEyeSourceSceneRenderEvidenceV6?
     private var didShutdown = false
     private var renderIndex: UInt64 = 0
+
+    private struct PublishedRenderState {
+        let didShutdown: Bool
+        let stageScene: GoldenEyeSourceSceneSnapshotV6?
+        let scene: GoldenEyeSourceSceneSnapshotV6?
+        let titleSnapshot: GoldenEyeTitleSnapshot?
+        let source2DFrame: GoldenEyeSource2DFrameV6?
+        let source2DBackgroundFrame: GoldenEyeSource2DFrameV6?
+        let gunbarrelPass: GoldenEyeGunbarrelRenderPassV6?
+        let stagePacketHash: UInt64
+        let stageUnsupportedMask: UInt32
+        let stageMaterialHash: UInt64
+        let stageMaterialStateCount: UInt32
+        let stageTexturePending: UInt32
+    }
     /// Model command traversal, texture setup resolution, and immutable
     /// source records are cached per model/switch route. A cache hit reframes
     /// only copied transforms, lighting/fade values, and frame hashes; it
@@ -3792,6 +3811,25 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         let renderStart = DispatchTime.now().uptimeNanoseconds
         var renderRoute = "unresolved"
         frameStateLock.lock()
+        let published = PublishedRenderState(
+            didShutdown: didShutdown,
+            stageScene: latestStageScene,
+            scene: latestScene,
+            titleSnapshot: latestTitleSnapshot,
+            source2DFrame: latestSource2DFrame,
+            source2DBackgroundFrame: latestSource2DBackgroundFrame,
+            gunbarrelPass: latestGunbarrelPass,
+            stagePacketHash: latestStagePacketHash,
+            stageUnsupportedMask: latestStageUnsupportedMask,
+            stageMaterialHash: latestStageMaterialHash,
+            stageMaterialStateCount: latestStageMaterialStateCount,
+            stageTexturePending: latestStageTexturePending
+        )
+        frameStateLock.unlock()
+        // Do not hold publication state across Metal encode/commit/present.
+        // Source-owner publication may be expensive during Gunbarrel/Cast;
+        // the display path renders this immutable copied state independently.
+        renderLock.lock()
         defer {
             let elapsed = DispatchTime.now().uptimeNanoseconds &- renderStart
             if elapsed >= 100_000_000 {
@@ -3800,13 +3838,13 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
                     path: "/tmp/goldeneye-source-product-renderer-v6-slow-render.log"
                 )
             }
-            frameStateLock.unlock()
+            renderLock.unlock()
         }
         _ = timing
-        guard !didShutdown else { return false }
-        let stageScene = latestStageScene
+        guard !published.didShutdown else { return false }
+        let stageScene = published.stageScene
         renderRoute = stageScene == nil ? "title" : "stage"
-        guard let scene = stageScene ?? latestScene else {
+        guard let scene = stageScene ?? published.scene else {
             recordFailure(GoldenEyeSourceProductRendererV6Error.noSubmittedFrame)
             return false
         }
@@ -3816,7 +3854,7 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             ))
             return false
         }
-        if stageScene == nil, let title = latestTitleSnapshot,
+        if stageScene == nil, let title = published.titleSnapshot,
            title.screen.rawValue != scene.summary.screen {
             recordFailure(
                 GoldenEyeSourceProductRendererV6Error.staleSourceFrame(
@@ -3828,17 +3866,17 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         }
         do {
             var source2DBatch: GoldenEyeSource2DMetalBatchV6?
-            let currentGunbarrelPass = latestGunbarrelPass
+            let currentGunbarrelPass = published.gunbarrelPass
             let evidence = try renderer.render(
                 snapshot: scene,
                 suppliedDrawable: drawable,
-                underlay: { [source2DRenderer, latestSource2DBackgroundFrame, gunbarrelPassRenderer, currentGunbarrelPass] encoder, slotIndex in
+                underlay: { [source2DRenderer, source2DBackgroundFrame = published.source2DBackgroundFrame, gunbarrelPassRenderer, currentGunbarrelPass] encoder, slotIndex in
                     guard stageScene == nil else { return }
                     if (scene.summary.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_FILE_SELECT)
                             || scene.summary.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_MODE_SELECT)),
-                       let latestSource2DBackgroundFrame {
+                       let source2DBackgroundFrame {
                         _ = try source2DRenderer.encode(
-                            frame: latestSource2DBackgroundFrame,
+                            frame: source2DBackgroundFrame,
                             into: encoder,
                             drawableWidth: drawable.texture.width,
                             drawableHeight: drawable.texture.height,
@@ -3857,7 +3895,7 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
                         )
                     }
                 },
-                overlay: { [source2DRenderer, latestSource2DFrame, gunbarrelPassRenderer, currentGunbarrelPass] encoder, slotIndex in
+                overlay: { [source2DRenderer, source2DFrame = published.source2DFrame, gunbarrelPassRenderer, currentGunbarrelPass] encoder, slotIndex in
                     if stageScene == nil,
                        scene.summary.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_GUNBARREL),
                        let currentGunbarrelPass,
@@ -3869,15 +3907,15 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
                         )
                     }
                     guard stageScene == nil else { return }
-                    guard let latestSource2DFrame = latestSource2DFrame else { return }
-                    guard latestSource2DFrame.screen == scene.summary.screen else {
+                    guard let source2DFrame else { return }
+                    guard source2DFrame.screen == scene.summary.screen else {
                         throw GoldenEyeSourceProductRendererV6Error.staleSourceFrame(
-                            latestSource2DFrame.screen,
+                            source2DFrame.screen,
                             expected: scene.summary.screen
                         )
                     }
                     source2DBatch = try source2DRenderer.encodeOverlay(
-                        frame: latestSource2DFrame,
+                        frame: source2DFrame,
                         into: encoder,
                         drawableWidth: drawable.texture.width,
                         drawableHeight: drawable.texture.height,
@@ -3890,7 +3928,8 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             recordRender(
                 evidence,
                 source2DBatch: source2DBatch,
-                isStageEnvironment: stageScene != nil
+                isStageEnvironment: stageScene != nil,
+                published: published
             )
             return true
         } catch {
@@ -3932,6 +3971,8 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         didShutdown = true
         publicationGeneration &+= 1
         frameStateLock.unlock()
+        renderLock.lock()
+        defer { renderLock.unlock() }
         renderer.shutdown()
         source2DRenderer.shutdown()
         do {
@@ -3958,7 +3999,8 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     private func recordRender(
         _ evidence: GoldenEyeSourceSceneRenderEvidenceV6,
         source2DBatch: GoldenEyeSource2DMetalBatchV6?,
-        isStageEnvironment: Bool = false
+        isStageEnvironment: Bool = false,
+        published: PublishedRenderState
     ) {
         let visibleProps = visibleDependencyCatalog?.count(category: "props") ?? 0
         let visibleGuards = visibleDependencyCatalog?.count(category: "guards") ?? 0
@@ -3969,22 +4011,22 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             + "source2DDraws=\(source2DBatch?.draws.count ?? 0) "
             + "source2DVertices=\(source2DBatch?.vertices.count ?? 0) "
             + "source2DHash=\(source2DBatch?.geometryHash ?? 0) "
-            + "gunbarrelPass=\(latestGunbarrelPass?.passHash ?? 0) "
-            + "gunbarrelMode=\(latestGunbarrelPass?.mode ?? 0) "
-            + "gunbarrelBackground=\(latestGunbarrelPass.map { "\($0.backgroundWidth)x\($0.backgroundHeight)" } ?? "none") "
-            + "gunbarrelBackgroundVisible=\(latestGunbarrelPass?.backgroundVisible == true ? 1 : 0) "
-            + "gunbarrelHole=\(latestGunbarrelPass?.holeTriangleCount ?? 0) "
-            + "gunbarrelHoleVisible=\(latestGunbarrelPass?.holeVisible == true ? 1 : 0) "
-            + "gunbarrelHolePasses=\(latestGunbarrelPass?.holePassCount ?? 0) "
-            + "gunbarrelTitleXQ16=\(latestGunbarrelPass?.titleXQ16 ?? 0) "
-            + "gunbarrelTransitionXQ16=\(latestGunbarrelPass?.transitionXQ16 ?? 0) "
-            + "gunbarrelPoses=\(latestGunbarrelPass?.poseCount ?? 0) "
-            + "gunbarrelMuzzle=\(latestGunbarrelPass?.muzzleFlashVisible == true ? 1 : 0) "
-            + "gunbarrelBlood=\(latestGunbarrelPass?.bloodVisible == true ? 1 : 0) "
-            + "stageEnvironment=\(isStageEnvironment ? 1 : 0) stagePacketHash=\(latestStagePacketHash) "
-            + "stageUnsupportedMask=\(latestStageUnsupportedMask) "
-            + "stageMaterialHash=\(latestStageMaterialHash) stageMaterialStates=\(latestStageMaterialStateCount) "
-            + "stageTexturePending=\(latestStageTexturePending) "
+            + "gunbarrelPass=\(published.gunbarrelPass?.passHash ?? 0) "
+            + "gunbarrelMode=\(published.gunbarrelPass?.mode ?? 0) "
+            + "gunbarrelBackground=\(published.gunbarrelPass.map { "\($0.backgroundWidth)x\($0.backgroundHeight)" } ?? "none") "
+            + "gunbarrelBackgroundVisible=\(published.gunbarrelPass?.backgroundVisible == true ? 1 : 0) "
+            + "gunbarrelHole=\(published.gunbarrelPass?.holeTriangleCount ?? 0) "
+            + "gunbarrelHoleVisible=\(published.gunbarrelPass?.holeVisible == true ? 1 : 0) "
+            + "gunbarrelHolePasses=\(published.gunbarrelPass?.holePassCount ?? 0) "
+            + "gunbarrelTitleXQ16=\(published.gunbarrelPass?.titleXQ16 ?? 0) "
+            + "gunbarrelTransitionXQ16=\(published.gunbarrelPass?.transitionXQ16 ?? 0) "
+            + "gunbarrelPoses=\(published.gunbarrelPass?.poseCount ?? 0) "
+            + "gunbarrelMuzzle=\(published.gunbarrelPass?.muzzleFlashVisible == true ? 1 : 0) "
+            + "gunbarrelBlood=\(published.gunbarrelPass?.bloodVisible == true ? 1 : 0) "
+            + "stageEnvironment=\(isStageEnvironment ? 1 : 0) stagePacketHash=\(published.stagePacketHash) "
+            + "stageUnsupportedMask=\(published.stageUnsupportedMask) "
+            + "stageMaterialHash=\(published.stageMaterialHash) stageMaterialStates=\(published.stageMaterialStateCount) "
+            + "stageTexturePending=\(published.stageTexturePending) "
             + "stageTextureBindings=\(stageTextureCatalog?.bindingCount ?? 0) "
             + "stageTextureBindingHash=\(stageTextureCatalog?.bindingValidationHash ?? 0) "
             + "stageSetupDeps=\(stageSetupDependencyCatalog?.dependencies.count ?? 0) "

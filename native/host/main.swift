@@ -4,6 +4,15 @@ import Metal
 import QuartzCore
 import GoldenEyeNative
 
+/// Source-product and unattended probe launches are passive by default.
+/// `GOLDENEYE_NATIVE_BACKGROUND=0` is the only opt-in to interactive focus;
+/// an explicit background request must never be overridden by a probe flag.
+private func usesPassiveNativeBackgroundRuntime() -> Bool {
+    GoldenEyeNativeWindowPolicy.resolve(
+        environment: ProcessInfo.processInfo.environment
+    ).runsInBackground
+}
+
 private final class GoldenEyeView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -333,7 +342,9 @@ private final class GoldenEyeViewController: NSViewController {
     private let ownerLoop = GoldenEyeOwnerLoop()
     private var keyboardState = GoldenEyeKeyboardInputState()
     private var didRegisterFocusObserver = false
+    private var didStartRuntime = false
     private var focusState: Bool?
+    private var backgroundFocusViolation = false
     private var didScheduleInputProbe = false
     private var didScheduleCadenceWarmup = false
     private var didScheduleCadenceSafetyTermination = false
@@ -370,11 +381,12 @@ private final class GoldenEyeViewController: NSViewController {
     /// may be throttled or absent while the window is occluded/locked; that is
     /// an honest presentation boundary, not a reason to stop source logic.
     private var backgroundRuntimeEnabled: Bool {
-        ProcessInfo.processInfo.environment["GOLDENEYE_NATIVE_BACKGROUND"] == "1"
+        usesPassiveNativeBackgroundRuntime()
     }
 
     private var cadenceFullscreenRequested: Bool {
-        ProcessInfo.processInfo.environment["GOLDENEYE_NATIVE_FULLSCREEN"] == "1"
+        !backgroundRuntimeEnabled
+            && ProcessInfo.processInfo.environment["GOLDENEYE_NATIVE_FULLSCREEN"] == "1"
     }
 
     private var cadenceWarmupSeconds: TimeInterval {
@@ -462,6 +474,14 @@ private final class GoldenEyeViewController: NSViewController {
 
     override func viewDidAppear() {
         super.viewDidAppear()
+        guard !didStartRuntime else {
+            if backgroundRuntimeEnabled {
+                view.window?.orderOut(nil)
+                NSApp.deactivate()
+            }
+            return
+        }
+        didStartRuntime = true
         recordInputEvidence("event=probeStarted")
         guard let device = MTLCreateSystemDefaultDevice() else {
             print("GoldenEye Metal device unavailable")
@@ -715,7 +735,9 @@ private final class GoldenEyeViewController: NSViewController {
             return
         }
         gameView.updateDrawableSize()
-        view.window?.makeFirstResponder(self)
+        if !backgroundRuntimeEnabled {
+            view.window?.makeFirstResponder(self)
+        }
         if !didRegisterFocusObserver {
             NotificationCenter.default.addObserver(
                 self,
@@ -772,7 +794,10 @@ private final class GoldenEyeViewController: NSViewController {
                     name: NSWindow.didChangeScreenProfileNotification,
                     object: window
                 )
-                focusState = NSApp.isActive && window.isKeyWindow
+                setFocusState(
+                    NSApp.isActive && window.isKeyWindow,
+                    source: "initial"
+                )
             }
             NotificationCenter.default.addObserver(
                 self,
@@ -823,7 +848,7 @@ private final class GoldenEyeViewController: NSViewController {
             }
             nativeOwner.requestDrawableSize(gameView.metalLayer.drawableSize)
             nativeOwner.requestPreferredFrameRateRange(
-                CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+                preferredFrameRateRange(for: gameView.window?.screen)
             )
             nativeOwner.start()
             guard nativeOwner.waitUntilRunning() else {
@@ -853,12 +878,13 @@ private final class GoldenEyeViewController: NSViewController {
         scheduleNativeTitleSmokeInput()
         scheduleCadenceWarmup()
         scheduleCadenceTermination()
-        scheduleCadenceKeepAlive()
     }
 
     override func viewWillDisappear() {
         setPerformanceOverlayVisible(false)
-        stopRuntimeForTermination()
+        if !backgroundRuntimeEnabled {
+            stopRuntimeForTermination()
+        }
         super.viewWillDisappear()
     }
 
@@ -1032,6 +1058,10 @@ private final class GoldenEyeViewController: NSViewController {
     }
 
     @objc private func applicationDidBecomeActive(_ notification: Notification) {
+        guard !backgroundRuntimeEnabled else {
+            enforcePassiveWindowState(source: "applicationDidBecomeActive")
+            return
+        }
         let focused = view.window?.isKeyWindow ?? NSApp.isActive
         setFocusState(focused && NSApp.isActive, source: "application")
     }
@@ -1043,7 +1073,31 @@ private final class GoldenEyeViewController: NSViewController {
 
     @objc private func windowDidBecomeKey(_ notification: Notification) {
         guard notification.object as AnyObject? === view.window else { return }
+        guard !backgroundRuntimeEnabled else {
+            enforcePassiveWindowState(source: "windowDidBecomeKey")
+            return
+        }
         setFocusState(NSApp.isActive, source: "window")
+    }
+
+    private func enforcePassiveWindowState(source: String) {
+        let actuallyActive = NSApp.isActive
+        let actuallyKey = view.window?.isKeyWindow == true
+        guard actuallyActive || actuallyKey else {
+            recordInputEvidence(
+                "event=backgroundActivationNotificationIgnored source=\(source) active=0 key=0"
+            )
+            setFocusState(false, source: "background-enforcement")
+            return
+        }
+        backgroundFocusViolation = true
+        recordInputEvidence(
+            "event=backgroundFocusViolation source=\(source) "
+                + "active=\(actuallyActive ? 1 : 0) key=\(actuallyKey ? 1 : 0)"
+        )
+        setFocusState(false, source: "background-enforcement")
+        view.window?.orderOut(nil)
+        NSApp.deactivate()
     }
 
     @objc private func windowDidMiniaturize(_ notification: Notification) {
@@ -1074,13 +1128,28 @@ private final class GoldenEyeViewController: NSViewController {
     private func refreshDisplayConfiguration(source: String) {
         gameView.updateDrawableSize()
         nativeTitleOwner?.requestPreferredFrameRateRange(
-            CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+            preferredFrameRateRange(for: view.window?.screen)
         )
         recordInputEvidence(
             "event=displayDidChange source=\(source) "
                 + "screen=\(view.window?.screen?.localizedName ?? "none") "
                 + "scale=\(view.window?.backingScaleFactor ?? 1.0)"
         )
+    }
+
+    /// Keep the display-link range aligned with the actual screen mode. A
+    /// fixed 60 Hz external panel must not receive the 120 Hz preference used
+    /// by the built-in ProMotion panel; doing so creates alternating drawable
+    /// deadlines and halves the measured presented cadence. Variable-rate
+    /// panels retain the source 60–120/120 contract.
+    private func preferredFrameRateRange(for screen: NSScreen?) -> CAFrameRateRange {
+        let reportedMaximum = screen?.maximumFramesPerSecond ?? 120
+        guard reportedMaximum > 0 else {
+            return CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        }
+        let maximum = Float(min(max(reportedMaximum, 60), 120))
+        let minimum = maximum <= 60 ? maximum : 60
+        return CAFrameRateRange(minimum: minimum, maximum: maximum, preferred: maximum)
     }
 
     private func scheduleInputProbe() {
@@ -1112,8 +1181,12 @@ private final class GoldenEyeViewController: NSViewController {
                 NSApp.deactivate()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { [weak self] in
                     guard let self else { return }
+                    guard !self.backgroundRuntimeEnabled else {
+                        self.recordInputEvidence("event=probeActivate suppressed=background")
+                        return
+                    }
                     self.recordInputEvidence("event=probeActivate")
-                    NSApp.activate(ignoringOtherApps: true)
+                    NSApp.activate()
                 }
             }
         }
@@ -1181,31 +1254,6 @@ private final class GoldenEyeViewController: NSViewController {
         }
     }
 
-    /// A direct Release measurement process is launched from a shell, which
-    /// can immediately reclaim AppKit foreground status after the window
-    /// enters fullscreen. Keep the probe window active for its bounded run so
-    /// Core Animation does not intentionally throttle its display link.
-    private func scheduleCadenceKeepAlive() {
-        guard cadenceProbeEnabled,
-              !backgroundRuntimeEnabled,
-              cadenceMeasurementSeconds > 0 else { return }
-        let deadline = Date().addingTimeInterval(
-            cadenceWarmupSeconds
-                + cadenceTransitionGraceSeconds
-                + cadenceMeasurementSeconds
-                + 10
-        )
-        func keepAlive() {
-            guard Date() < deadline else { return }
-            NSApp.activate(ignoringOtherApps: true)
-            self.view.window?.makeKeyAndOrderFront(nil)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                keepAlive()
-            }
-        }
-        keepAlive()
-    }
-
     /// Warmup is deliberately outside the measured epoch. It absorbs launch,
     /// shader/resource residency, fullscreen migration, and Core Audio route
     /// startup before the owner resets all timing/hash counters atomically.
@@ -1238,7 +1286,9 @@ private final class GoldenEyeViewController: NSViewController {
             && window?.occlusionState.contains(.visible) == true
         let isFullscreen = window?.styleMask.contains(.fullScreen) == true
         let transitionReady = !cadenceFullscreenRequested || isFullscreen
-        guard isActive && isKey && isVisible && transitionReady else {
+        let lifecycleReady = backgroundRuntimeEnabled
+            || (isActive && isKey && isVisible && transitionReady)
+        guard lifecycleReady else {
             if Date() < cadenceWarmupReadinessDeadline {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
                     self?.attemptCadenceMeasurementStart()
@@ -1254,11 +1304,19 @@ private final class GoldenEyeViewController: NSViewController {
             return
         }
 
-        recordInputEvidence(
-            "event=activeGateReady=1 active=1 key=1 visible=1 fullscreen=\(isFullscreen ? 1 : 0) "
-                + "presentationMode=\(isFullscreen ? "direct-eligible-unverified" : "composited-window") "
-                + "hud=\(ProcessInfo.processInfo.environment["GOLDENEYE_CADENCE_HUD_STATE"] ?? "unobserved")"
-        )
+        if backgroundRuntimeEnabled {
+            recordInputEvidence(
+                "event=backgroundGateReady=1 active=\(isActive ? 1 : 0) "
+                    + "key=\(isKey ? 1 : 0) visible=\(isVisible ? 1 : 0) fullscreen=0 "
+                    + "presentationMode=background-unverified"
+            )
+        } else {
+            recordInputEvidence(
+                "event=activeGateReady=1 active=1 key=1 visible=1 fullscreen=\(isFullscreen ? 1 : 0) "
+                    + "presentationMode=\(isFullscreen ? "direct-eligible-unverified" : "composited-window") "
+                    + "hud=\(ProcessInfo.processInfo.environment["GOLDENEYE_CADENCE_HUD_STATE"] ?? "unobserved")"
+            )
+        }
         guard let nativeTitleOwner,
               nativeTitleOwner.resetMeasurementEpoch(timeout: 5.0) else {
             if Date() < cadenceWarmupReadinessDeadline {
@@ -1282,6 +1340,16 @@ private final class GoldenEyeViewController: NSViewController {
         let duration = cadenceMeasurementSeconds
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
             guard let self, self.cadenceMeasurementStarted else { return }
+            if self.backgroundRuntimeEnabled {
+                let window = self.view.window
+                self.recordInputEvidence(
+                    "event=backgroundGateComplete=1 violation=\(self.backgroundFocusViolation ? 1 : 0) "
+                        + "active=\(NSApp.isActive ? 1 : 0) key=\(window?.isKeyWindow == true ? 1 : 0) "
+                        + "visible=\(window?.isVisible == true ? 1 : 0) "
+                        + "alpha=\(window?.alphaValue ?? 1) "
+                        + "fullscreen=\(window?.styleMask.contains(.fullScreen) == true ? 1 : 0)"
+                )
+            }
             self.recordInputEvidence(
                 "event=measurementTerminate seconds=\(duration) afterEpoch=1"
             )
@@ -1316,12 +1384,19 @@ private final class GoldenEyeAppDelegate: NSObject, NSApplicationDelegate, NSWin
     private var performanceOverlayItem: NSMenuItem!
 
     private var backgroundRuntimeEnabled: Bool {
-        ProcessInfo.processInfo.environment["GOLDENEYE_NATIVE_BACKGROUND"] == "1"
+        usesPassiveNativeBackgroundRuntime()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.configurePackagedRuntimeDefaults()
-        NSApp.setActivationPolicy(.regular)
+        // Some explicit interactive launches are not yet registered with
+        // WindowServer when the pre-run policy request executes. Retry the
+        // regular policy at the AppKit lifecycle boundary instead of turning
+        // that transient false return into a process trap. Passive launches
+        // remain accessory-only from process startup.
+        if !backgroundRuntimeEnabled {
+            _ = NSApp.setActivationPolicy(.regular)
+        }
         installMainMenu()
         viewController = GoldenEyeViewController()
         window = NSWindow(
@@ -1339,15 +1414,6 @@ private final class GoldenEyeAppDelegate: NSObject, NSApplicationDelegate, NSWin
         window.minSize = NSSize(width: 640, height: 360)
         window.isRestorable = false
         window.setContentSize(NSSize(width: 960, height: 540))
-        if ProcessInfo.processInfo.environment["GOLDENEYE_CADENCE_PROBE"] == "1" {
-            // Measurement launches originate from a non-AppKit shell. Keep
-            // the probe surface visible/ordered so WindowServer and
-            // CAMetalDisplayLink do not classify it as an occluded window.
-            if ProcessInfo.processInfo.environment["GOLDENEYE_CADENCE_NO_FLOATING"] != "1" {
-                window.level = .floating
-                window.collectionBehavior = [.fullScreenPrimary, .moveToActiveSpace]
-            }
-        }
         // Do not trust a restored/off-screen AppKit frame in a multi-display
         // or remote session: keep the validation window inside a real screen
         // so CoreGraphics captures the same pixels the user can see.
@@ -1379,20 +1445,33 @@ private final class GoldenEyeAppDelegate: NSObject, NSApplicationDelegate, NSWin
             window.center()
         }
         if backgroundRuntimeEnabled {
-            window.collectionBehavior = [.canJoinAllSpaces, .ignoresCycle]
-            // Realize the view even when loginwindow owns the session, but do
-            // not activate or make the game key. This keeps the owner loop
-            // alive like the SM64 modern host while presentation remains an
-            // explicit foreground/display capability.
-            window.orderFrontRegardless()
+            // Background mode is an owner/runtime surface, not an input
+            // surface. Keep it at the normal window level, keep it out of
+            // Spaces/cycle promotion, and let every click pass through to
+            // the user's actual frontmost application. `orderFrontRegardless`
+            // is deliberately forbidden here: it makes a background owner
+            // visually topmost even when LaunchServices was started with -g.
+            window.styleMask.remove(.fullScreen)
+            window.level = .normal
+            window.collectionBehavior = [.ignoresCycle]
+            window.ignoresMouseEvents = true
+            window.acceptsMouseMovedEvents = false
+            window.alphaValue = 0
+            window.hasShadow = false
+            window.orderBack(nil)
+            // Finder/open may have activated the process before this delegate
+            // ran; undo that activation after the passive window is installed.
+            NSApp.deactivate()
+            // Keep the transparent, click-through window ordered behind the
+            // desktop. Removing the last window with `orderOut` lets AppKit
+            // tear down an accessory application on some macOS releases;
+            // alpha=0 plus normal level provides the same passive desktop
+            // behavior while retaining the owner/audio lifecycle.
         } else {
             window.makeKeyAndOrderFront(nil)
         }
-        if ProcessInfo.processInfo.environment["GOLDENEYE_CADENCE_PROBE"] == "1" {
-            window.orderFrontRegardless()
-        }
         if !backgroundRuntimeEnabled {
-            NSApp.activate(ignoringOtherApps: true)
+            NSApp.activate()
         }
         recordCadenceWindowState(event: "activeGateObserved")
         if prefers120Fullscreen {
@@ -1632,7 +1711,9 @@ private final class GoldenEyeAppDelegate: NSObject, NSApplicationDelegate, NSWin
         let key = window?.isKeyWindow == true
         let visible = window?.isVisible == true
             && window?.occlusionState.contains(.visible) == true
-        let mode = isFullscreen ? "direct-eligible-unverified" : "composited-window"
+        let mode = backgroundRuntimeEnabled
+            ? "background-unverified"
+            : (isFullscreen ? "direct-eligible-unverified" : "composited-window")
         let hudState = ProcessInfo.processInfo.environment["GOLDENEYE_CADENCE_HUD_STATE"] ?? "unobserved"
         let line = "event=\(event)=1 value=1 active=\(active ? 1 : 0) key=\(key ? 1 : 0) "
             + "visible=\(visible ? 1 : 0) fullscreen=\(isFullscreen ? 1 : 0) "
@@ -1648,7 +1729,17 @@ private final class GoldenEyeAppDelegate: NSObject, NSApplicationDelegate, NSWin
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        !backgroundRuntimeEnabled
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        guard backgroundRuntimeEnabled else { return true }
+        window?.orderBack(nil)
+        sender.deactivate()
+        return false
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -1665,6 +1756,13 @@ private final class GoldenEyeAppDelegate: NSObject, NSApplicationDelegate, NSWin
 }
 
 private let app = NSApplication.shared
+// Set the passive activation policy before AppKit begins its launch cycle.
+// Interactive .regular policy is retried in applicationDidFinishLaunching,
+// where WindowServer has registered the application and the call can be
+// truthfully evaluated without a startup precondition trap.
+_ = app.setActivationPolicy(
+    usesPassiveNativeBackgroundRuntime() ? .accessory : .regular
+)
 private let delegate = GoldenEyeAppDelegate()
 app.delegate = delegate
 app.run()

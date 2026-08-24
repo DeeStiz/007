@@ -763,9 +763,10 @@ prepared assets remain beneath ignored `build/native/` directories.
 ## 2026-08-23 background-window behavior refresh
 
 - `GOLDENEYE_NATIVE_BACKGROUND=1` is now a supported owner-independent launch
-  mode; `scripts/run_native_boot.sh` defaults to it, while cadence measurement
-  defaults to foreground mode. Background mode orders the view without
-  activating/keying the application.
+  mode; both `scripts/run_native_boot.sh` and cadence measurement default to
+  it. Active-display cadence requires explicit
+  `GOLDENEYE_NATIVE_BACKGROUND=0`. Background mode does not activate or key
+  the application.
 - The actual `run_native_boot.sh` LaunchServices verification under
   `frontmost=loginwindow` retained `3,124` source ticks in
   `build/native/boot-runtime/cadence/runs/m29-background-runner-20260823-locked/`.
@@ -773,3 +774,86 @@ prepared assets remain beneath ignored `build/native/` directories.
 - Current signed Release SHA-256 is
   `4fb60d7fa26ad9e4904ebf640caaf0342edb7a7fc4a313e933942cd210ab7e5a`;
   Release history/provenance, R0, and bundle gates pass.
+
+## 2026-08-24 unlocked Metal 4 and background-launch continuation
+
+- Production supplied-drawable stage capture now passes on the unlocked host
+  with API and shader validation enabled. All seven source-order stages draw
+  room plus every scoped static prop (`363,657,270,235,279,1144,298` scene/
+  Metal draws), scoped `unsupportedMask=0`, retained full-scene `0x38`, and
+  deterministic packet/composition/readback hashes. The typed `0x0055_2d58`
+  authored decal mapping is retained; no category mask is bypassed.
+- The inspected Metal trace is
+  `build/native/stage-gameplay-camera-production-capture-v7/gputrace-20240824-stage-v7.gputrace`;
+  its saved `gpudebug` log records 8 command buffers, 8 encoders, and 3,246
+  frame draws. Packet strict/ASan/UBSan and the clean production harness pass.
+- Rebuilt signed Release SHA-256:
+  `d6df59f20c118eda87ec1e27f3e65153bd95b5ae03319512a5106dc519f718e5`.
+  The background runner now uses `open -g -n`; a live check kept Safari
+  frontmost while the Release owner process remained alive. The locked
+  `3,124`-tick owner proof remains execution-only, not visible presentation.
+
+## 2026-08-24 passive background window correction
+
+- Background mode no longer orders a visible/floating input window. It is
+  normal-level, click-through, mouse-movement-disabled, excluded from Space
+  promotion, ordered behind other windows, and forcibly windowed even if a
+  caller passes `GOLDENEYE_NATIVE_FULLSCREEN=1`.
+- Rebuilt Release policy/Debug build gates pass. Runtime evidence reports the
+  GoldenEye window `onscreen=0` with zero bounds; Stocks remains frontmost
+  before and after a real click at the window coordinate, proving the click
+  passes through. Current signed Release SHA-256:
+  `6962a842aa9ed3f32eaa25dc0c9ac8c3acd996740e1d5fe45a39ffd794ca9ba8`.
+  Evidence: `build/native/boot-runtime/cadence/runs/m30-background-clickthrough-20260824/window-policy.log`.
+
+## 2026-08-24 direct-launch passive default
+
+- Every launch now defaults to passive background behavior internally. Only
+  exact `GOLDENEYE_NATIVE_BACKGROUND=0` opts into foreground activation;
+  cadence/legacy probe flags do not grant foreground or fullscreen authority.
+- Direct `open -n` with no background variable plus a fullscreen request stayed
+  Safari-frontmost, exposed GoldenEye only as `onscreen=0` zero-bounds windows,
+  and passed a real click to Stocks. Current signed Release SHA-256:
+  `6d4241043c40c9013abb4f7c86796bbb9ea117a9c08b2dd7c515e77b742acaab`.
+  Evidence: `build/native/boot-runtime/cadence/runs/m30-direct-launch-passive-20260824/direct-no-env-policy.log`.
+
+## 2026-08-24 migration acknowledgement and publication lock
+
+- Migration callbacks now wait for bounded owner acknowledgement (two display
+  periods, capped at 50 ms); timeout/cancel removes queued callbacks and never
+  pauses logic. Owner smoke covers normal completion, bounded timeout,
+  cancellation, and idempotence. Source rendering copies immutable publication
+  state and uses a separate Metal serialization lock.
+- External fullscreen DELL Release evidence records `120.0005 Hz`, `1754`
+  presented samples, `58.5483 FPS`, 16.65 ms median, and zero unexpected/
+  marshaled/migration-timeout/drop/stale/unhandled callbacks or render failures.
+  Strict 59 FPS remains open; evidence is under
+  `build/native/boot-runtime/cadence/runs/m30-migration-ack-20260824-60-fullscreen/60/`.
+- Cast validation remains pre-Cast (`castSubmit=0`, Gunbarrel tick `2924`, no
+  crash/authority error) after the publication lock split. Current Release
+  SHA: `afd99228c5365467930dabe1fe912210b14666e8349a7af2953ee9db0b20b77c`.
+  Current-hash passive evidence: `build/native/boot-runtime/cadence/runs/m30-direct-launch-passive-20260824-r2/direct-no-env-policy.log`.
+
+## 2026-08-24 Cast harness isolation
+
+- The repeated cadence activation/keepalive loop was removed from production.
+  Cast validation defaults to passive background authority/scene-composition
+  evidence; a visible Metal/shader/capture run is a separate explicit
+  foreground lane. No speculative source/renderer bypass was introduced.
+- Signed Release and owner smoke pass. Current SHA-256:
+  `20694ab3c22615a7ad7908960dd8c9dbe0e6e0c657edd8352ff44bad1d79c6ea`.
+
+## 2026-08-24 passive-runtime supersession
+
+- Exact `GOLDENEYE_NATIVE_BACKGROUND=0` is now the sole interactive opt-in;
+  cadence and legacy probes no longer bypass passive policy. The repeated
+  activation/key-window keepalive, floating level, and front-regardless paths
+  are removed. Background surfaces are accessory, alpha-zero, click-through,
+  non-first-responder, windowed, and guarded against reopen/reactivation.
+- Final signed Release SHA-256:
+  `1a1831ba059a8831c43b04dd8379095400e7771c81d797a612e491285c18ae3d`.
+  The final passive 120-owner artifact under
+  `build/native/boot-runtime/cadence/runs/m30-final-passive-background-20260824/120/`
+  keeps ChatGPT frontmost with no key/active/fullscreen violation and advances
+  `362` source frames at `120.2059 Hz`, authority `none`, no pause, and clean
+  termination. Active-display presented cadence remains separately open.

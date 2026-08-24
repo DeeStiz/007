@@ -767,7 +767,12 @@ final class GoldenEyeSourceScenePipelineV6 {
             && sourceState.coverage_mode == UInt32(GE_SOURCE_COVERAGE_V6_WRAP)
         let stageXluMode = mode == 0xc410_49d8 || mode == 0xc410_4b50 || mode == 0x0c18_49d8 || mode == 0x0050_49d8
         let stageDecalMode = mode == 0xc410_4dd8 || mode == 0xc411_2d58 || mode == 0x0c18_4dd8 || mode == 0x0c19_2d58 ||
-            mode == 0x0c18_4e50 || mode == 0x0050_4dd8 || mode == 0x0050_4e50
+            mode == 0x0c18_4e50 || mode == 0x0050_4dd8 || mode == 0x0050_4e50 ||
+            // Source G_RM_AA_ZB_OPA_DECAL as emitted by the guarded
+            // static-prop sidecars. Coverage wrap/zmode decal remains
+            // explicit; the Metal mapping below supplies only the proven
+            // straight-alpha color-memory equation.
+            mode == 0x0055_2d58
         guard (coverageDestination == 0 || coverageSave || stageXluMode || stageDecalMode || gunbarrelSecondary || castSecondary),
               (zMode == 0 || stageXluMode || stageDecalMode || castSecondary), !coverageXAlpha,
               !forceBlend || alphaCoverageSelect || stageXluMode || stageDecalMode || rarewareForcedPass || coverageSave || gunbarrelSecondary || castSecondary else {
@@ -828,7 +833,8 @@ final class GoldenEyeSourceScenePipelineV6 {
         if rawMode == 0xc410_4dd8 || rawMode == 0xc411_2d58 || rawMode == 0xc410_49d8 || rawMode == 0xc410_4b50 ||
             rawMode == 0x0c18_49d8 || rawMode == 0x0c18_4dd8 ||
             rawMode == 0x0c19_2d58 || rawMode == 0x0c18_4e50 ||
-            rawMode == 0x0050_49d8 || rawMode == 0x0050_4dd8 || rawMode == 0x0050_4e50 {
+            rawMode == 0x0050_49d8 || rawMode == 0x0050_4dd8 || rawMode == 0x0050_4e50 ||
+            rawMode == 0x0055_2d58 {
             // Source stage XLU/decal room passes use coverage wrap and
             // source-alpha-over-memory color. Metal has no N64 coverage
             // register, so the typed stage tuple maps to the corresponding

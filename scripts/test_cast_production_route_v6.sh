@@ -16,13 +16,37 @@ STAGE_ROOT="${GOLDENEYE_NATIVE_STAGE_ASSET_ROOT:-${ROOT}/build/native/stage-asse
 VISIBLE_ROOT="${GOLDENEYE_NATIVE_VISIBLE_DEPENDENCY_ROOT:-${ROOT}/build/native/ramrom-visible-dependencies-v6}"
 ROM_PATH="${1:-${GOLDENEYE_ROM_PATH:-/Users/derek/Documents/GoldenEye 007 (USA).z64}}"
 SEED="${GE_CAST_PRODUCTION_SEED:-0x12345678}"
-CAPTURE_MODE="${GE_CAST_PRODUCTION_MODE:-capture}"
+CAPTURE_MODE="${GE_CAST_PRODUCTION_MODE:-validation}"
+ALLOW_FOREGROUND_CAPTURE="${GOLDENEYE_ALLOW_FOREGROUND_CAPTURE:-0}"
+WAIT_SECONDS="${GE_CAST_PRODUCTION_WAIT_SECONDS:-300}"
+CADENCE_WARMUP_SECONDS="${GE_CAST_PRODUCTION_CADENCE_WARMUP:-0}"
+CADENCE_PROBE="${GE_CAST_PRODUCTION_CADENCE_PROBE:-0}"
+[[ "${WAIT_SECONDS}" =~ ^[0-9]+$ && "${WAIT_SECONDS}" -gt 0 ]] || {
+    echo "Cast production route V6: GE_CAST_PRODUCTION_WAIT_SECONDS must be a positive integer" >&2
+    exit 2
+}
+[[ "${CADENCE_WARMUP_SECONDS}" =~ ^[0-9]+([.][0-9]+)?$ ]] || {
+    echo "Cast production route V6: GE_CAST_PRODUCTION_CADENCE_WARMUP must be a non-negative number" >&2
+    exit 2
+}
+[[ "${CADENCE_PROBE}" == 0 || "${CADENCE_PROBE}" == 1 ]] || {
+    echo "Cast production route V6: GE_CAST_PRODUCTION_CADENCE_PROBE must be 0 or 1" >&2
+    exit 2
+}
+[[ "${ALLOW_FOREGROUND_CAPTURE}" == 0 || "${ALLOW_FOREGROUND_CAPTURE}" == 1 ]] || {
+    echo "Cast production route V6: GOLDENEYE_ALLOW_FOREGROUND_CAPTURE must be 0 or 1" >&2
+    exit 2
+}
 case "${CAPTURE_MODE}" in
     validation)
         SHADER_VALIDATION=1
         CAPTURE_ENABLED=0
         ;;
     capture)
+        [[ "${ALLOW_FOREGROUND_CAPTURE}" == "1" ]] || {
+            echo "Cast production route V6: capture is a visible foreground test; set GOLDENEYE_ALLOW_FOREGROUND_CAPTURE=1 explicitly" >&2
+            exit 2
+        }
         # gpucapture refuses a process launched with MTL_SHADER_VALIDATION=1.
         # Validation and trace evidence are therefore deliberately separate
         # runs over the same debuggable production-shaped app.
@@ -35,6 +59,11 @@ case "${CAPTURE_MODE}" in
         ;;
 esac
 
+NATIVE_BACKGROUND=1
+if [[ "${CAPTURE_MODE}" == "capture" ]]; then
+    NATIVE_BACKGROUND=0
+fi
+
 fail() {
     echo "Cast production route V6: $*" >&2
     exit 1
@@ -43,17 +72,16 @@ fail() {
 require_dir() { [[ -d "$1" ]] || fail "missing directory $1"; }
 require_file() { [[ -s "$1" ]] || fail "missing or empty file $1"; }
 
+APP_PID=""
+DID_LAUNCH=0
+RUNTIME_LOCK_FILE="${TMPDIR:-/tmp}/goldeneye-native-runtime.lock"
+RUNTIME_LOCK_HELD=0
 stop_app() {
-    osascript -e 'tell application id "com.goldeneye.swift.host" to quit' \
-        >/dev/null 2>&1 || true
-    for _ in $(seq 1 30); do
-        if ! pgrep -x GoldenEyeHost >/dev/null 2>&1; then
-            sleep 2
-            return 0
-        fi
-        sleep 1
-    done
-    killall GoldenEyeHost >/dev/null 2>&1 || true
+    if [[ -n "${APP_PID}" ]] && kill -0 "${APP_PID}" 2>/dev/null; then
+        kill -TERM "${APP_PID}" 2>/dev/null || true
+        wait "${APP_PID}" 2>/dev/null || true
+    fi
+    APP_PID=""
 }
 
 mkdir -p "${BUILD_ROOT}"
@@ -115,75 +143,108 @@ for log in "${CAST_LOG}" "${OWNER_LOG}" "${FRAME_LOG}" "${AUTHORITY_LOG}"; do : 
 
 cleanup() {
     stop_app
-    cp -f /tmp/goldeneye-source-product-renderer-v6-cast.log "${CAST_LOG}" 2>/dev/null || true
-    cp -f /tmp/goldeneye-source-product-renderer-v6-cast-prewarm.log "${PREWARM_LOG}" 2>/dev/null || true
-    cp -f /tmp/goldeneye-source-product-renderer-v6-cast-builder-prewarm.log "${BUILDER_PREWARM_LOG}" 2>/dev/null || true
-    cp -f /tmp/goldeneye-source-frontend-owner.log "${OWNER_LOG}" 2>/dev/null || true
-    cp -f /tmp/goldeneye-source-product-renderer-v6-frames.log "${FRAME_LOG}" 2>/dev/null || true
-    cp -f /tmp/goldeneye-source-frontend-authority.log "${AUTHORITY_LOG}" 2>/dev/null || true
+    if [[ "${DID_LAUNCH}" == "1" ]]; then
+        cp -f /tmp/goldeneye-source-product-renderer-v6-cast.log "${CAST_LOG}" 2>/dev/null || true
+        cp -f /tmp/goldeneye-source-product-renderer-v6-cast-prewarm.log "${PREWARM_LOG}" 2>/dev/null || true
+        cp -f /tmp/goldeneye-source-product-renderer-v6-cast-builder-prewarm.log "${BUILDER_PREWARM_LOG}" 2>/dev/null || true
+        cp -f /tmp/goldeneye-source-frontend-owner.log "${OWNER_LOG}" 2>/dev/null || true
+        cp -f /tmp/goldeneye-source-product-renderer-v6-frames.log "${FRAME_LOG}" 2>/dev/null || true
+        cp -f /tmp/goldeneye-source-frontend-authority.log "${AUTHORITY_LOG}" 2>/dev/null || true
+    fi
+    if [[ "${RUNTIME_LOCK_HELD}" == "1" ]]; then
+        /usr/bin/unlink "${RUNTIME_LOCK_FILE}" 2>/dev/null || true
+        RUNTIME_LOCK_HELD=0
+    fi
 }
 trap cleanup EXIT
+command -v shlock >/dev/null 2>&1 || fail "shlock is required for runtime serialization"
+shlock -f "${RUNTIME_LOCK_FILE}" -p "$$" \
+    || fail "another GoldenEye runtime harness owns ${RUNTIME_LOCK_FILE}"
+RUNTIME_LOCK_HELD=1
 
-stop_app
+if pgrep -x GoldenEyeHost >/dev/null 2>&1; then
+    fail "refusing to overlap another GoldenEyeHost; wait for the existing background run to finish"
+fi
 touch "${CRASH_MARKER}"
 : > /tmp/goldeneye-source-product-renderer-v6-cast.log
 : > /tmp/goldeneye-source-frontend-owner.log
 : > /tmp/goldeneye-source-product-renderer-v6-frames.log
 : > /tmp/goldeneye-source-frontend-authority.log
 
-open -n \
-    --env GOLDENEYE_NATIVE_TITLE=1 \
-    --env GOLDENEYE_NATIVE_ASSET_ROOT="${ASSET_ROOT}" \
-    --env GOLDENEYE_NATIVE_STAGE_ASSET_ROOT="${STAGE_ROOT}" \
-    --env GOLDENEYE_NATIVE_VISIBLE_DEPENDENCY_ROOT="${VISIBLE_ROOT}" \
-    --env GOLDENEYE_NATIVE_SOURCE_FRONTEND_ROOT="${SOURCE_ROOT}" \
-    --env GOLDENEYE_NATIVE_CAST_ASSET_ROOT="${CAST_ROOT}" \
-    --env GOLDENEYE_NATIVE_GUNBARREL_SIDECAR="${GUNBARREL_SIDECAR}" \
-    --env GOLDENEYE_NATIVE_CAST_SOURCE_INDEX="${GE_CAST_SOURCE_INDEX:-}" \
-    --env GOLDENEYE_NATIVE_CAST_RANDOM_WORD="${GE_CAST_RANDOM_WORD:-}" \
-    --env GOLDENEYE_NATIVE_FULLSCREEN="${GOLDENEYE_NATIVE_FULLSCREEN:-0}" \
-    --env GOLDENEYE_CADENCE_FULLSCREEN="${GOLDENEYE_CADENCE_FULLSCREEN:-0}" \
-    --env GOLDENEYE_CADENCE_STRESS="${GOLDENEYE_CADENCE_STRESS:-0}" \
-    --env GOLDENEYE_TITLE_RANDOM_SEED="${SEED}" \
-    --env GOLDENEYE_CADENCE_PROBE=1 \
-    --env GOLDENEYE_CADENCE_DURATION=120 \
-    --env MTL_DEBUG_LAYER=1 \
-    --env MTL_DEBUG_LAYER_ERROR_MODE=nslog \
-    --env MTL_SHADER_VALIDATION="${SHADER_VALIDATION}" \
-    --env MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1 \
-    --env MTL_CAPTURE_ENABLED="${CAPTURE_ENABLED}" \
-    "${APP_DIR}"
-
-PID=""
+APP_LAUNCH_LOG="${BUILD_ROOT}/app-launch.log"
+(
+    cd "${APP_DIR}/Contents/MacOS"
+    exec env \
+        GOLDENEYE_NATIVE_TITLE=1 \
+        GOLDENEYE_NATIVE_ASSET_ROOT="${ASSET_ROOT}" \
+        GOLDENEYE_NATIVE_STAGE_ASSET_ROOT="${STAGE_ROOT}" \
+        GOLDENEYE_NATIVE_VISIBLE_DEPENDENCY_ROOT="${VISIBLE_ROOT}" \
+        GOLDENEYE_NATIVE_SOURCE_FRONTEND_ROOT="${SOURCE_ROOT}" \
+        GOLDENEYE_NATIVE_CAST_ASSET_ROOT="${CAST_ROOT}" \
+        GOLDENEYE_NATIVE_GUNBARREL_SIDECAR="${GUNBARREL_SIDECAR}" \
+        GOLDENEYE_NATIVE_CAST_SOURCE_INDEX="${GE_CAST_SOURCE_INDEX:-}" \
+        GOLDENEYE_NATIVE_CAST_RANDOM_WORD="${GE_CAST_RANDOM_WORD:-}" \
+        GOLDENEYE_NATIVE_BACKGROUND="${NATIVE_BACKGROUND}" \
+        GOLDENEYE_NATIVE_FULLSCREEN=0 \
+        GOLDENEYE_CADENCE_FULLSCREEN="${GOLDENEYE_CADENCE_FULLSCREEN:-0}" \
+        GOLDENEYE_CADENCE_STRESS="${GOLDENEYE_CADENCE_STRESS:-0}" \
+        GOLDENEYE_TITLE_RANDOM_SEED="${SEED}" \
+        GOLDENEYE_CADENCE_PROBE="${CADENCE_PROBE}" \
+        GOLDENEYE_CADENCE_WARMUP="${CADENCE_WARMUP_SECONDS}" \
+        GOLDENEYE_CADENCE_DURATION="${WAIT_SECONDS}" \
+        MTL_DEBUG_LAYER=1 \
+        MTL_DEBUG_LAYER_ERROR_MODE=nslog \
+        MTL_SHADER_VALIDATION="${SHADER_VALIDATION}" \
+        MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1 \
+        MTL_CAPTURE_ENABLED="${CAPTURE_ENABLED}" \
+        ./GoldenEyeHost
+) >"${APP_LAUNCH_LOG}" 2>&1 &
+APP_PID=$!
+PID="${APP_PID}"
+DID_LAUNCH=1
 for _ in $(seq 1 20); do
-    PID=$(pgrep -n -x GoldenEyeHost || true)
-    [[ -n "${PID}" ]] && break
+    kill -0 "${PID}" 2>/dev/null && break
     sleep 1
 done
-[[ -n "${PID}" ]] || fail "production Cast app did not start"
-printf 'pid=%s\nseed=%s\nmode=%s\nshaderValidation=%s\ncaptureEnabled=%s\ncastRoot=%s\n' \
+kill -0 "${PID}" 2>/dev/null || fail "production Cast app did not start"
+printf 'pid=%s\nseed=%s\nmode=%s\nshaderValidation=%s\ncaptureEnabled=%s\ncadenceProbe=%s\nwaitSeconds=%s\ncastRoot=%s\n' \
     "${PID}" "${SEED}" "${CAPTURE_MODE}" "${SHADER_VALIDATION}" \
-    "${CAPTURE_ENABLED}" "${CAST_ROOT}" > "${BUILD_ROOT}/launch.txt"
+    "${CAPTURE_ENABLED}" "${CADENCE_PROBE}" "${WAIT_SECONDS}" "${CAST_ROOT}" > "${BUILD_ROOT}/launch.txt"
 
 cast_seen=0
-for _ in $(seq 1 120); do
+owner_cast_seen=0
+for _ in $(seq 1 "${WAIT_SECONDS}"); do
     if rg -q 'castSubmit=1' /tmp/goldeneye-source-product-renderer-v6-cast.log 2>/dev/null; then
         cast_seen=1
         break
     fi
-    if ! pgrep -x GoldenEyeHost >/dev/null 2>&1; then break; fi
+    if rg -q 'castSceneSubmit=1' /tmp/goldeneye-source-frontend-owner.log 2>/dev/null; then
+        owner_cast_seen=1
+        if [[ "${CAPTURE_MODE}" == "validation" ]]; then break; fi
+    fi
+    if ! kill -0 "${PID}" 2>/dev/null; then break; fi
     sleep 1
 done
 
-if [[ "${cast_seen}" != 1 ]]; then
+if [[ "${cast_seen}" != 1 && "${owner_cast_seen}" != 1 ]]; then
     # CrashReporter writes the IPS asynchronously after the process exits.
     sleep 5
     latest_crash=$(find "${HOME}/Library/Logs/DiagnosticReports" -maxdepth 1 \
         -type f -name 'GoldenEyeHost-*.ips' -newer "${CRASH_MARKER}" \
         -print 2>/dev/null | sort | tail -1)
+    process_alive=0
+    kill -0 "${PID}" 2>/dev/null && process_alive=1
+    last_owner_line=$(tail -1 /tmp/goldeneye-source-frontend-owner.log 2>/dev/null || true)
+    last_frame_line=$(tail -1 /tmp/goldeneye-source-product-renderer-v6-frames.log 2>/dev/null || true)
     {
         echo "castSubmit=0"
         echo "latestCrash=${latest_crash:-none}"
+        echo "waitSeconds=${WAIT_SECONDS}"
+        echo "cadenceWarmupSeconds=${CADENCE_WARMUP_SECONDS}"
+        echo "processAlive=${process_alive}"
+        echo "deadlineReason=$([[ "${process_alive}" == 1 ]] && echo timeout || echo process-exited)"
+        echo "lastOwnerLine=${last_owner_line}"
+        echo "lastFrameLine=${last_frame_line}"
         if [[ -n "${latest_crash}" && -s "${latest_crash}" ]]; then
             rg -n 'Thread stack size exceeded|goldeneye_gbi_scene_builder_v6.swift|GoldenEyeSourceProductRendererV6' \
                 "${latest_crash}" || true
@@ -194,9 +255,11 @@ fi
 
 if [[ "${CAPTURE_MODE}" == "validation" ]]; then
     {
-        echo "castSubmit=1"
+        echo "castSubmit=${cast_seen}"
+        echo "ownerCastSceneSubmit=${owner_cast_seen}"
         echo "shaderValidation=1"
-        echo "capture=separate-run-required"
+        echo "presentation=background-unverified"
+        echo "capture=explicit-foreground-run-required"
     } > "${BUILD_ROOT}/validation.txt"
     echo "Cast production route V6 validation: PASS evidence=${BUILD_ROOT}"
     exit 0

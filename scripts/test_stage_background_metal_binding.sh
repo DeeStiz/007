@@ -84,7 +84,9 @@ stop_runtime_app
 : > /tmp/goldeneye-m27-stage-background.log
 : > /tmp/goldeneye-native-title-owner.log
 RUNTIME_MARKER=$(mktemp /tmp/goldeneye-m27-stage-runtime-marker.XXXXXX)
-open -n \
+open -g -n \
+    --env GOLDENEYE_NATIVE_BACKGROUND=1 \
+    --env GOLDENEYE_NATIVE_FULLSCREEN=0 \
     --env GOLDENEYE_M27_STAGE_OVERLAY=1 \
     --env GOLDENEYE_M27_STAGE_ID=33 \
     --env GOLDENEYE_NATIVE_STAGE_ASSET_ROOT="${ASSET_ROOT}" \
@@ -131,7 +133,9 @@ if [[ -d "${TRACE_PATH}" ]]; then
 fi
 : > /tmp/goldeneye-m27-stage-background.log
 : > /tmp/goldeneye-native-title-owner.log
-open -n \
+open -g -n \
+    --env GOLDENEYE_NATIVE_BACKGROUND=1 \
+    --env GOLDENEYE_NATIVE_FULLSCREEN=0 \
     --env GOLDENEYE_M27_STAGE_OVERLAY=1 \
     --env GOLDENEYE_M27_STAGE_ID=33 \
     --env GOLDENEYE_NATIVE_STAGE_ASSET_ROOT="${ASSET_ROOT}" \

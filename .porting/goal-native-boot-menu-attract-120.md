@@ -118,8 +118,8 @@ or mutable object graphs.
 | M26 | Demo gameplay core | Demo-reachable player/camera/collision, props, doors, guards, AI, objectives, weapons, effects, and paired cadence run headlessly. | In progress — all 14 routes now pass bounded fixed-point player/camera, pad/room/portal, dynamic-door, guard/weapon-page, non-model visual, weapon/effect, orchestrator, and abort/restore lanes under strict/ASan/UBSan; `sourceReady=0` and collision/AI/characters/weapons/effects remain explicit diagnostics. |
 | M27 | Demo renderer | Rooms, sky, props, characters, weapons, particles, glass, explosions, HUD/watch, and fades render through Metal 4. | In progress — V7 room/static-prop packets pass all seven stages with source pad-basis/model-scale transforms and the aligned current-room-plus-one-hop visibility contract, scoped `unsupportedMask=0`, and retained full-scene `0x38`; the canonical Release now records a supplied-drawable Facility room/static-prop frame, while current Metal-4 capture/gputrace/physical evidence and character/effect/AI/HUD/weapon categories remain pending. |
 | M28 | RAMROM playback | All 14 recordings parse, preserve source-anchor packet/RNG consumption and speedframes, support abort, and restore title state. | In progress — all 14 recordings pass twice (`runs=28`, `abort_restore=14`) through strict/ASan/UBSan C and Swift owner-service parser/playback/checksum/RNG validation; the canonical demo 4 / Facility Release route now reaches packet return and a repeated attract cycle with `sourceAuthorityFailure=none`, while full all-demo native gameplay/category closure remains pending. |
-| M29 | Integrated acceptance/handoff | Both launch routes, Release signing, 120/60 evidence, validation, sanitizers, capture inspection, and handoff artifacts pass. | In progress — rebuilt signed Release/provenance and V7 owner/renderer integration pass; current short cadence is near 120 Hz with zero dropped ticks but zero presented timestamps/FPS, current Metal 4 captures SKIP, live Cast supplied-drawable remains blocked, and full gameplay-category closure remains pending. |
-| M30 | Visual/window regression recovery | Nintendo/Rareware/Gunbarrel/Cast visual fixes and AppKit focus/window behavior pass source/Metal validation without weakening cadence or fail-closed contracts. | In progress — six-fix implementation, source/CPU suites, elevated GUI/input probes, and fresh Nintendo/Rareware/Cast Metal API/shader captures pass; physical focus/window migration, sustained presented cadence, live Cast supplied-drawable output, and stage gameplay capture remain open. |
+| M29 | Integrated acceptance/handoff | Both launch routes, Release signing, 120/60 evidence, validation, sanitizers, capture inspection, and handoff artifacts pass. | In progress — rebuilt signed Release/provenance, V7 owner/renderer integration, and unlocked seven-stage supplied-drawable/gputrace evidence pass; active-display sustained cadence, live Cast supplied-drawable output, and full gameplay-category closure remain pending. |
+| M30 | Visual/window regression recovery | Nintendo/Rareware/Gunbarrel/Cast visual fixes and AppKit focus/window behavior pass source/Metal validation without weakening cadence or fail-closed contracts. | In progress — six-fix implementation, source/CPU suites, fresh title/Cast captures, seven-stage Metal 4 supplied-drawable capture, and passive AppKit non-interference pass; active-display migration/sustained presentation, live Cast GPU output, and character/effect/AI/HUD/weapon categories remain open. |
 
 ## Fidelity Recovery Rebaseline — 2026-08-19
 
@@ -1326,7 +1326,8 @@ pushes, branches, resets, cleans, or removes unrelated artifacts.
   `run_native_boot.sh` defaults to that mode, does not activate or key the
   window, and keeps the owner/audio timeline independent of AppKit focus.
   Set `GOLDENEYE_NATIVE_BACKGROUND=0` for an interactive foreground launch;
-  cadence measurement still defaults to foreground mode.
+  `measure_native_runtime.sh` also defaults to passive background evidence.
+  Active-display cadence requires the same explicit foreground opt-in.
 - The actual `run_native_boot.sh` LaunchServices background verification under
   the locked session retained `3,124` source ticks in
   `build/native/boot-runtime/cadence/runs/m29-background-runner-20260823-locked/`
@@ -1336,3 +1337,196 @@ pushes, branches, resets, cleans, or removes unrelated artifacts.
 - Background policy, debug build, owner soak, Release build, provenance,
   fidelity, renderer-policy, and bundle gates pass. Current Release SHA-256:
   `4fb60d7fa26ad9e4904ebf640caaf0342edb7a7fc4a313e933942cd210ab7e5a`.
+
+### M30 unlocked production render and background-launch continuation — 2026-08-24
+
+- The strict stage gameplay-camera production harness now runs on the unlocked
+  Metal 4 host with `MTL_DEBUG_LAYER=1` and `MTL_SHADER_VALIDATION=1`. All
+  seven source-order stages (`33,34,35,9,20,26,25`) produce supplied-drawable
+  non-black pixels: `105/105`, `158/158`, `43/43`, `59/59`, `54/54`,
+  `78/78`, and `130/130` static props, with scene/Metal draws
+  `363,657,270,235,279,1144,298`. Every scoped `unsupportedMask` is `0x0`;
+  the retained full-scene mask remains `0x38`. Packet/composition hashes and
+  seven raw SHA-256 readbacks are deterministic. The authored
+  `0x0055_2d58` stage decal tuple is admitted through the typed Metal blend
+  mapping after validation exposed it; no unsupported category bit was
+  cleared and characters/effects/AI/HUD/weapons/collision remain out of scope.
+- The inspected trace is
+  `build/native/stage-gameplay-camera-production-capture-v7/gputrace-20240824-stage-v7.gputrace`.
+  `gpudebug` records eight command buffers (one texture upload plus seven
+  source-scene frames), eight encoders, and frame draw counts
+  `363,657,270,235,279,1144,298` (`3,246` total), with real Metal 4 source
+  render encoders, 640x480 BGRA8 color/depth attachments, and indexed draws.
+  The saved inspection is
+  `build/native/stage-gameplay-camera-production-capture-v7/gpudebug-stage-v7.log`.
+- Stage gameplay-camera packet strict/ASan/UBSan gates pass after the mapping
+  fix. The rebuilt signed source-faithful Release passes preparation
+  (`resources=21`), provenance, codesign, renderer/fidelity/bundle gates, and
+  has executable SHA-256
+  `d6df59f20c118eda87ec1e27f3e65153bd95b5ae03319512a5106dc519f718e5`.
+- LaunchServices was the last foreground seam: AppKit background mode already
+  avoided `activate`/keying, but plain `open -n` still foregrounded a newly
+  launched app. `scripts/run_native_boot.sh` now uses `open -g -n` for
+  `GOLDENEYE_NATIVE_BACKGROUND=1`. A live rebuilt-Release check kept the
+  existing Safari frontmost while the GoldenEye owner stayed alive for five
+  seconds, then terminated cleanly. The locked-session owner proof remains
+  `3,124` ticks at `frontmost=loginwindow`; neither artifact claims visible
+  pixels or presented FPS while no active display exists.
+
+### M30 passive-window/fullscreen correction — 2026-08-24
+
+- The previous background fix still left a normal ordered window, and the
+  runner still defaulted to fullscreen when callers supplied a fullscreen
+  value. Background mode is now explicitly passive: normal window level,
+  no `canJoinAllSpaces`, `ignoresMouseEvents=true`,
+  `acceptsMouseMovedEvents=false`, `orderBack(nil)`, and no cadence-probe
+  `orderFrontRegardless`. `run_native_boot.sh` forcibly sets
+  `GOLDENEYE_NATIVE_FULLSCREEN=0` whenever `GOLDENEYE_NATIVE_BACKGROUND=1`;
+  fullscreen is permitted only when the caller explicitly sets
+  `GOLDENEYE_NATIVE_BACKGROUND=0`. Cadence flags alone are not consent.
+- Rebuilt Release policy/static checks and Debug compilation pass. The live
+  rebuilt Release check supplied `GOLDENEYE_NATIVE_FULLSCREEN=1` deliberately
+  to the background route: the GoldenEye window was reported `onscreen=0`
+  with zero bounds, the existing Stocks app stayed frontmost, and a real
+  `cliclick` landed in Stocks rather than activating GoldenEye. The owner
+  terminated cleanly. Current signed executable SHA-256 is
+  `6962a842aa9ed3f32eaa25dc0c9ac8c3acd996740e1d5fe45a39ffd794ca9ba8`.
+  Durable evidence is
+  `build/native/boot-runtime/cadence/runs/m30-background-clickthrough-20260824/window-policy.log`.
+- Explicit foreground fullscreen remains opt-in and necessarily owns its
+  fullscreen Space/input; the passive background route no longer enters that
+  mode or intercepts clicks.
+
+### M30 display-specific cadence continuation — 2026-08-24
+
+- The owner now derives its requested `CAFrameRateRange` from
+  `NSScreen.maximumFramesPerSecond` at startup and after display migration:
+  the built-in 120 Hz panel receives `60–120/120`, while the fixed external
+  DELL panel receives `60–60/60`. The cadence harness mirrors that contract
+  by defaulting `GOLDENEYE_CADENCE_ONLY_MODE=60` to a `60/60/60` validation
+  override, while leaving 120 mode at `60/120/120`.
+- Serialized rebuilt-Release runs show the fix is effective. The windowed
+  external 60 Hz case records `3601` logic ticks, `1764` presented samples,
+  `58.8823 FPS`, 16.65 ms median, zero render/debt/fatal/focus failures, and
+  `preferredFrameRateRange=60.0-60.0/60.0`. The 120 Hz case retains
+  `3601` ticks, `119.9993 Hz`, and `preferredFrameRateRange=60.0-120.0/120.0`
+  with no renderer/debt/fatal failures; composited-window presentation is
+  `108.27 FPS`, not strict 120 acceptance.
+- The explicit fullscreen external run still records migration/marshaling and
+  about `49.86 FPS`; this remains a WindowServer/fullscreen acceptance gap,
+  not a reason to weaken the passive background contract. Current signed
+  Release SHA-256 is
+  `7c90733c61e5654647a066227d8fdfa3216deb6a67f4d15c9586139b5a71e56f`.
+
+### M30 direct-launch passive default — 2026-08-24
+
+- Passive behavior is now selected inside the app, not only by
+  `run_native_boot.sh`: every launch remains passive unless
+  `GOLDENEYE_NATIVE_BACKGROUND=0` is set exactly. Unset, malformed, background
+  `1`, and cadence/legacy/title/input/stage probe environments use accessory
+  activation, transparent click-through ordering, and fullscreen suppression.
+- A direct `open -n` launch with no background variable and
+  `GOLDENEYE_NATIVE_FULLSCREEN=1` stayed Safari-frontmost, reported every
+  GoldenEye window `onscreen=0` with zero bounds, and sent a real click to
+  Stocks rather than GoldenEye. The owner terminated cleanly. This closes the
+  direct/Finder launch takeover path; foreground fullscreen is now explicit
+  cadence/interactive behavior only.
+- Current rebuilt signed Release SHA-256 is
+  `6d4241043c40c9013abb4f7c86796bbb9ea117a9c08b2dd7c515e77b742acaab`.
+  Durable direct-launch evidence is
+  `build/native/boot-runtime/cadence/runs/m30-direct-launch-passive-20260824/direct-no-env-policy.log`.
+
+### M30 migration acknowledgement and publication-lock continuation — 2026-08-24
+
+- Unexpected-thread `CAMetalDisplayLink` callbacks now use bounded
+  synchronous acknowledgement: two display periods capped at 50 ms, with
+  the pending display range used during migration. Timed-out queued callbacks
+  are removed immediately and cancelled without pausing the owner timeline.
+  Owner smoke covers completion, timeout, cancellation release, and idempotent
+  completion; supplied-drawable and headless 120 Hz gates remain passing.
+- The source renderer copies immutable published scene/underlay state under
+  `frameStateLock`, then releases it before Metal encode/commit/present and
+  serializes Metal work with a separate render lock. Seven-stage supplied-
+  drawable production capture remains PASS with API/shader validation.
+- Clean external fullscreen DELL evidence at
+  `build/native/boot-runtime/cadence/runs/m30-migration-ack-20260824-60-fullscreen/60/`
+  records `3602` ticks, `120.0005 Hz`, `1762` callbacks, `1754` presented
+  samples, `58.5483 FPS`, 16.65 ms median, and zero unexpected/marshaled/
+  migration-timeout/drop/stale/unhandled/render failures. Strict 59 FPS is
+  still open; the persisted migration log is empty because no migration
+  callback occurred.
+- The serialized Cast lock-fix validation remains fail-closed before Cast:
+  `castSubmit=0`, `latestCrash=none`, Gunbarrel reaches tick `2924`/frame
+  `1424`. Current signed Release SHA-256:
+  `afd99228c5365467930dabe1fe912210b14666e8349a7af2953ee9db0b20b77c`.
+  Current-hash passive evidence is
+  `build/native/boot-runtime/cadence/runs/m30-direct-launch-passive-20260824-r2/direct-no-env-policy.log`.
+
+### M30 Cast harness isolation continuation — 2026-08-24
+
+- The repeated cadence activation/keepalive loop was removed from production.
+  Background Cast validation uses background mode `1` and fullscreen `0`;
+  cadence-probe flags cannot reactivate or key the app. Its owner-side Cast
+  scene submission is authority/composition evidence, not a GPU encode claim.
+- The isolated Cast validation still records `castSubmit=0` before the Cast
+  screen, with the copied Gunbarrel route reaching around tick `2924` and no
+  crash or authority failure. The source route remains fail-closed; no Cast
+  renderer or mask bypass was added.
+- Rebuilt signed Release plus owner smoke pass. Current Release SHA-256:
+  `20694ab3c22615a7ad7908960dd8c9dbe0e6e0c657edd8352ff44bad1d79c6ea`.
+
+### M30 fully passive AppKit runtime closure — 2026-08-24
+
+- The control takeover was the cadence keepalive: it repeatedly called AppKit
+  activation and keyed/fronted the window every 250 ms. That loop, floating
+  window level, and `orderFrontRegardless` path are removed. Every launch now
+  resolves passive unless `GOLDENEYE_NATIVE_BACKGROUND=0` is set exactly.
+- Passive mode sets accessory policy before `app.run()`, never installs the
+  game as first responder, clears input at initial focus loss, remains normal-
+  level/alpha-zero/click-through, suppresses fullscreen, rejects reopen focus,
+  and immediately deactivates/hides on any real active/key notification.
+  Measurement and Cast harnesses share an exclusive runtime lock and exact-PID
+  cleanup; disruptive HID/GPU foreground lanes require explicit opt-ins.
+- Final signed Release SHA-256 is
+  `1a1831ba059a8831c43b04dd8379095400e7771c81d797a612e491285c18ae3d`.
+  `build/native/boot-runtime/cadence/runs/m30-final-passive-background-20260824/120/`
+  passes with ChatGPT frontmost, `active=0`, `key=0`, `fullscreen=0`,
+  `backgroundViolationEvents=0`, alpha-zero/no visible pixels, `362` owner and
+  source frames at `120.2059 Hz`, `sourceAuthorityFailure=none`, zero owner/
+  audio pause, and zero render/fatal/migration failures. The app terminated
+  cleanly after the bounded epoch.
+- This establishes background execution and desktop/input non-interference.
+  The alpha-zero surface still receives callbacks, but rejected presented
+  timestamps and zero visible pixels do not establish active-display FPS,
+  physical visual parity, Metal HUD, or human review acceptance.
+
+### M30 current-hash passive Release and Cast boundary — 2026-08-24
+
+- Fresh signed Release rebuild passes the bundle gate and codesign check.
+  Executable SHA-256 is
+  `75b030d6d8e11ee1de14bd6de34a834fb23c626fda12bc59dd94c27add9ca86e`.
+- The current-hash passive launch stayed alive for 70 seconds with the owner
+  reaching source tick `4314`; NetSward remained frontmost and GoldenEye was
+  inactive/non-key, alpha-zero, normal-level, and click-through. Durable case
+  evidence is
+  `build/native/boot-runtime/cadence/runs/m30-release-passive-cast-20260824/`.
+- The same passive Release run reached the guarded source Cast handoff:
+  `castSubmit=1`, native tick `4313`, source index `2`, body `16`, animation
+  `63`, `49` draws, `2,100` vertices, and `16` poses. This is owner-side
+  authority/composition evidence only; it is not a visible Metal capture.
+- The dynamic Gunbarrel route remains explicitly perf-limited: source GBI
+  lowering is about 27 ms per even anchor and the owner fails closed at debt
+  241 in the Debug/API-validation Cast lane. No source masks, model-result
+  guards, or unsupported-category diagnostics were bypassed. The Cast GPU
+  validation/trace lane remains open until a supplied-drawable foreground run
+  reaches the Cast frame with Metal validation and inspected gputrace.
+- An exact user-shaped `open -g -n` launch with the background variable
+  omitted and fullscreen requested also stayed passive under this final hash:
+  NetSward remained frontmost, GoldenEye was not frontmost, fullscreen stayed
+  suppressed, and the source owner reached tick `2960`. Evidence:
+  `build/native/boot-runtime/cadence/runs/m30-direct-noenv-final-20260824/`.
+- The fresh stage gameplay-camera production supplied-drawable capture also
+  passes under the current source tree: demos `0`, stages `33,34,35,9,20,26,25`,
+  non-identity cameras, room+static props, deterministic hashes, Metal API/
+  shader validation, scoped `unsupportedMask=0`, and retained full-scene
+  `0x38` diagnostics.

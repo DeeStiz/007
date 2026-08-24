@@ -42,6 +42,14 @@ rg -q 'CAFrameRateRange\(minimum: 60, maximum: 120, preferred: 120\)' \
     "${PROJECT_ROOT}/native/host/display_link_runtime.swift"
 rg -q 'let drawable = update\.drawable' \
     "${PROJECT_ROOT}/native/host/display_link_runtime.swift"
+rg -q 'waitResult\(timeout:' \
+    "${PROJECT_ROOT}/native/host/display_link_runtime.swift"
+rg -q 'migrationAcknowledgementDeadline' \
+    "${PROJECT_ROOT}/native/host/display_link_runtime.swift"
+rg -q 'migrationMarshalTimeouts' \
+    "${PROJECT_ROOT}/native/host/display_link_runtime.swift"
+rg -q 'migrationCallback=1' \
+    "${PROJECT_ROOT}/native/host/display_link_runtime.swift"
 rg -q 'applyPendingCommands\(afterPresent: true\)' \
     "${PROJECT_ROOT}/native/host/display_link_runtime.swift"
 rg -q 'timing\.callbackSequence <= 2' \

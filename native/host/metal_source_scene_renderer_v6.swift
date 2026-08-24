@@ -1568,13 +1568,22 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
             } else {
                 throw GoldenEyeSourceSceneRendererV6Error.missingTransform(command.transform_handle)
             }
-            let variant = try pipeline.variant(
-                for: effectiveRenderState,
-                drawFlags: command.flags,
-                hasTexture: hasTexture,
-                textureMipLevels: textureMipLevels,
-                textureArrayMode: textureUsesArray ? 1 : 0
-            )
+            let variant: GoldenEyeSourceScenePipelineV6.Variant
+            do {
+                variant = try pipeline.variant(
+                    for: effectiveRenderState,
+                    drawFlags: command.flags,
+                    hasTexture: hasTexture,
+                    textureMipLevels: textureMipLevels,
+                    textureArrayMode: textureUsesArray ? 1 : 0
+                )
+            } catch {
+                throw GoldenEyeSourceSceneRendererV6Error.invalidState(
+                    "draw=\(command.draw_handle) renderState=\(command.render_state_handle) "
+                    + "rawMode=0x\(String(effectiveRenderState.raw_render_mode, radix: 16)) "
+                    + "flags=0x\(String(command.flags, radix: 16)) error=\(error)"
+                )
+            }
             let lightingContext = try GoldenEyeSourceSceneLightingContextV6(
                 screen: lightingFrameContext.screen,
                 stateHandle: renderState.state_handle,

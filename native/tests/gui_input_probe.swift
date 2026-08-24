@@ -8,6 +8,21 @@ guard CommandLine.arguments.count == 2, let pidValue = Int32(CommandLine.argumen
 }
 
 let pid = pidValue
+guard let target = NSRunningApplication(processIdentifier: pid) else {
+    fputs("could not resolve target application\n", stderr)
+    exit(3)
+}
+
+_ = target.activate(options: [.activateAllWindows])
+let activationDeadline = Date().addingTimeInterval(2)
+while !target.isActive && Date() < activationDeadline {
+    usleep(20_000)
+}
+guard target.isActive else {
+    fputs("target application did not become active; refusing global HID input\n", stderr)
+    exit(4)
+}
+
 func postKey(_ keyCode: CGKeyCode, down: Bool) {
     guard let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: down) else {
         fputs("could not create keyboard event\n", stderr)
@@ -23,8 +38,7 @@ usleep(120_000)
 postKey(0x0D, down: false)
 usleep(120_000)
 
-let target = NSRunningApplication(processIdentifier: pid)
-_ = target?.hide()
+_ = target.hide()
 usleep(180_000)
-_ = target?.activate(options: [.activateAllWindows])
+_ = target.activate(options: [.activateAllWindows])
 print("gui_input_probe: posted keyDown/keyUp and hide/activate focus transition")

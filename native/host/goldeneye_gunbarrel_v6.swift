@@ -375,6 +375,10 @@ public struct GoldenEyeGunbarrelAnimationClipV6: Sendable, Equatable {
     public let frameBytes: UInt32
     public let entrySHA256: String
     public let entryWords: [UInt32]
+    /// Big-endian packed clip bytes materialized once at sidecar load. The
+    /// source root-motion decoder is called for every crossed substep; it
+    /// must not rebuild this immutable byte stream for each descriptor read.
+    public let entryData: Data
     public let rootMotionDescriptors: [GoldenEyeGunbarrelRootMotionDescriptorV6]
     public let rootMotionDescriptorSHA256: String
 }
@@ -532,7 +536,11 @@ public struct GoldenEyeGunbarrelDynamicSidecarV6: Sendable, Equatable {
             throw Error.invalid("identity/runtime ROM guard")
         }
         let clips = wire.clips.map { clip in
-            GoldenEyeGunbarrelAnimationClipV6(
+            let entryData = clip.entryWords.reduce(into: Data()) { data, word in
+                var be = word.bigEndian
+                withUnsafeBytes(of: &be) { data.append(contentsOf: $0) }
+            }
+            return GoldenEyeGunbarrelAnimationClipV6(
                 name: clip.name,
                 entryOffset: clip.entryOffset,
                 dataOffset: clip.dataOffset,
@@ -546,6 +554,7 @@ public struct GoldenEyeGunbarrelDynamicSidecarV6: Sendable, Equatable {
                 frameBytes: clip.frameBytes,
                 entrySHA256: clip.entrySHA256,
                 entryWords: clip.entryWords,
+                entryData: entryData,
                 rootMotionDescriptors: clip.rootMotionDescriptors.map {
                     GoldenEyeGunbarrelRootMotionDescriptorV6(
                         bitOffset: $0.bitOffset,
@@ -916,10 +925,7 @@ public struct GoldenEyeGunbarrelDynamicSidecarV6: Sendable, Equatable {
         guard frame < clip.frameCount, clip.rootMotionDescriptors.count == 4 else {
             throw Error.invalidFrame("\(clipName) root motion frame \(frame)")
         }
-        let stream = clip.entryWords.reduce(into: Data()) { data, word in
-            var be = word.bigEndian
-            withUnsafeBytes(of: &be) { data.append(contentsOf: $0) }
-        }
+        let stream = clip.entryData
         let frameBase = UInt64(frame) * UInt64(clip.frameBits)
         func value(_ descriptor: GoldenEyeGunbarrelRootMotionDescriptorV6) -> Int32 {
             guard descriptor.bitCount > 0 else { return Int32(descriptor.valueOffset) }
@@ -974,10 +980,7 @@ public struct GoldenEyeGunbarrelDynamicSidecarV6: Sendable, Equatable {
         let clip = try self.clip(named: clipName)
         let skeleton = try self.skeleton(named: skeletonName)
         guard frame < clip.frameCount else { throw Error.invalidFrame("\(clipName) frame \(frame)") }
-        let stream = clip.entryWords.reduce(into: Data()) { data, word in
-            var be = word.bigEndian
-            withUnsafeBytes(of: &be) { data.append(contentsOf: $0) }
-        }
+        let stream = clip.entryData
         let frameBase = Int(frame) * Int(clip.frameBytes)
         let rootMotionValue: RootMotionV6?
         if role == "body" {

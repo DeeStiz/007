@@ -29,8 +29,13 @@ mkdir -p "$BUILD_DIR" "$MODULE_CACHE_DIR" "$OUTPUT_DIR"
 SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
 SWIFTC=$(xcrun --sdk macosx --find swiftc)
 CC=$(xcrun --sdk macosx --find clang)
-METAL=$(xcrun --sdk macosx --find metal)
-METALLIB=$(dirname "$METAL")/metallib
+METALLIB=$(xcrun --sdk macosx --find metallib)
+METAL_CRYPTEX=$(dirname "$METALLIB")/metal
+if [[ -x "$METAL_CRYPTEX" ]]; then
+    METAL="$METAL_CRYPTEX"
+else
+    METAL=$(xcrun --sdk macosx --find metal)
+fi
 
 compile_c() {
     source="$1"

@@ -626,6 +626,7 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
                 } else {
                     effectiveButtonsPressed = sourceInput.buttonsPressed
                 }
+                let authorityStart = DispatchTime.now().uptimeNanoseconds
                 let pairedFrame = try sourceAuthority!.step(
                     nativeTick: tick.nativeTick,
                     buttonsPressed: effectiveButtonsPressed,
@@ -646,6 +647,12 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
                     modelResultValue0: modelResult.value0,
                     modelResultValue1: modelResult.value1
                 )
+                let authorityElapsed = DispatchTime.now().uptimeNanoseconds &- authorityStart
+                if authorityElapsed >= 50_000_000 {
+                    appendSourceOwnerEvidence(
+                        "slowSourceAuthority=1 tick=\(tick.nativeTick) elapsedNs=\(authorityElapsed)"
+                    )
+                }
                 let frame = pairedFrame.authoritativeFrame
                 let enteringGunbarrel = !wasGunbarrel &&
                     frame.screen == UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_GUNBARREL)
@@ -661,18 +668,40 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
                 sourceLastRenderHash = frame.renderHash
                 sourceLastAudioHash = frame.audioHash
                 sourceLastAudioEventHash = frame.audioEventHash
+                let castStart = DispatchTime.now().uptimeNanoseconds
                 let castFrameConsumed = serviceSourceCast(
                     sourceFrame: frame,
                     nativeTick: tick.nativeTick
                 )
+                let castElapsed = DispatchTime.now().uptimeNanoseconds &- castStart
+                if castElapsed >= 50_000_000 {
+                    appendSourceOwnerEvidence(
+                        "slowSourceCast=1 tick=\(tick.nativeTick) elapsedNs=\(castElapsed)"
+                    )
+                }
+                let stageStart = DispatchTime.now().uptimeNanoseconds
                 let stageFrameConsumed = serviceSourceRamRom(
                     sourceFrame: frame,
                     nativeTick: tick.nativeTick,
                     mailboxInput: mailboxSnapshot,
                     keyboardInput: keyboard
                 )
+                let stageElapsed = DispatchTime.now().uptimeNanoseconds &- stageStart
+                if stageElapsed >= 50_000_000 {
+                    appendSourceOwnerEvidence(
+                        "slowSourceStage=1 tick=\(tick.nativeTick) elapsedNs=\(stageElapsed)"
+                    )
+                }
                 if !castFrameConsumed && !stageFrameConsumed {
+                    let publishStart = DispatchTime.now().uptimeNanoseconds
                     try publishSourceFrontendFrame(frame, tick: tick)
+                    let publishElapsed = DispatchTime.now().uptimeNanoseconds &- publishStart
+                    if publishElapsed >= 50_000_000 {
+                        appendSourceOwnerEvidence(
+                            "slowSourcePublish=1 tick=\(tick.nativeTick) screen=\(frame.screen) "
+                                + "subphase=\(frame.subphase) elapsedNs=\(publishElapsed)"
+                        )
+                    }
                 }
                 sourceModelHandshake.retainSuccessfulResult(
                     (renderer as? GoldenEyeSourceFrontendModelResultProviderV6)?.takeModelExecutionResult()

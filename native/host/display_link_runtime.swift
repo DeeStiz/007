@@ -88,6 +88,37 @@ struct GE120DisplayLinkTelemetry: Sendable {
     let paused: Bool
 }
 
+/// Small synchronization seam for the migration callback path. The owner
+/// acknowledges a callback after it has either rendered or explicitly
+/// cancelled it; completion is idempotent so a timeout racing the owner drain
+/// cannot signal a waiter twice.
+final class GE120MigrationAcknowledgement: @unchecked Sendable {
+    private let completion = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var didComplete = false
+    private var result = false
+
+    func complete(result: Bool) {
+        lock.lock()
+        guard !didComplete else {
+            lock.unlock()
+            return
+        }
+        didComplete = true
+        self.result = result
+        lock.unlock()
+        completion.signal()
+    }
+
+    func waitResult(timeout: DispatchTime) -> Bool? {
+        guard completion.wait(timeout: timeout) == .success else { return nil }
+        lock.lock()
+        let result = self.result
+        lock.unlock()
+        return result
+    }
+}
+
 /// A display-link adapter whose mutable state belongs to the engine owner
 /// thread.  AppKit may publish resize, refresh-rate and pause requests from a
 /// different thread; those requests are copied into a small mailbox and are
@@ -101,10 +132,9 @@ final class GE120DisplayLinkRuntime: NSObject, CAMetalDisplayLinkDelegate, @unch
     private final class MarshaledCallback {
         let drawable: any CAMetalDrawable
         let timing: GE120DisplayTiming
-        let completion = DispatchSemaphore(value: 0)
-        private let lock = NSLock()
+        private let acknowledgement = GE120MigrationAcknowledgement()
         private var cancelled = false
-        private var result = false
+        private let cancellationLock = NSLock()
 
         init(drawable: any CAMetalDrawable, timing: GE120DisplayTiming) {
             self.drawable = drawable
@@ -112,30 +142,23 @@ final class GE120DisplayLinkRuntime: NSObject, CAMetalDisplayLinkDelegate, @unch
         }
 
         func cancel() {
-            lock.lock()
+            cancellationLock.lock()
             cancelled = true
-            lock.unlock()
+            cancellationLock.unlock()
         }
 
         func complete(result: Bool) {
-            lock.lock()
-            self.result = result
-            lock.unlock()
-            completion.signal()
+            acknowledgement.complete(result: result)
         }
 
         func waitResult(timeout: DispatchTime) -> Bool? {
-            guard completion.wait(timeout: timeout) == .success else { return nil }
-            lock.lock()
-            let result = self.result
-            lock.unlock()
-            return result
+            acknowledgement.waitResult(timeout: timeout)
         }
 
         func shouldRender() -> Bool {
-            lock.lock()
+            cancellationLock.lock()
             let result = !cancelled
-            lock.unlock()
+            cancellationLock.unlock()
             return result
         }
     }
@@ -576,8 +599,29 @@ final class GE120DisplayLinkRuntime: NSObject, CAMetalDisplayLinkDelegate, @unch
 
             guard running else { return }
             if unexpectedThread {
+                // The owner must acknowledge the callback before the
+                // migration thread returns, but it must never wait forever on
+                // a drawable that WindowServer may have reclaimed. The bound
+                // is two display periods (capped at 50 ms), after which the
+                // callback is cancelled and the owner keeps the simulation
+                // timeline alive.
                 let callback = MarshaledCallback(drawable: drawable, timing: timing)
-                _ = marshalToOwner(callback)
+                guard marshalToOwner(callback) else { return }
+                let acknowledged = callback.waitResult(timeout: migrationAcknowledgementDeadline())
+                condition.lock()
+                let evidenceRange = pendingFrameRateRange ?? configuredFrameRateRange
+                condition.unlock()
+                appendMigrationEvidence(
+                    "migrationCallback=1 sequence=\(sequence) acknowledged=\(acknowledged == nil ? 0 : 1) "
+                        + "result=\(acknowledged == true ? 1 : 0) "
+                        + "range=\(evidenceRange.minimum)-\(evidenceRange.maximum)/\(evidenceRange.preferred ?? evidenceRange.maximum)"
+                )
+                if acknowledged == nil {
+                    condition.lock()
+                    migrationMarshalTimeouts &+= 1
+                    condition.unlock()
+                    cancelQueuedMarshaledCallback(callback)
+                }
                 return
             }
 
@@ -585,12 +629,47 @@ final class GE120DisplayLinkRuntime: NSObject, CAMetalDisplayLinkDelegate, @unch
         }
     }
 
+    private func migrationAcknowledgementDeadline() -> DispatchTime {
+        condition.lock()
+        let maximum = max(
+            Double((pendingFrameRateRange ?? configuredFrameRateRange).maximum),
+            1.0
+        )
+        condition.unlock()
+        let seconds = min(max(2.0 / maximum, 0.004), 0.050)
+        return .now() + .nanoseconds(Int(seconds * 1_000_000_000))
+    }
+
+    private func cancelQueuedMarshaledCallback(_ callback: MarshaledCallback) {
+        condition.lock()
+        if let index = marshaledCallbacks.firstIndex(where: { $0 === callback }) {
+            marshaledCallbacks.remove(at: index)
+            marshaledCallbackDropCount &+= 1
+        }
+        condition.unlock()
+        callback.cancel()
+        callback.complete(result: false)
+    }
+
+    private func appendMigrationEvidence(_ line: String) {
+        let url = URL(fileURLWithPath: "/tmp/goldeneye-display-link-migration.log")
+        let data = Data((line + "\n").utf8)
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            try? handle.write(contentsOf: data)
+            try? handle.close()
+        } else {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
     /// Hand a callback that arrived on a Core Animation migration thread to
-    /// the owner run loop without blocking Core Animation. The two-drawable
-    /// bound mirrors CAMetalLayer.maximumDrawableCount; when migration floods
-    /// the queue, the older unrendered drawable is discarded in favor of the
-    /// newest state. A presentation miss is telemetry, never a reason to pause
-    /// or alter the authoritative simulation timeline.
+    /// the owner run loop. The caller waits for a bounded acknowledgement so
+    /// the supplied drawable is rendered before Core Animation reclaims it.
+    /// The two-drawable bound mirrors CAMetalLayer.maximumDrawableCount; when
+    /// migration floods the queue, the older unrendered drawable is discarded
+    /// in favor of the newest state. A timeout is explicit telemetry, never a
+    /// reason to pause or alter the authoritative simulation timeline.
     private func marshalToOwner(_ callback: MarshaledCallback) -> Bool {
         condition.lock()
         guard isRunning, !isInvalidated, let runLoop = ownerRunLoop else {

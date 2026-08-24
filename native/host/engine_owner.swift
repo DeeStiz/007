@@ -664,6 +664,15 @@ final class GE120EngineOwner: @unchecked Sendable {
             stopRequested = true
             condition.broadcast()
             condition.unlock()
+            // Preserve the terminal owner failure even when AppKit remains
+            // alive in a background/passive launch. Without this file the
+            // scheduler can fail closed on an over-debt burst while the
+            // process continues to present an apparently frozen window.
+            try? "state=failed failure=\(String(describing: error))\n".write(
+                to: URL(fileURLWithPath: "/tmp/goldeneye-engine-owner-failure.log"),
+                atomically: true,
+                encoding: .utf8
+            )
         }
 
         displayLink?.shutdown()

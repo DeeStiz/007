@@ -4,6 +4,36 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) {
     precondition(condition(), message)
 }
 
+private func exerciseMigrationAcknowledgement() {
+    let acknowledged = GE120MigrationAcknowledgement()
+    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(2)) {
+        acknowledged.complete(result: true)
+    }
+    precondition(
+        acknowledged.waitResult(timeout: .now() + .seconds(1)) == true,
+        "migration acknowledgement did not release its waiter"
+    )
+
+    let timedOut = GE120MigrationAcknowledgement()
+    precondition(
+        timedOut.waitResult(timeout: .now() + .milliseconds(2)) == nil,
+        "migration acknowledgement timeout was not bounded"
+    )
+    timedOut.complete(result: false)
+    precondition(
+        timedOut.waitResult(timeout: .now() + .milliseconds(100)) == false,
+        "migration cancellation did not release its waiter"
+    )
+
+    let idempotent = GE120MigrationAcknowledgement()
+    idempotent.complete(result: true)
+    idempotent.complete(result: false)
+    precondition(
+        idempotent.waitResult(timeout: .now() + .milliseconds(100)) == true,
+        "migration acknowledgement completion was not idempotent"
+    )
+}
+
 private func exerciseDeterministicScheduler() {
     let configuration = GE120TimebaseConfiguration.goldenEye
     let epoch: UInt64 = 10_000_000_000
@@ -225,6 +255,7 @@ struct GoldenEyeEngineOwnerSmoke {
                 + "resumes=\(telemetry.scheduler.resumeCount)"
         )
 
+        exerciseMigrationAcknowledgement()
         exerciseHeadlessOwnerSoak()
     }
 }
