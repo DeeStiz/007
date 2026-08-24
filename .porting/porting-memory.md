@@ -1160,3 +1160,28 @@ Status values: Not started, Stubbed, Partial, Implemented.
   `GoldenEyeRamRomGameplayOrchestratorV6.fromEnvironment` at tick `4322`
   (about `3413 ms`, `fatalDebtTicks=241`). Keep V7 prewarm opt-in and masks
   fail-closed. Unlock the desktop again for the next active-session capture.
+
+# 2026-08-22 V7 cache and publication-race refresh
+
+- Renderer caches one consecutive immutable snapshot's prepared draws and
+  batching plan by copied hash/native tick/topology/drawable dimensions; new
+  anchors replace it while per-frame uniforms and source hashes remain live.
+- Generation-token publication rejects stale asynchronous V7 completions;
+  shutdown is synchronized and RAMROM return drains the V7 queue.
+- Cache-enabled Release SHA-256 is
+  `4354c852da73c6343566c2c0f891744bb32f1fd4c9211b9e21a3f0dfc5c28eb5`.
+  Locked diagnostic shows `cacheHits=67` and renderer callback p95 `3.95 ms`;
+  presented cadence remains unavailable until the desktop is unlocked.
+
+# 2026-08-23 background-window behavior refresh
+
+- `GOLDENEYE_NATIVE_BACKGROUND=1` keeps the GoldenEye owner/audio timeline
+  alive without activating or keying the AppKit window; `run_native_boot.sh`
+  defaults to background mode and cadence measurement defaults to foreground.
+- The actual `run_native_boot.sh` LaunchServices verification records `3,124`
+  source ticks at `frontmost=loginwindow` in
+  `build/native/boot-runtime/cadence/runs/m29-background-runner-20260823-locked/`.
+  This is owner execution evidence only; presented FPS remains an active
+  display contract.
+- Current Release SHA-256 is
+  `4fb60d7fa26ad9e4904ebf640caaf0342edb7a7fc4a313e933942cd210ab7e5a`.

@@ -386,3 +386,22 @@ not a store/release acceptance artifact.
   begin stall at tick `4322`; no V7 owner reuse or category-mask bypass was
   introduced. The next M30 gate is active-session supplied-drawable timing plus
   Metal-4 API/shader/gputrace inspection after unlock.
+
+## 2026-08-22 cache-enabled Release timing refresh
+
+- Prepared stage draws/batching are cached only for identical immutable
+  snapshots; generation fencing preserves fail-closed route ownership.
+- Cache-enabled Release hash is
+  `4354c852da73c6343566c2c0f891744bb32f1fd4c9211b9e21a3f0dfc5c28eb5`.
+  Locked diagnostics show 67 stage cache hits and renderer callback p95
+  `3.95 ms`; physical cadence/capture is not claimed under `loginwindow`.
+
+## 2026-08-23 background-window behavior refresh
+
+- Background mode (`GOLDENEYE_NATIVE_BACKGROUND=1`) keeps the source owner
+  alive without foreground activation; the scripted source launch defaults to
+  it, and cadence measurement explicitly opts back into foreground behavior.
+- The actual `run_native_boot.sh` LaunchServices verification records `3,124`
+  source ticks under `frontmost=loginwindow`; presentation remains correctly unclaimed until an
+  active display is available. Release SHA-256:
+  `4fb60d7fa26ad9e4904ebf640caaf0342edb7a7fc4a313e933942cd210ab7e5a`.

@@ -747,3 +747,29 @@ prepared assets remain beneath ignored `build/native/` directories.
   tick `4322` (`3413 ms` target stall, `fatalDebtTicks=241`). Keep the V7
   gameplay-camera route opt-in and do not broaden masks. Unlock the desktop
   again before the next short active-session cadence/capture attempt.
+
+## 2026-08-22 V7 cache and publication-race refresh
+
+- The renderer caches one consecutive immutable snapshot's prepared draws and
+  batching plan; generation-token publication rejects stale async completions,
+  and RAMROM return drains the V7 queue. Cache keys retain copied-record hash,
+  native tick, topology counts, and drawable dimensions.
+- Cache-enabled Release SHA-256:
+  `4354c852da73c6343566c2c0f891744bb32f1fd4c9211b9e21a3f0dfc5c28eb5`;
+  Release gates pass. Login-window diagnostics record 67 stage cache hits and
+  callback p95 `3.95 ms`, but no presented timestamps. Unlock is still required
+  for active V7 cadence and capture.
+
+## 2026-08-23 background-window behavior refresh
+
+- `GOLDENEYE_NATIVE_BACKGROUND=1` is now a supported owner-independent launch
+  mode; `scripts/run_native_boot.sh` defaults to it, while cadence measurement
+  defaults to foreground mode. Background mode orders the view without
+  activating/keying the application.
+- The actual `run_native_boot.sh` LaunchServices verification under
+  `frontmost=loginwindow` retained `3,124` source ticks in
+  `build/native/boot-runtime/cadence/runs/m29-background-runner-20260823-locked/`.
+  No presented-FPS or physical pixel claim is made from this artifact.
+- Current signed Release SHA-256 is
+  `4fb60d7fa26ad9e4904ebf640caaf0342edb7a7fc4a313e933942cd210ab7e5a`;
+  Release history/provenance, R0, and bundle gates pass.

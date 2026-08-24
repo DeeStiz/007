@@ -48,6 +48,10 @@ export GOLDENEYE_NATIVE_SOURCE_FRONTEND_ROOT="${SOURCE_FRONTEND_ROOT}"
 export GOLDENEYE_NATIVE_CAST_ASSET_ROOT="${CAST_ASSET_ROOT}"
 export GOLDENEYE_NATIVE_GUNBARREL_SIDECAR="${GUNBARREL_SIDECAR}"
 export GOLDENEYE_NATIVE_FULLSCREEN="${GOLDENEYE_NATIVE_FULLSCREEN:-1}"
+# Keep the scripted source run from stealing foreground activation. Set
+# GOLDENEYE_NATIVE_BACKGROUND=0 for an interactive foreground launch; cadence
+# measurement supplies its own active/fullscreen policy separately.
+export GOLDENEYE_NATIVE_BACKGROUND="${GOLDENEYE_NATIVE_BACKGROUND:-1}"
 [[ -x "${APP_EXECUTABLE}" ]] || {
     echo "source-faithful GoldenEyeHost executable is missing: ${APP_EXECUTABLE}" >&2
     exit 1
@@ -64,4 +68,12 @@ export GOLDENEYE_NATIVE_FULLSCREEN="${GOLDENEYE_NATIVE_FULLSCREEN:-1}"
     echo "prepared Gunbarrel sidecar is missing: ${GUNBARREL_SIDECAR}" >&2
     exit 1
 }
-exec "${APP_EXECUTABLE}"
+if [[ "${GOLDENEYE_NATIVE_BACKGROUND}" == "1" ]]; then
+    open -n \
+        --env "GOLDENEYE_NATIVE_TITLE=1" \
+        --env "GOLDENEYE_NATIVE_BACKGROUND=1" \
+        --env "GOLDENEYE_NATIVE_FULLSCREEN=${GOLDENEYE_NATIVE_FULLSCREEN}" \
+        "${PROJECT_ROOT}/build/native/boot-runtime/source-faithful/GoldenEyeHost.app"
+else
+    exec "${APP_EXECUTABLE}"
+fi

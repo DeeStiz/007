@@ -199,6 +199,9 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     /// observe the intentional pre-build invalidation window as a missing
     /// frame while a complete replacement is being lowered.
     private let frameStateLock = NSLock()
+    /// Stage packet loading can happen on the bounded V7 submission queue
+    /// while the display-link callback renders the last published frame.
+    private let stageScenePacketCacheLock = NSLock()
     private var latestTitleSnapshot: GoldenEyeTitleSnapshot?
     private var latestSourceFrame: GoldenEyeSourceFrontendFrameV6?
     private var latestSource2DFrame: GoldenEyeSource2DFrameV6?
@@ -216,6 +219,11 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     private var latestStageFullSceneUnsupportedMask: UInt32 = 0
     private var latestStageFrameResources: GoldenEyeSourceProductFrameResourcesV6?
     private var stageScenePacketCache: [UInt32: GoldenEyeStageScenePacket] = [:]
+    /// Monotonic publication generation for asynchronous V7 builds. Every
+    /// route replacement or shutdown advances it while holding
+    /// `frameStateLock`; an older composition may never overwrite a newer
+    /// title/stage frame after its build finishes.
+    private var publicationGeneration: UInt64 = 0
     private var latestGunbarrelPass: GoldenEyeGunbarrelRenderPassV6?
     private var lastRenderableSceneScreen: UInt32 = UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_LEGAL)
     private var pendingModelExecutionResult: GoldenEyeSourceProductModelExecutionResultV6?
@@ -1016,6 +1024,7 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     func submit(sourceFrontendFrame: GoldenEyeSourceFrontendFrameV6) throws {
         frameStateLock.lock()
         defer { frameStateLock.unlock() }
+        publicationGeneration &+= 1
         let wasGunbarrel = latestSourceFrame?.screen ==
             UInt32(GE_SOURCE_FRONTEND_RUNTIME_V6_SCREEN_GUNBARREL)
         let isGunbarrel = sourceFrontendFrame.screen ==
@@ -1093,122 +1102,127 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         stageGameplayCameraSnapshot snapshot: GoldenEyeStageGameplayCameraSnapshotV7
     ) throws {
         frameStateLock.lock()
-        defer { frameStateLock.unlock() }
-        // Clear the previous route before validating the replacement. A
-        // rejected camera/catalog packet must leave no stale title or stage
-        // frame available to the supplied-drawable render callback.
-        latestScene = nil
-        latestStageScene = nil
-        latestStageComposition = nil
-        latestStagePacketHash = 0
-        latestStageUnsupportedMask = 0
-        latestStageMaterialHash = 0
-        latestStageMaterialStateCount = 0
-        latestStageTexturePending = 0
-        latestStageGameplayCameraPacketHash = 0
-        latestStageGameplayCameraSubsetHash = 0
-        latestStageFullSceneUnsupportedMask = 0
-        latestStageFrameResources = nil
-        latestTitleSnapshot = nil
-        latestSource2DFrame = nil
-        latestSource2DBackgroundFrame = nil
-        latestSourceFrame = nil
-        latestGunbarrelPass = nil
-        pendingModelExecutionResult = nil
-
-        guard let stageTextures = stageTextureCatalog,
-              stageTextures.isGPURepresentable,
-              stageTextures.allBindingsPrepared else {
-            throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
-                "gameplay-camera stage texture catalog is not GPU-representable"
+        guard !didShutdown else {
+            frameStateLock.unlock()
+            throw GoldenEyeSourceProductRendererV6Error.shutdownFailure(
+                "gameplay-camera submission arrived after renderer shutdown"
             )
         }
-        guard let sidecars = stageModelSidecarCatalog,
-              sidecars.isComplete,
-              let setupDependencies = stageSetupDependencyCatalog,
-              setupDependencies.isReady,
-              let visibleDependencies = visibleDependencyCatalog,
-              visibleDependencies.isComplete,
-              let scene = loadStageScenePacket(stageID: snapshot.stageID) else {
-            throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
-                "gameplay-camera guarded stage catalogs or scene packet are missing"
-            )
-        }
+        publicationGeneration &+= 1
+        let submissionGeneration = publicationGeneration
+        // Release the publication lock before the expensive
+        // source/material/composition lowering. The display-link callback
+        // must never wait on this work.
+        frameStateLock.unlock()
 
-        // Lower the room material packet at the same guarded source seam used
-        // by the default stage submission. The V7 adapter may then validate
-        // material state and source texture provenance together with the
-        // camera-scoped scene.
-        let materialPacket = try GoldenEyeStageSourceMaterialLowererV6.make(scene: scene)
-        guard materialPacket.stageID == snapshot.stageID,
-              materialPacket.hasSourceState,
-              materialPacket.unsupportedCommandCount == 0 else {
-            throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
-                "gameplay-camera stage material packet is incomplete"
-            )
-        }
-        let gameplayPacket = try GoldenEyeStageGameplayCameraPacketAdapterV7.make(
-            scene: scene,
-            snapshot: snapshot,
-            materialPacket: materialPacket,
-            stageTextures: stageTextures,
-            sidecars: sidecars,
-            setupDependencies: setupDependencies,
-            visibleDependencies: visibleDependencies
-        )
-        guard gameplayPacket.stageID == snapshot.stageID,
-              gameplayPacket.nativeTick == snapshot.nativeTick,
-              gameplayPacket.subset.fullSceneUnsupportedMask ==
-                GoldenEyeStageGameplayCameraPacketV7.expectedFullSceneUnsupportedMask,
-              gameplayPacket.subset.unsupportedMask == 0,
-              gameplayPacket.composition.unsupportedMask == 0,
-              gameplayPacket.composition.snapshot.summary.unsupported_visible_count == 0,
-              gameplayPacket.composition.isPresentable,
-              gameplayPacket.isPresentable,
-              !gameplayPacket.composition.snapshot.drawCommands.isEmpty else {
-            throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
-                "gameplay-camera scoped stage composition is not presentable"
-            )
-        }
+        do {
+            guard let stageTextures = stageTextureCatalog,
+                  stageTextures.isGPURepresentable,
+                  stageTextures.allBindingsPrepared else {
+                throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
+                    "gameplay-camera stage texture catalog is not GPU-representable"
+                )
+            }
+            guard let sidecars = stageModelSidecarCatalog,
+                  sidecars.isComplete,
+                  let setupDependencies = stageSetupDependencyCatalog,
+                  setupDependencies.isReady,
+                  let visibleDependencies = visibleDependencyCatalog,
+                  visibleDependencies.isComplete,
+                  let scene = loadStageScenePacket(stageID: snapshot.stageID) else {
+                throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
+                    "gameplay-camera guarded stage catalogs or scene packet are missing"
+                )
+            }
 
-        // Invalidate any prior route before publishing the new scoped frame.
-        // If a later render observes an invalid submission, it must fail
-        // closed rather than draw stale title/stage content.
-        latestScene = nil
-        latestStageScene = gameplayPacket.composition.snapshot
-        latestStageComposition = gameplayPacket.composition
-        latestStagePacketHash = gameplayPacket.environmentPacket.packetHash
-        latestStageUnsupportedMask = gameplayPacket.subset.unsupportedMask
-        latestStageMaterialHash = materialPacket.packetHash
-        latestStageMaterialStateCount = UInt32(materialPacket.states.count)
-        latestStageTexturePending = 0
-        latestStageGameplayCameraPacketHash = gameplayPacket.packetHash
-        latestStageGameplayCameraSubsetHash = gameplayPacket.subset.metadataHash
-        latestStageFullSceneUnsupportedMask = gameplayPacket.subset.fullSceneUnsupportedMask
-        latestStageFrameResources = nil
-        latestTitleSnapshot = nil
-        latestSource2DFrame = nil
-        latestSource2DBackgroundFrame = nil
-        latestSourceFrame = nil
-        latestGunbarrelPass = nil
-        pendingModelExecutionResult = nil
-        lastRenderableSceneScreen = UInt32(GE_SOURCE_FRAME_V6_SCREEN_RAMROM)
+            // Lower the room material packet at the same guarded source seam
+            // used by the default stage submission. The V7 adapter may then
+            // validate material state and source texture provenance together
+            // with the camera-scoped scene.
+            let materialPacket = try GoldenEyeStageSourceMaterialLowererV6.make(scene: scene)
+            guard materialPacket.stageID == snapshot.stageID,
+                  materialPacket.hasSourceState,
+                  materialPacket.unsupportedCommandCount == 0 else {
+                throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
+                    "gameplay-camera stage material packet is incomplete"
+                )
+            }
+            let gameplayPacket = try GoldenEyeStageGameplayCameraPacketAdapterV7.make(
+                scene: scene,
+                snapshot: snapshot,
+                materialPacket: materialPacket,
+                stageTextures: stageTextures,
+                sidecars: sidecars,
+                setupDependencies: setupDependencies,
+                visibleDependencies: visibleDependencies
+            )
+            guard gameplayPacket.stageID == snapshot.stageID,
+                  gameplayPacket.nativeTick == snapshot.nativeTick,
+                  gameplayPacket.subset.fullSceneUnsupportedMask ==
+                    GoldenEyeStageGameplayCameraPacketV7.expectedFullSceneUnsupportedMask,
+                  gameplayPacket.subset.unsupportedMask == 0,
+                  gameplayPacket.composition.unsupportedMask == 0,
+                  gameplayPacket.composition.snapshot.summary.unsupported_visible_count == 0,
+                  gameplayPacket.composition.isPresentable,
+                  gameplayPacket.isPresentable,
+                  !gameplayPacket.composition.snapshot.drawCommands.isEmpty else {
+                throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
+                    "gameplay-camera scoped stage composition is not presentable"
+                )
+            }
 
-        appendEvidenceLine(
-            "stageGameplayCameraSubmit=1 releaseStageSubmission=1 "
-            + "demo=\(gameplayPacket.demoID) nativeTick=\(gameplayPacket.nativeTick) "
-            + "stage=\(gameplayPacket.stageID) cameraPacketHash=\(gameplayPacket.packetHash) "
-            + "environmentHash=\(gameplayPacket.environmentPacket.packetHash) "
-            + "materialHash=\(materialPacket.packetHash) materialStates=\(materialPacket.states.count) "
-            + "roomCommands=\(gameplayPacket.subset.roomGeometryCommandCount) "
-            + "props=\(gameplayPacket.subset.drawableStaticPropPlacementCount)/\(gameplayPacket.subset.staticPropPlacementCount) "
-            + "compositionHash=\(gameplayPacket.composition.compositionHash) "
-            + "subsetHash=\(gameplayPacket.subset.metadataHash) "
-            + "unsupportedMask=0x\(String(gameplayPacket.subset.unsupportedMask, radix: 16)) "
-            + "fullSceneUnsupportedMask=0x\(String(gameplayPacket.subset.fullSceneUnsupportedMask, radix: 16)) "
-            + "draws=\(gameplayPacket.composition.snapshot.drawCommands.count) presentable=1\n",
-            path: "/tmp/goldeneye-source-product-renderer-v6-stage-gameplay-camera.log"
-        )
+            // Publish only after all source/category guards pass. The lock is
+            // held for value swaps and telemetry only; it never covers the
+            // composition build. A prior valid frame may remain visible while
+            // the replacement is lowered, avoiding a drawable starvation
+            // gap without accepting an invalid replacement.
+            frameStateLock.lock()
+            guard !didShutdown, publicationGeneration == submissionGeneration else {
+                frameStateLock.unlock()
+                throw GoldenEyeSourceProductRendererV6Error.shutdownFailure(
+                    "gameplay-camera composition completed after route replacement or shutdown"
+                )
+            }
+            invalidatePublishedFrameLocked()
+            latestStageScene = gameplayPacket.composition.snapshot
+            latestStageComposition = gameplayPacket.composition
+            latestStagePacketHash = gameplayPacket.environmentPacket.packetHash
+            latestStageUnsupportedMask = gameplayPacket.subset.unsupportedMask
+            latestStageMaterialHash = materialPacket.packetHash
+            latestStageMaterialStateCount = UInt32(materialPacket.states.count)
+            latestStageTexturePending = 0
+            latestStageGameplayCameraPacketHash = gameplayPacket.packetHash
+            latestStageGameplayCameraSubsetHash = gameplayPacket.subset.metadataHash
+            latestStageFullSceneUnsupportedMask = gameplayPacket.subset.fullSceneUnsupportedMask
+            lastRenderableSceneScreen = UInt32(GE_SOURCE_FRAME_V6_SCREEN_RAMROM)
+            frameStateLock.unlock()
+
+            appendEvidenceLine(
+                "stageGameplayCameraSubmit=1 releaseStageSubmission=1 "
+                + "demo=\(gameplayPacket.demoID) nativeTick=\(gameplayPacket.nativeTick) "
+                + "stage=\(gameplayPacket.stageID) cameraPacketHash=\(gameplayPacket.packetHash) "
+                + "environmentHash=\(gameplayPacket.environmentPacket.packetHash) "
+                + "materialHash=\(materialPacket.packetHash) materialStates=\(materialPacket.states.count) "
+                + "roomCommands=\(gameplayPacket.subset.roomGeometryCommandCount) "
+                + "props=\(gameplayPacket.subset.drawableStaticPropPlacementCount)/\(gameplayPacket.subset.staticPropPlacementCount) "
+                + "compositionHash=\(gameplayPacket.composition.compositionHash) "
+                + "subsetHash=\(gameplayPacket.subset.metadataHash) "
+                + "unsupportedMask=0x\(String(gameplayPacket.subset.unsupportedMask, radix: 16)) "
+                + "fullSceneUnsupportedMask=0x\(String(gameplayPacket.subset.fullSceneUnsupportedMask, radix: 16)) "
+                + "draws=\(gameplayPacket.composition.snapshot.drawCommands.count) presentable=1\n",
+                path: "/tmp/goldeneye-source-product-renderer-v6-stage-gameplay-camera.log"
+            )
+        } catch {
+            // A rejected replacement must leave the product fail-closed; do
+            // not keep a stale title/stage frame after a failed submission.
+            frameStateLock.lock()
+            if publicationGeneration == submissionGeneration {
+                invalidatePublishedFrameLocked()
+                publicationGeneration &+= 1
+            }
+            frameStateLock.unlock()
+            throw error
+        }
     }
 
     /// Release-capable source-environment handoff. The packet is lowered into
@@ -1221,6 +1235,7 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     ) throws {
         frameStateLock.lock()
         defer { frameStateLock.unlock() }
+        publicationGeneration &+= 1
         latestStageComposition = nil
         latestStageScene = try composedStageSnapshot(
             packet: packet,
@@ -1259,6 +1274,7 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     ) throws {
         frameStateLock.lock()
         defer { frameStateLock.unlock() }
+        publicationGeneration &+= 1
         latestStageComposition = nil
         latestStageScene = try composedStageSnapshot(
             packet: packet,
@@ -1332,12 +1348,23 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     }
 
     private func loadStageScenePacket(stageID: UInt32) -> GoldenEyeStageScenePacket? {
-        if let cached = stageScenePacketCache[stageID] { return cached }
+        stageScenePacketCacheLock.lock()
+        if let cached = stageScenePacketCache[stageID] {
+            stageScenePacketCacheLock.unlock()
+            return cached
+        }
+        stageScenePacketCacheLock.unlock()
         guard let root = stageAssetRootURL else { return nil }
         do {
             let catalog = try GoldenEyeStageAssetCatalog.load(stageAssetRoot: root)
             let packet = try GoldenEyeStageScenePacket.load(stageID: stageID, catalog: catalog)
+            stageScenePacketCacheLock.lock()
+            if let cached = stageScenePacketCache[stageID] {
+                stageScenePacketCacheLock.unlock()
+                return cached
+            }
             stageScenePacketCache[stageID] = packet
+            stageScenePacketCacheLock.unlock()
             return packet
         } catch {
             try? "stageSceneLoadFailure=1 stage=\(stageID) error=\(error)\n".write(
@@ -1347,6 +1374,31 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             )
             return nil
         }
+    }
+
+    /// Clear every published route field. Callers must hold `frameStateLock`.
+    /// Keeping this operation centralized prevents a rejected asynchronous
+    /// V7 build from accidentally leaving a title, environment, or stage
+    /// snapshot available to the supplied-drawable callback.
+    private func invalidatePublishedFrameLocked() {
+        latestScene = nil
+        latestStageScene = nil
+        latestStageComposition = nil
+        latestStagePacketHash = 0
+        latestStageUnsupportedMask = 0
+        latestStageMaterialHash = 0
+        latestStageMaterialStateCount = 0
+        latestStageTexturePending = 0
+        latestStageGameplayCameraPacketHash = 0
+        latestStageGameplayCameraSubsetHash = 0
+        latestStageFullSceneUnsupportedMask = 0
+        latestStageFrameResources = nil
+        latestTitleSnapshot = nil
+        latestSource2DFrame = nil
+        latestSource2DBackgroundFrame = nil
+        latestSourceFrame = nil
+        latestGunbarrelPass = nil
+        pendingModelExecutionResult = nil
     }
 
     private func stageTexturePending(
@@ -1376,6 +1428,7 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     func submit(castSceneRequest request: GoldenEyeCastSourceSceneRequestV6) throws {
         frameStateLock.lock()
         defer { frameStateLock.unlock() }
+        publicationGeneration &+= 1
         guard let sidecar = gunbarrelSidecar, sidecar.resolvesGunbarrelModels else {
             throw GoldenEyeSourceProductRendererV6Error.sourceBuild(
                 "Cast animation/attachment sidecar is missing"
@@ -1645,6 +1698,7 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     ) throws {
         frameStateLock.lock()
         defer { frameStateLock.unlock() }
+        publicationGeneration &+= 1
         latestStageFrameResources = frameResources
         latestScene = nil
         latestStageScene = nil
@@ -2072,6 +2126,7 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     ) throws -> GoldenEyeSourceProductModelExecutionResultV6 {
         frameStateLock.lock()
         defer { frameStateLock.unlock() }
+        publicationGeneration &+= 1
         // Preserve the last complete scene until the replacement model build
         // reaches its publication point.
         latestGunbarrelPass = nil
@@ -3716,6 +3771,7 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     func submit(titleSnapshot: GoldenEyeTitleSnapshot) {
         frameStateLock.lock()
         defer { frameStateLock.unlock() }
+        publicationGeneration &+= 1
         latestTitleSnapshot = titleSnapshot
         latestStageScene = nil
         latestStagePacketHash = 0
@@ -3733,11 +3789,23 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     }
 
     func render(drawable: any CAMetalDrawable, timing: GE120DisplayTiming) -> Bool {
+        let renderStart = DispatchTime.now().uptimeNanoseconds
+        var renderRoute = "unresolved"
         frameStateLock.lock()
-        defer { frameStateLock.unlock() }
+        defer {
+            let elapsed = DispatchTime.now().uptimeNanoseconds &- renderStart
+            if elapsed >= 100_000_000 {
+                appendEvidenceLine(
+                    "slowProductRender=1 route=\(renderRoute) elapsedNs=\(elapsed)\n",
+                    path: "/tmp/goldeneye-source-product-renderer-v6-slow-render.log"
+                )
+            }
+            frameStateLock.unlock()
+        }
         _ = timing
         guard !didShutdown else { return false }
         let stageScene = latestStageScene
+        renderRoute = stageScene == nil ? "title" : "stage"
         guard let scene = stageScene ?? latestScene else {
             recordFailure(GoldenEyeSourceProductRendererV6Error.noSubmittedFrame)
             return false
@@ -3856,8 +3924,14 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     }
 
     func shutdown() {
-        guard !didShutdown else { return }
+        frameStateLock.lock()
+        guard !didShutdown else {
+            frameStateLock.unlock()
+            return
+        }
         didShutdown = true
+        publicationGeneration &+= 1
+        frameStateLock.unlock()
         renderer.shutdown()
         source2DRenderer.shutdown()
         do {

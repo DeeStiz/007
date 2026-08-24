@@ -1439,6 +1439,16 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
                 writeRamRomAuthorityFrame(authorityFrame, prefix: "source-runtime")
             }
             if authorityFrame.isReturnToTitle {
+                // Do not let a bounded V7 composition publish after RAMROM
+                // has handed authority back to the source title route.
+                gameplayCameraSubmissionQueue.sync { }
+                gameplayCameraSubmissionStateLock.lock()
+                gameplayCameraSubmissionInFlight = false
+                gameplayCameraSubmissionFailure = nil
+                gameplayCameraSubmissionStateLock.unlock()
+                gameplayCameraFramePublished = false
+                gameplayCameraSubmissionCount = 0
+                gameplayCameraNextSubmissionTick = 0
                 _ = ramRomPlayback.takeRestoreSnapshot()
                 sourceRamRomEndNeedsMenuInput = true
                 ramRomGameplayOrchestrator = nil

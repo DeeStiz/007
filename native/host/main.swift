@@ -365,6 +365,14 @@ private final class GoldenEyeViewController: NSViewController {
         ProcessInfo.processInfo.environment["GOLDENEYE_CADENCE_PROBE"] == "1"
     }
 
+    /// Background source runs keep the owner/audio timeline alive without
+    /// stealing AppKit activation from the user's desktop. CAMetalDisplayLink
+    /// may be throttled or absent while the window is occluded/locked; that is
+    /// an honest presentation boundary, not a reason to stop source logic.
+    private var backgroundRuntimeEnabled: Bool {
+        ProcessInfo.processInfo.environment["GOLDENEYE_NATIVE_BACKGROUND"] == "1"
+    }
+
     private var cadenceFullscreenRequested: Bool {
         ProcessInfo.processInfo.environment["GOLDENEYE_NATIVE_FULLSCREEN"] == "1"
     }
@@ -1179,6 +1187,7 @@ private final class GoldenEyeViewController: NSViewController {
     /// Core Animation does not intentionally throttle its display link.
     private func scheduleCadenceKeepAlive() {
         guard cadenceProbeEnabled,
+              !backgroundRuntimeEnabled,
               cadenceMeasurementSeconds > 0 else { return }
         let deadline = Date().addingTimeInterval(
             cadenceWarmupSeconds
@@ -1306,6 +1315,10 @@ private final class GoldenEyeAppDelegate: NSObject, NSApplicationDelegate, NSWin
     private var viewController: GoldenEyeViewController!
     private var performanceOverlayItem: NSMenuItem!
 
+    private var backgroundRuntimeEnabled: Bool {
+        ProcessInfo.processInfo.environment["GOLDENEYE_NATIVE_BACKGROUND"] == "1"
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.configurePackagedRuntimeDefaults()
         NSApp.setActivationPolicy(.regular)
@@ -1338,7 +1351,8 @@ private final class GoldenEyeAppDelegate: NSObject, NSApplicationDelegate, NSWin
         // Do not trust a restored/off-screen AppKit frame in a multi-display
         // or remote session: keep the validation window inside a real screen
         // so CoreGraphics captures the same pixels the user can see.
-        let prefers120Fullscreen = ProcessInfo.processInfo.environment["GOLDENEYE_NATIVE_FULLSCREEN"] == "1"
+        let prefers120Fullscreen = !backgroundRuntimeEnabled
+            && ProcessInfo.processInfo.environment["GOLDENEYE_NATIVE_FULLSCREEN"] == "1"
         let requestedDisplay = ProcessInfo.processInfo.environment["GOLDENEYE_NATIVE_DISPLAY"]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let requestedScreen: NSScreen? = requestedDisplay.flatMap { requested in
@@ -1364,11 +1378,22 @@ private final class GoldenEyeAppDelegate: NSObject, NSApplicationDelegate, NSWin
         } else {
             window.center()
         }
-        window.makeKeyAndOrderFront(nil)
+        if backgroundRuntimeEnabled {
+            window.collectionBehavior = [.canJoinAllSpaces, .ignoresCycle]
+            // Realize the view even when loginwindow owns the session, but do
+            // not activate or make the game key. This keeps the owner loop
+            // alive like the SM64 modern host while presentation remains an
+            // explicit foreground/display capability.
+            window.orderFrontRegardless()
+        } else {
+            window.makeKeyAndOrderFront(nil)
+        }
         if ProcessInfo.processInfo.environment["GOLDENEYE_CADENCE_PROBE"] == "1" {
             window.orderFrontRegardless()
         }
-        NSApp.activate(ignoringOtherApps: true)
+        if !backgroundRuntimeEnabled {
+            NSApp.activate(ignoringOtherApps: true)
+        }
         recordCadenceWindowState(event: "activeGateObserved")
         if prefers120Fullscreen {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in

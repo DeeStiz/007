@@ -1298,3 +1298,41 @@ pushes, branches, resets, cleans, or removes unrelated artifacts.
 - The next acceptance step is a shorter rerun after the desktop is unlocked:
   capture active foreground/display state first, then obtain supplied-drawable
   Release presentation timestamps and a Metal-4 API/shader-validated trace.
+
+### V7 prepared-draw cache and publication-race hardening — 2026-08-22
+
+- The source renderer now caches one consecutive immutable snapshot's prepared
+  draws and batching plan, keyed by copied-record aggregate hash, native tick,
+  topology counts, and drawable dimensions. New camera anchors replace the
+  entry; uniforms/vertex data remain copied per frame and source hashes are
+  unchanged.
+- V7 asynchronous publication now uses a renderer generation token. Stale
+  completions cannot overwrite a newer title/stage route; shutdown is locked;
+  RAMROM return drains the bounded submission queue. Timing logs are copied
+  into each cadence case for auditability.
+- Cache-enabled Release SHA-256 is
+  `4354c852da73c6343566c2c0f891744bb32f1fd4c9211b9e21a3f0dfc5c28eb5`.
+  Release history/provenance, codesign, R0, renderer-policy, fidelity, and
+  bundle gates pass.
+- Locked-session diagnostic
+  `build/native/boot-runtime/cadence/runs/m29-cache-loginwindow-20260822-45/120/`
+  records `cacheHit=1`, `cacheHits=67`, callback p95 `3.95 ms`, and no render
+  failures. It has zero presented timestamps because `frontmost=loginwindow`;
+  active foreground cadence and Metal capture remain open.
+
+### Background-window behavior parity — 2026-08-23
+
+- GoldenEye now supports `GOLDENEYE_NATIVE_BACKGROUND=1`. The scripted
+  `run_native_boot.sh` defaults to that mode, does not activate or key the
+  window, and keeps the owner/audio timeline independent of AppKit focus.
+  Set `GOLDENEYE_NATIVE_BACKGROUND=0` for an interactive foreground launch;
+  cadence measurement still defaults to foreground mode.
+- The actual `run_native_boot.sh` LaunchServices background verification under
+  the locked session retained `3,124` source ticks in
+  `build/native/boot-runtime/cadence/runs/m29-background-runner-20260823-locked/`
+  while `frontmost=loginwindow`. This proves owner execution, not visible
+  presentation; CAMetalDisplayLink/presented-FPS remains an active-display
+  contract.
+- Background policy, debug build, owner soak, Release build, provenance,
+  fidelity, renderer-policy, and bundle gates pass. Current Release SHA-256:
+  `4fb60d7fa26ad9e4904ebf640caaf0342edb7a7fc4a313e933942cd210ab7e5a`.

@@ -92,8 +92,25 @@ fi
 if [[ -x "${FRONTMOST_PROBE}" ]]; then
     "${FRONTMOST_PROBE}" > "${MEASURE_ROOT}/frontmost-preflight.txt" || true
 fi
-rg -Fq "${DISPLAY_120}" "${MEASURE_ROOT}/display-profile.txt" || fail "120 Hz display '${DISPLAY_120}' was not found; set GOLDENEYE_CADENCE_DISPLAY_120"
-rg -Fq "${DISPLAY_60}" "${MEASURE_ROOT}/display-profile.txt" || fail "fixed-60 display '${DISPLAY_60}' was not found; set GOLDENEYE_CADENCE_DISPLAY_60"
+case "${CADENCE_ONLY_MODE}" in
+    120)
+        rg -Fq "${DISPLAY_120}" "${MEASURE_ROOT}/display-profile.txt" \
+            || fail "120 Hz display '${DISPLAY_120}' was not found; set GOLDENEYE_CADENCE_DISPLAY_120"
+        ;;
+    60)
+        rg -Fq "${DISPLAY_60}" "${MEASURE_ROOT}/display-profile.txt" \
+            || fail "fixed-60 display '${DISPLAY_60}' was not found; set GOLDENEYE_CADENCE_DISPLAY_60"
+        ;;
+    both)
+        rg -Fq "${DISPLAY_120}" "${MEASURE_ROOT}/display-profile.txt" \
+            || fail "120 Hz display '${DISPLAY_120}' was not found; set GOLDENEYE_CADENCE_DISPLAY_120"
+        rg -Fq "${DISPLAY_60}" "${MEASURE_ROOT}/display-profile.txt" \
+            || fail "fixed-60 display '${DISPLAY_60}' was not found; set GOLDENEYE_CADENCE_DISPLAY_60"
+        ;;
+    *)
+        fail "GOLDENEYE_CADENCE_ONLY_MODE must be 120, 60, or both"
+        ;;
+esac
 
 field() {
     local key="$1"
@@ -165,6 +182,8 @@ run_case() {
     : > /tmp/goldeneye-source-product-renderer-v6.log
     : > /tmp/goldeneye-stage-gameplay-camera-owner.log
     : > /tmp/goldeneye-source-product-renderer-v6-stage-gameplay-camera.log
+    : > /tmp/goldeneye-source-product-renderer-v6-stage-timing.log
+    : > /tmp/goldeneye-source-product-renderer-v6-slow-render.log
     : > /tmp/goldeneye-source-product-renderer-v6-frames.log
     : > /tmp/goldeneye-ramrom-playback-owner.log
     : > /tmp/goldeneye-native-audio-pause.log
@@ -194,6 +213,7 @@ run_case() {
         GOLDENEYE_NATIVE_SOURCE_FRONTEND_ROOT="${PROJECT_ROOT}/build/native/source-frontend-v6-image-decoder-v6" \
         GOLDENEYE_NATIVE_CAST_ASSET_ROOT="${CAST_ASSET_ROOT}" \
         GOLDENEYE_NATIVE_GUNBARREL_SIDECAR="${GUNBARREL_SIDECAR}" \
+        GOLDENEYE_NATIVE_BACKGROUND="${GOLDENEYE_NATIVE_BACKGROUND:-0}" \
         GOLDENEYE_NATIVE_FULLSCREEN="${CADENCE_FULLSCREEN}" \
         GOLDENEYE_CADENCE_RENDERER="${GOLDENEYE_CADENCE_RENDERER:-}" \
         GOLDENEYE_NATIVE_DISPLAY="${native_display}" \
@@ -266,6 +286,8 @@ run_case() {
     [[ -f /tmp/goldeneye-source-product-renderer-v6.log ]] && cp -f /tmp/goldeneye-source-product-renderer-v6.log "${renderer_log}"
     [[ -f /tmp/goldeneye-stage-gameplay-camera-owner.log ]] && cp -f /tmp/goldeneye-stage-gameplay-camera-owner.log "${stage_camera_owner_log}"
     [[ -f /tmp/goldeneye-source-product-renderer-v6-stage-gameplay-camera.log ]] && cp -f /tmp/goldeneye-source-product-renderer-v6-stage-gameplay-camera.log "${stage_camera_renderer_log}"
+    [[ -f /tmp/goldeneye-source-product-renderer-v6-stage-timing.log ]] && cp -f /tmp/goldeneye-source-product-renderer-v6-stage-timing.log "${case_root}/source-product-renderer-stage-timing.log"
+    [[ -f /tmp/goldeneye-source-product-renderer-v6-slow-render.log ]] && cp -f /tmp/goldeneye-source-product-renderer-v6-slow-render.log "${case_root}/source-product-renderer-slow-render.log"
     [[ -f /tmp/goldeneye-source-product-renderer-v6-frames.log ]] && cp -f /tmp/goldeneye-source-product-renderer-v6-frames.log "${stage_renderer_frames_log}"
     [[ -f /tmp/goldeneye-ramrom-playback-owner.log ]] && cp -f /tmp/goldeneye-ramrom-playback-owner.log "${ramrom_authority_log}"
     [[ -f /tmp/goldeneye-native-audio-pause.log ]] && cp -f /tmp/goldeneye-native-audio-pause.log "${audio_pause_log}"

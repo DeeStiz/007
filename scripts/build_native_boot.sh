@@ -79,8 +79,13 @@ if ! command -v xcrun >/dev/null 2>&1; then
     echo "xcrun is required to compile the Metal 4 source-scene/source-2d libraries" >&2
     exit 1
 fi
-METAL=$(xcrun --sdk macosx --find metal)
-METALLIB=$(dirname -- "${METAL}")/metallib
+METALLIB=$(xcrun --sdk macosx --find metallib)
+METAL_CRYPTEX=$(dirname -- "${METALLIB}")/metal
+if [[ -x "${METAL_CRYPTEX}" ]]; then
+    METAL="${METAL_CRYPTEX}"
+else
+    METAL=$(xcrun --sdk macosx --find metal)
+fi
 [[ -x "${METAL}" ]] || {
     echo "Metal compiler is unavailable: ${METAL}" >&2
     exit 1
@@ -89,7 +94,7 @@ METALLIB=$(dirname -- "${METAL}")/metallib
     echo "metallib linker is unavailable: ${METALLIB}" >&2
     exit 1
 }
-xcrun metal -mmacosx-version-min=27.0 \
+"${METAL}" -mmacosx-version-min=27.0 \
     -c "${SOURCE_SHADER}" \
     -o "${SOURCE_AIR}"
 "${METALLIB}" "${SOURCE_AIR}" -o "${SOURCE_METALLIB}"
@@ -97,7 +102,7 @@ xcrun metal -mmacosx-version-min=27.0 \
     echo "SourceScene V6 metallib was not produced" >&2
     exit 1
 }
-xcrun metal -mmacosx-version-min=27.0 \
+"${METAL}" -mmacosx-version-min=27.0 \
     -c "${SOURCE_2D_SHADER}" \
     -o "${SOURCE_2D_AIR}"
 "${METALLIB}" "${SOURCE_2D_AIR}" -o "${SOURCE_2D_METALLIB}"

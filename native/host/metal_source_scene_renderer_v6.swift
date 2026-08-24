@@ -274,6 +274,28 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
     private let maxVertexCount: Int
     private let maxIndexCount: Int
     private let maxUniformBytes: Int
+    /// Consecutive display-link callbacks commonly present the same immutable
+    /// snapshot. Cache its fully validated prepared draws and contiguous batch
+    /// plan; a new source/camera snapshot replaces the single bounded entry.
+    private struct PreparedFrameCacheKey: Hashable {
+        let aggregateHash: UInt64
+        let nativeTick: UInt64
+        let drawCount: Int
+        let vertexCount: Int
+        let indexCount: Int
+        let drawableWidth: Int
+        let drawableHeight: Int
+    }
+
+    private struct PreparedFrameCacheEntry {
+        let key: PreparedFrameCacheKey
+        let prepared: [PreparedDraw]
+        let batchingPlan: GoldenEyeSourceSceneBatchingPlanV6
+    }
+
+    private var preparedFrameCache: PreparedFrameCacheEntry?
+    private var preparedFrameCacheHits: UInt64 = 0
+    private var preparedFrameCacheMisses: UInt64 = 0
 
     init(
         state: GoldenEyeMetalDeviceState,
@@ -383,25 +405,70 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
             drawableWidth: drawable.texture.width,
             drawableHeight: drawable.texture.height
         )
-        let prepared = try preparedDraws(for: snapshot, outputLayout: outputLayout)
-        let batchingPlan = try batchingPlan(
-            for: snapshot,
-            prepared: prepared,
-            sourceTriangleCount: snapshot.indices.count
+        let cacheKey = PreparedFrameCacheKey(
+            aggregateHash: snapshot.copiedRecordAggregateHash,
+            nativeTick: snapshot.summary.native_tick,
+            drawCount: snapshot.drawCommands.count,
+            vertexCount: snapshot.vertices.count,
+            indexCount: snapshot.indices.count,
+            drawableWidth: drawable.texture.width,
+            drawableHeight: drawable.texture.height
         )
+        let prepareStart = DispatchTime.now().uptimeNanoseconds
+        let prepared: [PreparedDraw]
+        let preparedPlan: GoldenEyeSourceSceneBatchingPlanV6
+        let cacheHit: Bool
+        var prepareNanoseconds: UInt64 = 0
+        var batchingNanoseconds: UInt64 = 0
+        if let cached = preparedFrameCache, cached.key == cacheKey {
+            prepared = cached.prepared
+            preparedPlan = cached.batchingPlan
+            preparedFrameCacheHits &+= 1
+            cacheHit = true
+        } else {
+            let builtPrepared = try preparedDraws(for: snapshot, outputLayout: outputLayout)
+            let afterPrepare = DispatchTime.now().uptimeNanoseconds
+            let builtBatchingPlan = try self.batchingPlan(
+                for: snapshot,
+                prepared: builtPrepared,
+                sourceTriangleCount: snapshot.indices.count
+            )
+            preparedFrameCache = PreparedFrameCacheEntry(
+                key: cacheKey,
+                prepared: builtPrepared,
+                batchingPlan: builtBatchingPlan
+            )
+            preparedFrameCacheMisses &+= 1
+            prepared = builtPrepared
+            preparedPlan = builtBatchingPlan
+            cacheHit = false
+            let totalBuildNanoseconds = DispatchTime.now().uptimeNanoseconds &- prepareStart
+            prepareNanoseconds = afterPrepare &- prepareStart
+            batchingNanoseconds = DispatchTime.now().uptimeNanoseconds &- afterPrepare
+            if snapshot.summary.screen == UInt32(GE_SOURCE_FRAME_V6_SCREEN_RAMROM) {
+                appendStageTiming(
+                    "stageRenderBuild=1 tick=\(snapshot.summary.native_tick) cacheHit=0 "
+                    + "prepareNs=\(prepareNanoseconds) batchNs=\(batchingNanoseconds) totalNs=\(totalBuildNanoseconds)\n"
+                )
+            }
+        }
+        let batchingPlan = preparedPlan
 
         let slotIndex = Int(frameIndex % 2)
         let priorSignal = lastSignalBySlot[slotIndex]
+        let slotWaitStart = DispatchTime.now().uptimeNanoseconds
         if priorSignal != 0,
            !completionEvent.wait(untilSignaledValue: priorSignal, timeoutMS: 1_000) {
             throw GoldenEyeSourceSceneRendererV6Error.slotTimeout(slotIndex)
         }
+        let slotWaitNanoseconds = DispatchTime.now().uptimeNanoseconds &- slotWaitStart
         let slot = slotResources[slotIndex]
         let commandSlot = state.frameSlots[slotIndex]
 
         let flattenedIndices = snapshot.gpuIndices.flatMap {
             [$0.vertex0, $0.vertex1, $0.vertex2]
         }
+        let uploadStart = DispatchTime.now().uptimeNanoseconds
         snapshot.gpuVertices.withUnsafeBytes { bytes in
             if let baseAddress = bytes.baseAddress {
                 slot.vertexBuffer.contents().copyMemory(from: baseAddress, byteCount: bytes.count)
@@ -421,6 +488,7 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
                 }
             }
         }
+        let uploadNanoseconds = DispatchTime.now().uptimeNanoseconds &- uploadStart
 
         commandSlot.allocator.reset()
         commandSlot.commandBuffer.beginCommandBuffer(allocator: commandSlot.allocator)
@@ -531,13 +599,19 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
         commandSlot.commandBuffer.popDebugGroup()
         commandSlot.commandBuffer.endCommandBuffer()
 
+        let drawableWaitStart = DispatchTime.now().uptimeNanoseconds
         state.queue.waitForDrawable(drawable)
+        let drawableWaitNanoseconds = DispatchTime.now().uptimeNanoseconds &- drawableWaitStart
+        let commitStart = DispatchTime.now().uptimeNanoseconds
         state.queue.commit([commandSlot.commandBuffer])
         let signalValue = nextSignalValue
         nextSignalValue &+= 1
         state.queue.signalEvent(completionEvent, value: signalValue)
         state.queue.signalDrawable(drawable)
+        let commitNanoseconds = DispatchTime.now().uptimeNanoseconds &- commitStart
+        let presentStart = DispatchTime.now().uptimeNanoseconds
         drawable.present()
+        let presentNanoseconds = DispatchTime.now().uptimeNanoseconds &- presentStart
         lastSignalBySlot[slotIndex] = signalValue
 
         let evidence = GoldenEyeSourceSceneRenderEvidenceV6(
@@ -554,6 +628,15 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
             batchManifestHash: batchingPlan.batchManifestHash,
             cpuEncodeNanoseconds: cpuEncodeNanoseconds
         )
+        if snapshot.summary.screen == UInt32(GE_SOURCE_FRAME_V6_SCREEN_RAMROM) {
+            appendStageTiming(
+                "stageRenderTiming=1 tick=\(snapshot.summary.native_tick) draws=\(prepared.count) metalDraws=\(batchingPlan.metalDrawCount) "
+                + "cacheHit=\(cacheHit ? 1 : 0) cacheHits=\(preparedFrameCacheHits) cacheMisses=\(preparedFrameCacheMisses) "
+                + "prepareNs=\(prepareNanoseconds) batchNs=\(batchingNanoseconds) slotWaitNs=\(slotWaitNanoseconds) "
+                + "uploadNs=\(uploadNanoseconds) encodeNs=\(cpuEncodeNanoseconds) "
+                + "drawableWaitNs=\(drawableWaitNanoseconds) commitNs=\(commitNanoseconds) presentNs=\(presentNanoseconds)\n"
+            )
+        }
         frameIndex &+= 1
         return evidence
     }
@@ -1927,5 +2010,16 @@ final class GoldenEyeSourceSceneRendererV6: @unchecked Sendable {
             width: rect.width,
             height: rect.height
         )
+    }
+
+    private func appendStageTiming(_ line: String) {
+        let url = URL(fileURLWithPath: "/tmp/goldeneye-source-product-renderer-v6-stage-timing.log")
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            try? handle.write(contentsOf: Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? Data(line.utf8).write(to: url, options: .atomic)
+        }
     }
 }
