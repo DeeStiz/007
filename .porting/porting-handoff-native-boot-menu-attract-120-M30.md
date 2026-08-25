@@ -523,7 +523,7 @@ not a store/release acceptance artifact.
 ## 2026-08-24 current Release passive/Cast evidence
 
 - Fresh Release bundle gate/codesign PASS; executable SHA-256:
-  `75b030d6d8e11ee1de14bd6de34a834fb23c626fda12bc59dd94c27add9ca86e`.
+  `0a0156fab7c692964ee01b149326d4e03fd8ffab4abb312f152467239199a699`.
 - Passive direct-bundle run remained alive for 70 seconds with NetSward
   frontmost, GoldenEye inactive/non-key, alpha-zero/normal-level/click-through,
   and source owner ticks through `4314`.
@@ -543,3 +543,164 @@ not a store/release acceptance artifact.
   demo 0/stages `33,34,35,9,20,26,25` with non-identity cameras, all static
   props drawable, deterministic raw hashes, API/shader validation, scoped
   unsupported `0`, and retained full-scene `0x38`.
+
+## 2026-08-24 M31 active presentation/source-prewarm continuation
+
+- Explicit `.regular` startup policy now retries at AppKit launch instead of
+  trapping when the pre-run call returns false. Passive `.accessory` policy is
+  unchanged. Final Release hash:
+  `0a0156fab7c692964ee01b149326d4e03fd8ffab4abb312f152467239199a699`.
+- Canonical RAMROM gameplay preparation is prewarmed before the owner starts;
+  Gunbarrel root motion advances incrementally and resets deterministically on
+  source timer rewind. Gunbarrel/orchestrator/owner/policy strict and sanitizer
+  smokes pass.
+- Active fullscreen 120 run: logic `120.0013 Hz`, source frames `3351`, fatal
+  debt `0`, migration timeout/drop `0`, authority/render failures `0`, but
+  presented `114.9995 FPS`. Active fullscreen fixed-60 external is `44.79 FPS`;
+  windowed fixed-60 is `59.58 FPS` with a `52` one-second minimum. These are
+  compositor/display evidence gaps; no source masks or fail-closed guards were
+  weakened.
+- Final Release capture entitlement produced a CAMetalLayer trace with one
+  source render encoder and `259` draws; `gpudebug` inspection confirms the
+  BGRA8/depth attachments, indexed draw, source-scene pipeline, and 253 source
+  2D draws. Evidence:
+  `build/native/boot-runtime/cadence/runs/m31-metal-capture-final-20260824/`.
+
+## 2026-08-24 M31 stage-composition cache continuation
+
+- Immutable packet/material stage compositions are now reused only when the
+  frame-resource camera is absent; camera-bearing frames remain uncached and
+  fail-closed. Final Release SHA-256:
+  `2ed0d80587cee02050362d7a257e6f7ea24090a0cab6d95b86b773b739824a19`.
+- Post-cache passive evidence reaches source tick `4330` and Cast submission;
+  stage gameplay stepping remains a separate bounded performance gap.
+- The current-hash capture-entitled bundle was recaptured and inspected as
+  `goldeneye-layer-finalb057.gputrace` (one source encoder, 259 draws, 253
+  source-2D draws); see the durable capture report under
+  `build/native/boot-runtime/cadence/runs/m31-metal-capture-final-20260824/`.
+
+## 2026-08-24 M31 optional Cast-row prewarm continuation
+
+- The second Cast row prewarm is best-effort with an explicit skip diagnostic
+  for missing guarded weapon packets; live source fallback/guards remain
+  authoritative. Final Release hash:
+  `b05717e8dc09cdf2298ba743a33ec48620ecbfb78ef49f728e0333bd39a632b9`.
+
+## 2026-08-24 M31 final source/cache/capture refresh
+
+- Final signed Release SHA-256 is
+  `17adbf1d8ecd5b04a7dedf75f825669565c7d2df1372fd7e493d7e6d325442ff`;
+  bundle signing and source preparation pass.
+- Row-2 Cast prewarm now follows the live missing-weapon resolution against
+  the guarded prepared pool. Dynamic poses/attachments remain source-owned
+  per tick; no fallback character or weapon is introduced.
+- Immutable camera-free stage compositions may reuse packet/material hashes;
+  camera-bearing/V7 frames rebuild. The legacy full-stage environment remains
+  fail-closed on unsupported visible commands, while V7 remains opt-in and
+  retains full-scene `0x38` diagnostics.
+- Revalidated owner, passive policy, Gunbarrel stepper, RAMROM orchestrator,
+  and all-seven V7 stage supplied-drawable/API/shader metadata lanes. The
+  current foreground 120 Hz smoke is clean on source/renderer/migration
+  counters but presents `116.59 FPS`; strict active cadence is not claimed.
+- Exact-hash Metal evidence is durable and inspected under
+  `build/native/boot-runtime/cadence/runs/m31-metal-capture-final-20260824/`:
+  `goldeneye-layer-final17ad.gputrace` (259 draws, one source encoder,
+  253 source-2D draws) and `color0-final17ad.png` (non-black; SHA-256
+  `0001dab1a9473de868db4aa03cfae84934c86803815a13b75912f8215b70beb5`).
+- Remaining handoff gates are direct-display/Metal-HUD proof and sustained
+  active fullscreen/windowed 120/60 presentation; passive background policy
+  remains unchanged.
+- Exact final-hash passive evidence passes under
+  `build/native/boot-runtime/cadence/runs/m31-final-passive-20260824/120/`
+  (`120.0007 Hz` logic, zero dropped ticks, no authority or background
+  violations, inactive/non-key alpha-zero window, user notification process
+  remains frontmost).
+
+## 2026-08-24 M31 triple-buffer presentation refresh
+
+- The signed Release now defaults the supplied-drawable CAMetalLayer to three
+  drawables; an explicit cadence probe can select two for comparison. Passive
+  activation and click-through behavior is unchanged. Final SHA-256:
+  `eb48c5ba63abb976515e556023a80a44e5271bff5574565d5690fbdf9f219e98`.
+- Controlled triple-buffer runs reached `119.25 FPS` windowed 120 and
+  `59.90 FPS` fullscreen DELL 60 (minima `113`/`59`) with clean source,
+  migration, and render counters. WindowServer reruns varied to `116.14` and
+  `48.17`, so sustained active acceptance remains open; at most eight bounded
+  nonmonotonic presented-time samples are retained/allowed for this mode.
+- Exact-hash trace/image refresh is under
+  `build/native/boot-runtime/cadence/runs/m31-metal-capture-final-20260824/`:
+  `goldeneye-layer-finaleb48.gputrace` (259 draws, 960x540 BGRA8/depth) and
+  non-black `color0-finaleb48.png` (SHA-256
+  `60578b6c89b0d7bda4dc0dbc32883866d38e6fb71f9c4a35acce52c8bfa24d0f`).
+
+## 2026-08-24 M31 fullscreen-transition fence refresh
+
+- Fullscreen migration now defers intermediate display/backing updates until
+  the settled enter/exit notification, with explicit fail-to-enter/exit
+  cleanup. Passive mode is unaffected. Current Release SHA-256:
+  `5750a67f3b2e30fd60e2310cf01461a1b39d94e0474f8cc4f5c89728b9f61565`.
+- Repeat DELL fullscreen 60 runs reach `59.55`/`59.65 FPS` and 16.65 ms
+  p95 with zero source/render/migration/marshal failures; rolling one-second
+  minima still miss the strict 59-frame gate, so acceptance remains open.
+- Exact-hash Metal capture is refreshed as
+  `goldeneye-layer-final5750.gputrace` with non-black
+  `color0-final5750.png` (259 draws, 960x540 BGRA8/depth; SHA-256
+  `60578b6c89b0d7bda4dc0dbc32883866d38e6fb71f9c4a35acce52c8bfa24d0f`).
+
+## 2026-08-24 M23 Cast production-route diagnostics
+
+- `scripts/test_cast_production_route_v6.sh` now has an explicit
+  `GE_CAST_PRODUCTION_BACKGROUND=0|1` validation override, durable owner
+  failure/native-owner telemetry copies, early owner-failure termination, and
+  correct `/bin/unlink` lock cleanup. Default validation remains passive.
+- Current foreground Debug/API/shader validation reaches Gunbarrel tick 2944,
+  then fails closed at scheduler debt 241 with no crash and no Cast authority
+  failure. It does not prove `castSubmit=1`; the source route is not bypassed.
+- M23 live supplied-drawable Cast capture remains open. The harness syntax and
+  focused source/reference lanes pass, but the Debug validation boundary must
+  be optimized or separately evidenced before claiming live Cast acceptance.
+- Current strict Cast references remain green: row 1 repeats identically, and
+  explicit row 2/random-word `3` passes API/shader validation with raw SHA-256
+  `77c32bfe06d76b63114757c1915964d14331072be98c52b4febce17eccaf2454` under
+  `build/native/cast-reference-capture-v6/`.
+- The explicit optimized Release capture lane now reaches live Cast row 2 at
+  tick 4185 and produces an inspected CAMetalLayer trace (68 source-scene
+  draws, 1920x1080 BGRA8/depth). Evidence:
+  `build/native/cast-production-route-v6/m23-cast-release-capture-20260824/`.
+- A separate optimized Release validation run with Metal API and shader
+  validation enabled now reaches `castSubmit=1` at tick 3967 without an owner
+  failure. Durable evidence is under
+  `build/native/cast-production-route-v6/m23-cast-release-validation-20260824/`
+  (`validation.txt`, `cast-renderer.log`, and `app-launch.log`).
+- Debug/API validation still stops at the Gunbarrel debt boundary; live Cast
+  cadence/pixel parity remains unclaimed.
+- Paired source-authority Cast smoke passes with the blood acknowledgement at
+  tick `3072`; evidence remains under
+  `build/native/original-source-v6/paired-authority-v6`.
+
+## 2026-08-24 current-hash M23/M31 refresh
+
+- The current signed Release executable is
+  `f59562608db6c440e0bb1a9cacf08278cb7f703643641cc46b308364b79e081d`;
+  source preparation, codesign, owner/policy, Gunbarrel, and paired-authority
+  gates pass.
+- Release/API+shader Cast validation reaches `castSubmit=1` at tick `3980`
+  with no owner failure:
+  `build/native/cast-production-route-v6/m23-cast-release-validation-postactivation-20260824/`.
+- Explicit foreground capture reaches tick `4022`; `cast-production.gputrace`
+  contains 72 source-scene draws with 960x540 BGRA8/depth attachments, and
+  the inspected `cast-color0.png` is non-black with SHA-256
+  `d621e34399928be216cacf43619472ce5c3107fbfa3d61de442a5a71a27ad03d`:
+  `build/native/cast-production-route-v6/m23-cast-release-capture-postactivation-20260824/`.
+- Strict Cast row 1 remains byte-identical; row 2/random-word `3` passes
+  API/shader validation with raw SHA-256
+  `77c32bfe06d76b63114757c1915964d14331072be98c52b4febce17eccaf2454`.
+- Cadence-gated foreground activation is now explicit for direct executable
+  probes only. Passive background behavior remains unchanged and passes the
+  current-hash 120.003 Hz owner/isolation run under
+  `build/native/boot-runtime/cadence/runs/m31-passive-postactivation-20260824/120/`.
+- Active probes now reach their epochs: windowed 120 is `119.998 Hz` logic /
+  `114.24 FPS` presented; fullscreen triple-buffered DELL 60 is `58.999 FPS`
+  with rolling minimum `52`; the two-drawable comparison is `59.68 FPS` with
+  rolling minimum `59` and two transition-rejected timestamps. Strict active
+  presentation and Metal-HUD/direct-display proof remain open.

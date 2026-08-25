@@ -223,6 +223,17 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     private var latestStageFullSceneUnsupportedMask: UInt32 = 0
     private var latestStageFrameResources: GoldenEyeSourceProductFrameResourcesV6?
     private var stageScenePacketCache: [UInt32: GoldenEyeStageScenePacket] = [:]
+    /// A stage packet/material hash identifies the immutable room+prop
+    /// topology. RAMROM emits the same prepared packet across many native
+    /// ticks, so retain the validated composition and reframe only its tick /
+    /// lighting metadata instead of rebuilding every prop on the owner.
+    private struct StageCompositionCacheKey: Hashable {
+        let stageID: UInt32
+        let environmentHash: UInt64
+        let materialHash: UInt64
+    }
+    private var stageCompositionCache:
+        [StageCompositionCacheKey: GoldenEyeStageModelSceneCompositionV6.Result] = [:]
     /// Monotonic publication generation for asynchronous V7 builds. Every
     /// route replacement or shutdown advances it while holding
     /// `frameStateLock`; an older composition may never overwrite a newer
@@ -264,6 +275,11 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         let textureSetups: [GoldenEyeSourceTextureSetupV6]
     }
     private var gunbarrelTopologyCache: [String: GunbarrelTopologyCacheEntry] = [:]
+    /// Incremental source root-motion state for the live Gunbarrel owner. The
+    /// immutable sidecar remains the pure oracle; this state only advances
+    /// already-validated substeps and is reset at each source entry.
+    private var gunbarrelRootMotionStepper:
+        GoldenEyeGunbarrelDynamicSidecarV6.RootMotionStepperV6?
     /// Cast GESM traversal and texture setup are immutable for a prepared
     /// model.  Keep those copied source values warm before the owner starts its
     /// 120 Hz loop; the dynamic builder still receives the live C pose and
@@ -726,9 +742,32 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             )
         }
         try prewarmFirstCastBuilderPackets(
+            sourceIndex: 1,
             models: models,
             resolver: resolver
         )
+        // The source-ordered route for the canonical title seed advances to
+        // row 2 on its first live Cast anchor. Warm that distinct model/packet
+        // set before the owner starts so the first dynamic Cast frame does not
+        // pay a multi-period decode/convert stall.
+        do {
+            try prewarmFirstCastBuilderPackets(
+                sourceIndex: 2,
+                models: models,
+                resolver: resolver
+            )
+        } catch {
+            // A source row may select a distinct weapon prop that is not in
+            // the guarded Cast catalog. Keep the exact skip diagnostic and
+            // let the live submission apply its existing source-validated
+            // missing-weapon resolution; never abort owner startup because
+            // an optional prewarm row is unavailable.
+            try? "castBuilderPacketPrewarm=0 sourceIndex=2 error=\(error)\n".write(
+                toFile: "/tmp/goldeneye-source-product-renderer-v6-cast-builder-prewarm.log",
+                atomically: false,
+                encoding: .utf8
+            )
+        }
         castTopologyPrewarmModelCount = UInt32(castTopologyCache.count)
         let elapsedMicros = (DispatchTime.now().uptimeNanoseconds - start) / 1_000
         try? (
@@ -750,10 +789,10 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     /// transition.  The first owner Cast frame still supplies C-authoritative
     /// poses, attachments, matrices, and frame hashes to `build`.
     private func prewarmFirstCastBuilderPackets(
+        sourceIndex: UInt16,
         models: [String: GoldenEyeSourceModelV6],
         resolver: GESourceModelDynamicResolverV6
     ) throws {
-        let sourceIndex: UInt16 = 1
         let seed = Self.castPrewarmSeed()
         let nativeTick = Self.castPrewarmNativeTick()
         let identity = try GoldenEyeCastSourceTableV6.identity(sourceIndex: sourceIndex)
@@ -776,14 +815,30 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         let availableHandles = models.reduce(into: [String: UInt32]()) {
             $0[$1.key] = $1.value.header.modelHandle
         }
-        let binding = try GoldenEyeCastSceneComposerV6.resolveModels(
-            identity: identity,
-            animation: animation,
-            availableModelNames: availableNames,
-            availableHandles: availableHandles,
-            randomWord: randomWord,
-            requestedWeaponPropID: requestedWeaponPropID
-        )
+        // Match the live Cast handoff exactly: an authored prop ID that has no
+        // guarded packet falls back to the source-selected prepared weapon
+        // pool. Prewarm the fallback topology as well, otherwise row 2 pays
+        // the full decoder/vertex expansion on its first visible frame.
+        let binding: GoldenEyeCastPreparedModelBindingV6
+        do {
+            binding = try GoldenEyeCastSceneComposerV6.resolveModels(
+                identity: identity,
+                animation: animation,
+                availableModelNames: availableNames,
+                availableHandles: availableHandles,
+                randomWord: randomWord,
+                requestedWeaponPropID: requestedWeaponPropID
+            )
+        } catch GoldenEyeCastSceneComposerV6Error.missingWeapon {
+            binding = try GoldenEyeCastSceneComposerV6.resolveModels(
+                identity: identity,
+                animation: animation,
+                availableModelNames: availableNames,
+                availableHandles: availableHandles,
+                randomWord: randomWord,
+                requestedWeaponPropID: nil
+            )
+        }
         let modelNames = [binding.bodyName, binding.headName, binding.weaponName]
             .filter { !$0.isEmpty }
         let frameResources = try GoldenEyeCastCameraResourcesV6.make(
@@ -869,7 +924,11 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
     private static func castPrewarmNativeTick() -> UInt64 {
         guard let raw = ProcessInfo.processInfo.environment["GOLDENEYE_NATIVE_CAST_PREWARM_TICK"],
               let value = UInt64(raw), value > 0 else {
-            return 3_820
+            // The canonical source route first submits Cast at native tick
+            // 3952/3953. This keeps the deterministic prewarm word aligned
+            // with the first row-2 transition while remaining overrideable for
+            // alternate seeds/harnesses.
+            return 3_953
         }
         return value
     }
@@ -1056,12 +1115,14 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             gunbarrelBloodFrameIndex = 0
             gunbarrelBloodTickCount = 0
             gunbarrelBloodCompletionPending = false
+            gunbarrelRootMotionStepper = nil
         }
         if !isGunbarrel {
             gunbarrelPreviousAnchorScene = nil
             gunbarrelCurrentAnchorScene = nil
             gunbarrelCurrentAnchorPass = nil
             gunbarrelTransitionXQ16 = -100 * 65_536
+            gunbarrelRootMotionStepper = nil
         } else if let transitionEvent = sourceFrontendFrame.renderEvents.first(where: {
             $0.operation == GE_SOURCE_FRONTEND_RUNTIME_V6_RENDER_CONTINUOUS_STATE
                 && $0.subphase == GE_SOURCE_FRONTEND_RUNTIME_V6_CONTINUOUS_GUNBARREL_TRANSLATION
@@ -1255,6 +1316,11 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         frameStateLock.lock()
         defer { frameStateLock.unlock() }
         publicationGeneration &+= 1
+        // RAMROM stage packets are immutable environment/topology data. Clear
+        // the previous dynamic model frame resources before composing so the
+        // bounded stage-composition cache can reuse the source packet across
+        // ticks; Cast/title resources must never disable that cache forever.
+        latestStageFrameResources = nil
         latestStageComposition = nil
         latestStageScene = try composedStageSnapshot(
             packet: packet,
@@ -1294,6 +1360,10 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         frameStateLock.lock()
         defer { frameStateLock.unlock() }
         publicationGeneration &+= 1
+        // A stage handoff supersedes any Cast/title matrix resources. Keeping
+        // them here would force every otherwise-identical environment packet
+        // through a full model composition and starve the owner cadence.
+        latestStageFrameResources = nil
         latestStageComposition = nil
         latestStageScene = try composedStageSnapshot(
             packet: packet,
@@ -1338,6 +1408,20 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             return nil
         }
         do {
+            let canCache = latestStageFrameResources == nil
+            let cacheKey = StageCompositionCacheKey(
+                stageID: packet.stageID,
+                environmentHash: packet.packetHash,
+                materialHash: materialPacket?.packetHash ?? 0
+            )
+            if canCache, let cached = stageCompositionCache[cacheKey] {
+                let reframed = try reframeStageComposition(
+                    cached,
+                    nativeTick: nativeTick
+                )
+                latestStageComposition = reframed
+                return reframed.snapshot
+            }
             let result = try GoldenEyeStageModelSceneCompositionV6.make(
                 stageScene: stageScene,
                 environmentPacket: packet,
@@ -1349,6 +1433,13 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
                 nativeTick: nativeTick,
                 visibleDependencies: visibleDependencyCatalog
             )
+            if canCache {
+                stageCompositionCache[cacheKey] = result
+                if stageCompositionCache.count > 32,
+                   let oldest = stageCompositionCache.keys.first {
+                    stageCompositionCache.removeValue(forKey: oldest)
+                }
+            }
             latestStageComposition = result
             try? "stageComposition=1 releaseStageSubmission=1 stage=\(packet.stageID) placements=\(result.placementCount) drawable=\(result.drawablePlacementCount) unsupportedPlacements=\(result.unsupportedPlacementCount) unsupportedMask=0x\(String(result.unsupportedMask, radix: 16)) aliases=\(result.aliasDescriptorCount) compositionHash=\(result.compositionHash) presentable=\(result.isPresentable ? 1 : 0)\n".write(
                 toFile: "/tmp/goldeneye-source-product-renderer-v6-stage-composition.log",
@@ -1364,6 +1455,58 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
             )
             return nil
         }
+    }
+
+    private func reframeStageComposition(
+        _ result: GoldenEyeStageModelSceneCompositionV6.Result,
+        nativeTick: UInt64
+    ) throws -> GoldenEyeStageModelSceneCompositionV6.Result {
+        let source = result.snapshot
+        var summary = source.summary
+        summary.native_tick = nativeTick
+        summary.reference_tick = nativeTick >> 1
+        summary.pair_phase = UInt32(nativeTick & 1)
+        summary.flags = (summary.flags | UInt32(GE_SOURCE_FRAME_V6_FLAG_PRESENTABLE))
+            & ~UInt32(GE_SOURCE_FRAME_V6_FLAG_SOURCE_ANCHOR)
+            & ~UInt32(GE_SOURCE_FRAME_V6_FLAG_INTERPOLATED)
+        summary.flags |= nativeTick & 1 == 0
+            ? UInt32(GE_SOURCE_FRAME_V6_FLAG_SOURCE_ANCHOR)
+            : UInt32(GE_SOURCE_FRAME_V6_FLAG_INTERPOLATED)
+        summary.frame_hash = summary.scene_hash ^ nativeTick
+        let lighting = try source.lightingFrameContext.map {
+            try GoldenEyeSourceSceneLightingFrameContextV6(
+                screen: $0.screen,
+                nativeTick: nativeTick,
+                referenceTick: nativeTick >> 1,
+                sourceTimer: $0.sourceTimer,
+                pairPhase: UInt32(nativeTick & 1),
+                geometryModesByState: $0.geometryModesByState,
+                modelViewQ16ByState: $0.modelViewQ16ByState
+            )
+        }
+        let snapshot = try GoldenEyeSourceSceneSnapshotV6(
+            reframing: source,
+            summary: summary,
+            transforms: source.transforms,
+            renderStates: source.renderStates,
+            lightingFrameContext: lighting
+        )
+        return GoldenEyeStageModelSceneCompositionV6.Result(
+            snapshot: snapshot,
+            stageID: result.stageID,
+            placementCount: result.placementCount,
+            drawablePlacementCount: result.drawablePlacementCount,
+            unsupportedPlacementCount: result.unsupportedPlacementCount,
+            propPlacementCount: result.propPlacementCount,
+            characterPlacementCount: result.characterPlacementCount,
+            aliasDescriptorCount: result.aliasDescriptorCount,
+            unsupportedMask: result.unsupportedMask,
+            failureReasons: result.failureReasons,
+            categoryPackets: result.categoryPackets,
+            compositionHash: result.compositionHash,
+            contiguousBatchCount: result.contiguousBatchCount,
+            largestContiguousBatch: result.largestContiguousBatch
+        )
     }
 
     private func loadStageScenePacket(stageID: UInt32) -> GoldenEyeStageScenePacket? {
@@ -1412,6 +1555,7 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         latestStageGameplayCameraSubsetHash = 0
         latestStageFullSceneUnsupportedMask = 0
         latestStageFrameResources = nil
+        stageCompositionCache.removeAll(keepingCapacity: true)
         latestTitleSnapshot = nil
         latestSource2DFrame = nil
         latestSource2DBackgroundFrame = nil
@@ -1968,6 +2112,7 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         gunbarrelBloodFrameIndex = 0
         gunbarrelBloodTickCount = 0
         gunbarrelBloodCompletionPending = false
+        gunbarrelRootMotionStepper = nil
     }
 
     /// The source owner submits a complete copied event frame.  A frame whose
@@ -2634,9 +2779,10 @@ final class GoldenEyeSourceProductRendererV6: GoldenEyeFrameRenderer,
         }
 
         let sourceSubstep = request.sourceTimer
-        let integratedRootMotion = try sidecar.integratedRootMotion(
-            sourceSubstep: sourceSubstep
-        )
+        var rootMotionStepper = try gunbarrelRootMotionStepper
+            ?? GoldenEyeGunbarrelDynamicSidecarV6.RootMotionStepperV6(sidecar: sidecar)
+        let integratedRootMotion = try rootMotionStepper.advance(to: sourceSubstep)
+        gunbarrelRootMotionStepper = rootMotionStepper
         let resolver = sidecar.dynamicResolver
         let roles = try frameResources.matrices.compactMap {
             matrix -> GoldenEyeSourceMatrixRoleSidecarV6? in

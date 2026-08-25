@@ -184,9 +184,14 @@ final class GoldenEyeNativeTitleOwner: @unchecked Sendable {
                 )
             }
         }
-        if gameplayCameraSubmissionEnabled,
-           !diagnosticTitleFlowEnabled,
+        if !diagnosticTitleFlowEnabled,
            let request = makeSourceRamRomRequest() {
+            // RAMROM playback preparation is source-owned launch work, not a
+            // 120 Hz tick. Prewarm it for the canonical Release route as well
+            // as the opt-in V7 camera lane; the exact request identity is
+            // checked again at Cast->RAMROM handoff before adoption, so a
+            // different source-randomized demo still fails over to the
+            // existing guarded constructor rather than reusing stale state.
             do {
                 prewarmedRamRomGameplay = try GoldenEyeRamRomGameplayOrchestratorV6.fromEnvironment(
                     request: request, atNativeTick: 0

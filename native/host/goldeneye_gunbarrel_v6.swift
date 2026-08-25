@@ -671,64 +671,96 @@ public struct GoldenEyeGunbarrelDynamicSidecarV6: Sendable, Equatable {
         return skeleton
     }
 
-    /// Integrate one source Gunbarrel timer as one native model substep. The
-    /// timer is reset on Gunbarrel entry and is independent of the frontend
-    /// menu timer. Root X/Z are accumulated across every crossed animation
-    /// frame, with source heading rotation, loop wrapping, fire transition,
-    /// and the 212 speed ramp preserved.
-    public func integratedRootMotion(sourceSubstep: UInt32) throws -> IntegratedRootMotionV6 {
-        guard sourceSubstep <= 100_000 else {
-            throw Error.invalid("root-motion substep capacity")
+    /// Mutable source-clock integrator used by the live owner. It advances
+    /// only the substeps that were not already consumed. A source mode
+    /// transition may legitimately rewind the timer; in that case the
+    /// validated initial accumulator is restored and only the new bounded
+    /// substep range is replayed.
+    public struct RootMotionStepperV6: Sendable {
+        private let initialAccumulator: RootMotionAccumulatorV6
+        private var accumulator: RootMotionAccumulatorV6
+        private var mergeWalk: RootMotionAccumulatorV6?
+        private var mergeTicks: UInt32 = 0
+        public private(set) var sourceSubstep: UInt32 = 0
+
+        public init(sidecar: GoldenEyeGunbarrelDynamicSidecarV6) throws {
+            let walk = try sidecar.clip(named: "bond_eye_walk")
+            guard walk.frameCount > 0 else {
+                throw Error.invalid("empty walk root-motion clip")
+            }
+            let walkCount = Int(walk.frameCount)
+            let walkStartFrame = UInt32((walkCount - (0x44 % walkCount)) % walkCount)
+            let initialAccumulator = try RootMotionAccumulatorV6(
+                sidecar: sidecar,
+                clipName: "bond_eye_walk",
+                frame: walkStartFrame
+            )
+            self.initialAccumulator = initialAccumulator
+            self.accumulator = initialAccumulator
         }
-        let walk = try clip(named: "bond_eye_walk")
-        guard walk.frameCount > 0 else { throw Error.invalid("empty walk root-motion clip") }
-        let walkCount = Int(walk.frameCount)
-        let walkStartFrame = UInt32((walkCount - (0x44 % walkCount)) % walkCount)
-        var accumulator = try RootMotionAccumulatorV6(
-            sidecar: self,
-            clipName: "bond_eye_walk",
-            frame: walkStartFrame
-        )
-        var mergeWalk: RootMotionAccumulatorV6?
-        var mergeTicks = 0
-        var result = try accumulator.result()
-        if sourceSubstep > 0 {
-            for tick in UInt32(1)...sourceSubstep {
-                if tick == 137 {
-                    mergeWalk = accumulator
-                    try accumulator.switchClip("bond_eye_fire", frame: 2)
-                    mergeTicks = 0
+
+        public mutating func advance(
+            to requestedSubstep: UInt32
+        ) throws -> IntegratedRootMotionV6 {
+            guard requestedSubstep <= 100_000 else {
+                throw Error.invalid("root-motion substep capacity")
+            }
+            if requestedSubstep < sourceSubstep {
+                accumulator = initialAccumulator
+                mergeWalk = nil
+                mergeTicks = 0
+                sourceSubstep = 0
+            }
+            if requestedSubstep > sourceSubstep {
+                for tick in (sourceSubstep + 1)...requestedSubstep {
+                    try advanceOne(tick)
                 }
-                let speed: Double
-                if tick < 212 {
-                    speed = 0.91
-                } else {
-                    let elapsed = min(8.0, Double(tick - 211) * 0.5)
-                    speed = elapsed < 8.0 ? 0.91 + (1.6 - 0.91) * (elapsed / 8.0) : 1.6
-                }
-                let crossed = try accumulator.advance(
-                    rateQ16: Int64((0.5 * speed * 65_536.0).rounded())
-                )
-                let fireResult = try accumulator.result()
-                if mergeTicks < 32, let walkAccumulator = mergeWalk {
-                    mergeTicks += 1
-                    if crossed {
-                        accumulator.applyMergeVelocity(
-                            from: walkAccumulator,
-                            speed2: 0.91,
-                            speed: speed,
-                            playspeed: 0.5,
-                            elapsed: Double(mergeTicks) * 0.5,
-                            mergeDuration: 16.0
-                        )
-                    }
-                    result = try accumulator.result()
-                } else {
-                    result = fireResult
+                sourceSubstep = requestedSubstep
+            }
+            return try accumulator.result()
+        }
+
+        private mutating func advanceOne(_ tick: UInt32) throws {
+            if tick == 137 {
+                mergeWalk = accumulator
+                try accumulator.switchClip("bond_eye_fire", frame: 2)
+                mergeTicks = 0
+            }
+            let speed: Double
+            if tick < 212 {
+                speed = 0.91
+            } else {
+                let elapsed = min(8.0, Double(tick - 211) * 0.5)
+                speed = elapsed < 8.0
+                    ? 0.91 + (1.6 - 0.91) * (elapsed / 8.0)
+                    : 1.6
+            }
+            let crossed = try accumulator.advance(
+                rateQ16: Int64((0.5 * speed * 65_536.0).rounded())
+            )
+            if mergeTicks < 32, let walkAccumulator = mergeWalk {
+                mergeTicks += 1
+                if crossed {
+                    accumulator.applyMergeVelocity(
+                        from: walkAccumulator,
+                        speed2: 0.91,
+                        speed: speed,
+                        playspeed: 0.5,
+                        elapsed: Double(mergeTicks) * 0.5,
+                        mergeDuration: 16.0
+                    )
                 }
             }
         }
-        return result
+    }
+
+    /// Integrate one source Gunbarrel timer as one native model substep. The
+    /// pure oracle intentionally starts from the source walk anchor every
+    /// call; the live owner uses ``RootMotionStepperV6`` to avoid replaying
+    /// already-consumed substeps.
+    public func integratedRootMotion(sourceSubstep: UInt32) throws -> IntegratedRootMotionV6 {
+        var stepper = try RootMotionStepperV6(sidecar: self)
+        return try stepper.advance(to: sourceSubstep)
     }
 
     /// Select the exact source animation clip/frame for a Gunbarrel source

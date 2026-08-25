@@ -112,14 +112,15 @@ or mutable object graphs.
 | M20 | GoldenEye logo | Lighting, texgen/reflection, fade timing, and File Select versus cast routing pass. | Implemented for the bounded source GoldenEye path — source 162-command/339-triangle graph, seven mip levels, exact two-cycle LOD/combiner/material closure, projection consumption, paired native ticks `3423/3424`, deterministic 320×240/Faithful-HD Metal API/shader captures, and source gold/red pixel checks pass; full N64 lighting/pixel parity remains an acceptance boundary. |
 | M21 | File Select | Four wallets, source UI, idle return, full folder actions, and adaptive widescreen pass. | Implemented for the bounded source File Select path — four-folder save/copy/erase authority, source Wallet SWITCH graph (42 nodes/43 records), source UI/text/icon/background packets, corrected erase-confirmation route, idle/Mode transition, adaptive layout, strict/ASan/UBSan/paired validation, and integration pass; full N64 save/UI parity remains an acceptance boundary. |
 | M22 | Mode Select | Navigation, availability, back behavior, and persistence pass. | Implemented for the bounded source Mode Select path — solo/multiplayer controller-gated rows, previous-tab/back behavior, selected-wallet SWITCH/material linkage, persistence route, exact 320×240/Faithful-HD/adaptive offscreen captures, Metal API/shader validation, and deterministic draw/pixel hashes pass; complete N64 mode/pixel parity remains an acceptance boundary. |
-| M23 | Cast reel | Body/head/weapon selection, skeletal animation, source timing, random entries, and exit rules pass. | In progress — 34-entry source route, unlock/guest gates, random/explicit demo selection, source attachment lowering, Cast texture/render-mode fixtures, abort/restore, and a validated byte-identical source-row-2 `spicebond` offscreen reference with explicit second random word `3` now pass; the canonical Release now records live supplied-drawable Cast submissions, while Metal-4/gputrace/physical cadence acceptance remains open. |
+| M23 | Cast reel | Body/head/weapon selection, skeletal animation, source timing, random entries, and exit rules pass. | In progress — 34-entry source route, unlock/guest gates, random/explicit demo selection, source attachment lowering, Cast texture/render-mode fixtures, abort/restore, deterministic row-2 reference output, and optimized Release live supplied-drawable capture plus separate Metal API/shader validation now pass; Debug validation still hits the Gunbarrel debt horizon, and physical Cast cadence/pixel parity remain open. |
 | M24 | Native platform services | Memory, DMA/file index, RZIP, arenas, stage lifecycle, and required platform services operate without the N64 scheduler. | In progress — bounded Swift stage catalog plus C 1172/rebase/decompress callback, metadata packet copy-out, decoded-arena views, value-only setup/portal packets, owner-side chunked scene transfer, pointer-free lifecycle, stage-scoped decoded-payload ownership, and a source-parity file-index/transfer queue now validate all 21 rows with strict/ASan/UBSan range/digest/single-active/chunk guards; true async streaming/DMA and broad platform replacement remain pending. |
 | M25 | Demo-stage loading | Dam, Facility, Runway, Bunker I, Silo, Frigate, and Train scene/setup data load through deterministic handles. | In progress — all seven stage families load through the M24 lifecycle and corrected 21-resource root with 468 background rooms, 2,225 setup objects, 2,230 pads/bound pads, 612 portals, 436 textures/248 TLUTs/3,575 bindings, and deterministic scene/setup hashes; the source pad-backed static subset is drawable while collectables/ammo/monitors/autoguns/vehicles and gameplay categories remain pending. |
 | M26 | Demo gameplay core | Demo-reachable player/camera/collision, props, doors, guards, AI, objectives, weapons, effects, and paired cadence run headlessly. | In progress — all 14 routes now pass bounded fixed-point player/camera, pad/room/portal, dynamic-door, guard/weapon-page, non-model visual, weapon/effect, orchestrator, and abort/restore lanes under strict/ASan/UBSan; `sourceReady=0` and collision/AI/characters/weapons/effects remain explicit diagnostics. |
 | M27 | Demo renderer | Rooms, sky, props, characters, weapons, particles, glass, explosions, HUD/watch, and fades render through Metal 4. | In progress — V7 room/static-prop packets pass all seven stages with source pad-basis/model-scale transforms and the aligned current-room-plus-one-hop visibility contract, scoped `unsupportedMask=0`, and retained full-scene `0x38`; the canonical Release now records a supplied-drawable Facility room/static-prop frame, while current Metal-4 capture/gputrace/physical evidence and character/effect/AI/HUD/weapon categories remain pending. |
 | M28 | RAMROM playback | All 14 recordings parse, preserve source-anchor packet/RNG consumption and speedframes, support abort, and restore title state. | In progress — all 14 recordings pass twice (`runs=28`, `abort_restore=14`) through strict/ASan/UBSan C and Swift owner-service parser/playback/checksum/RNG validation; the canonical demo 4 / Facility Release route now reaches packet return and a repeated attract cycle with `sourceAuthorityFailure=none`, while full all-demo native gameplay/category closure remains pending. |
-| M29 | Integrated acceptance/handoff | Both launch routes, Release signing, 120/60 evidence, validation, sanitizers, capture inspection, and handoff artifacts pass. | In progress — rebuilt signed Release/provenance, V7 owner/renderer integration, and unlocked seven-stage supplied-drawable/gputrace evidence pass; active-display sustained cadence, live Cast supplied-drawable output, and full gameplay-category closure remain pending. |
-| M30 | Visual/window regression recovery | Nintendo/Rareware/Gunbarrel/Cast visual fixes and AppKit focus/window behavior pass source/Metal validation without weakening cadence or fail-closed contracts. | In progress — six-fix implementation, source/CPU suites, fresh title/Cast captures, seven-stage Metal 4 supplied-drawable capture, and passive AppKit non-interference pass; active-display migration/sustained presentation, live Cast GPU output, and character/effect/AI/HUD/weapon categories remain open. |
+| M29 | Integrated acceptance/handoff | Both launch routes, Release signing, 120/60 evidence, validation, sanitizers, capture inspection, and handoff artifacts pass. | In progress — rebuilt signed Release/provenance, V7 owner/renderer integration, seven-stage supplied-drawable/gputrace evidence, and optimized Release Cast capture/API+shader validation pass; active-display sustained cadence, Debug-validation Cast horizon, and full gameplay-category closure remain pending. |
+| M30 | Visual/window regression recovery | Nintendo/Rareware/Gunbarrel/Cast visual fixes and AppKit focus/window behavior pass source/Metal validation without weakening cadence or fail-closed contracts. | In progress — six-fix implementation, source/CPU suites, fresh title/Cast captures, seven-stage Metal 4 supplied-drawable capture, optimized Release live Cast trace/API+shader validation, and passive AppKit non-interference pass; active-display migration/sustained presentation and character/effect/AI/HUD/weapon categories remain open. |
+| M31 | Active-display presentation closure | Explicit interactive fullscreen/windowed 120/60 runs sustain the requested presented cadence with zero migration/authority/render failures, then close Metal HUD/gputrace evidence. | In progress — activation startup, RAMROM prewarm, Gunbarrel stepper, triple buffering, and fullscreen-transition fencing are implemented; exact Release gputrace passes, but strict sustained 120/60 cadence and Metal-HUD/direct-display proof remain open. |
 
 ## Fidelity Recovery Rebaseline — 2026-08-19
 
@@ -1504,7 +1505,7 @@ pushes, branches, resets, cleans, or removes unrelated artifacts.
 
 - Fresh signed Release rebuild passes the bundle gate and codesign check.
   Executable SHA-256 is
-  `75b030d6d8e11ee1de14bd6de34a834fb23c626fda12bc59dd94c27add9ca86e`.
+  `0a0156fab7c692964ee01b149326d4e03fd8ffab4abb312f152467239199a699`.
 - The current-hash passive launch stayed alive for 70 seconds with the owner
   reaching source tick `4314`; NetSward remained frontmost and GoldenEye was
   inactive/non-key, alpha-zero, normal-level, and click-through. Durable case
@@ -1530,3 +1531,189 @@ pushes, branches, resets, cleans, or removes unrelated artifacts.
   non-identity cameras, room+static props, deterministic hashes, Metal API/
   shader validation, scoped `unsupportedMask=0`, and retained full-scene
   `0x38` diagnostics.
+
+### M31 active presentation and source-prewarm continuation — 2026-08-24
+
+- Explicit interactive startup no longer traps when the pre-run `.regular`
+  activation-policy call returns false; the policy is retried at AppKit launch.
+  Passive accessory behavior is unchanged. Fresh Release hash:
+  `0a0156fab7c692964ee01b149326d4e03fd8ffab4abb312f152467239199a699`.
+- Canonical Release now prewarms the guarded RAMROM gameplay orchestrator for
+  the selected source request before the 120 Hz owner starts. Gunbarrel root
+  motion uses an incremental source stepper with pure-oracle checkpoint and
+  rewind-reset coverage. Strict Gunbarrel, dynamic-builder, orchestrator
+  strict/ASan/UBSan, owner, and policy smokes pass.
+- Fresh fullscreen 120 active evidence reaches measurement epoch 1 with
+  `120.0013 Hz` logic, `3351` source frames, zero fatal debt, zero source
+  authority/render/migration failures, and zero migration timeout/drop; the
+  WindowServer presents `114.9995 FPS`, so strict 119–121 visible cadence is
+  still unproven. Evidence:
+  `build/native/boot-runtime/cadence/runs/m31-active-fullscreen-prewarm-stepper-20260824-120/120/`.
+- Fresh fullscreen fixed-60 external evidence is source-stable but presents
+  `44.79 FPS`; windowed fixed-60 averages `59.58 FPS` but has one-second
+  minimum `52`. These remain display/compositor presentation gaps, not source
+  authority failures. The direct-to-display/Metal-HUD/gputrace gate remains
+  open and passive/background policy is unchanged.
+- An explicit debuggable capture-entitled copy of the final Release produced a
+  real CAMetalLayer `.gputrace` with one source render encoder and `259` draws;
+  `gpudebug` confirms 1920x1080 BGRA8/depth attachments, indexed UInt32 draws,
+  source-scene debug groups, and 253 source-2D draws. Artifacts:
+  `build/native/boot-runtime/cadence/runs/m31-metal-capture-final-20260824/`.
+
+### M31 stage-composition cache continuation — 2026-08-24
+
+- Legacy RAMROM stage composition now caches only immutable packet/material
+  hashes when no frame-resource camera is present, reframing tick/lighting
+  metadata on reuse; camera-bearing frames still rebuild and remain source
+  guarded. Debug and Release gates pass. Final Release SHA-256:
+  `2ed0d80587cee02050362d7a257e6f7ea24090a0cab6d95b86b773b739824a19`.
+- Passive post-cache owner evidence reaches source tick `4330` and Cast
+  submission with no authority fallback. Stage gameplay stepping remains
+  explicitly bounded (roughly 0.3 s per dynamic stage frame in this route),
+  so this cache is not claimed as full gameplay-cadence closure.
+- The capture-entitled current-hash bundle produced and inspected
+  `goldeneye-layer-finalb057.gputrace`: one CAMetalLayer frame, one source
+  encoder, 259 draws, and 253 source-2D draws. The durable capture report is
+  `build/native/boot-runtime/cadence/runs/m31-metal-capture-final-20260824/capture-report.txt`.
+
+### M31 optional Cast-row prewarm continuation — 2026-08-24
+
+- The canonical second Cast row is now prewarmed best-effort. If its selected
+  weapon prop is absent from the guarded catalog, startup records an explicit
+  `castBuilderPacketPrewarm=0` diagnostic and leaves the live source-validated
+  missing-weapon resolution in control; owner startup is never aborted.
+- Final Release hash after this guard is
+  `b05717e8dc09cdf2298ba743a33ec48620ecbfb78ef49f728e0333bd39a632b9`.
+- The current passive owner run reaches source tick `4330` and multiple Cast
+  rows; dynamic stage stepping remains the open performance boundary.
+
+### M31 final source/cache/capture refresh — 2026-08-24
+
+- The final signed Release after the bounded stage-cache guard and Cast
+  missing-weapon prewarm fallback is
+  `17adbf1d8ecd5b04a7dedf75f825669565c7d2df1372fd7e493d7e6d325442ff`;
+  `codesign --verify --deep --strict` passes.
+- Cast row-2 prewarm now mirrors the live source-validated missing-weapon
+  resolution. It remains topology/packet work only; dynamic poses and
+  attachments stay per-tick and no diagnostic weapon is substituted.
+- Stage compositions are cached only for immutable, camera-free packets. The
+  legacy full-stage environment still fails closed when its bounded snapshot
+  contains unsupported visible commands; the scoped V7 gameplay-camera route
+  remains opt-in with retained full-scene mask `0x38`.
+- Final strict/sanitized CPU lanes pass again: owner supplied-drawable route,
+  passive click-through policy, Gunbarrel stepper/oracle, RAMROM orchestrator
+  (`demos=14 runs=28`), and seven-stage V7 supplied-drawable capture metadata.
+- Current explicit foreground 120 Hz smoke is source/renderer/migration clean
+  (`logic=120.0000 Hz`, `renderFailures=0`, `unexpectedCallbacks=0`) but the
+  composited window presents `116.59 FPS`; strict 119–121 remains open.
+- A fresh capture-entitled trace for the exact final Release is inspected at
+  `build/native/boot-runtime/cadence/runs/m31-metal-capture-final-20260824/`:
+  `goldeneye-layer-final17ad.gputrace`, one source encoder, 259 draws, and
+  253 source-2D draws. Extracted `color0-final17ad.png` is non-black with raw
+  SHA-256 `0001dab1a9473de868db4aa03cfae84934c86803815a13b75912f8215b70beb5`.
+- Direct-display/Metal-HUD proof and sustained active fullscreen 120/60
+  acceptance remain open; passive/default background behavior is unchanged.
+- Exact final-hash passive evidence passes at
+  `build/native/boot-runtime/cadence/runs/m31-final-passive-20260824/120/`:
+  `120.0007 Hz` logic, zero dropped ticks, `sourceAuthorityFailure=none`,
+  zero background violations, inactive/non-key alpha-zero window, and the
+  user notification process remains frontmost.
+
+### M31 triple-buffer presentation refresh — 2026-08-24
+
+- The final Release now uses the Metal-supported three-drawable swap chain by
+  default; an explicit cadence probe can request the two-drawable comparison.
+  Passive activation/window policy is unchanged. Final executable SHA-256:
+  `eb48c5ba63abb976515e556023a80a44e5271bff5574565d5690fbdf9f219e98`.
+- Controlled triple-buffer evidence reached `119.25 FPS` windowed 120 and
+  `59.90 FPS` fullscreen DELL 60 with one-second minima `113` and `59`, clean
+  source/migration/render counters. Other WindowServer reruns varied lower
+  (`116.14` windowed 120, `48.17` fullscreen DELL 60), so sustained active
+  cadence remains unclaimed; the bounded nonmonotonic timestamp telemetry is
+  retained and the gate allows at most eight such samples for triple buffering.
+- Exact final-hash Metal capture is refreshed at
+  `build/native/boot-runtime/cadence/runs/m31-metal-capture-final-20260824/`:
+  `goldeneye-layer-finaleb48.gputrace` (259 draws, one source encoder,
+  960x540 BGRA8/depth) and non-black `color0-finaleb48.png` (SHA-256
+  `60578b6c89b0d7bda4dc0dbc32883866d38e6fb71f9c4a35acce52c8bfa24d0f`).
+- Exact-hash passive triple-buffer evidence passes under
+  `build/native/boot-runtime/cadence/runs/m31-final-passive-triple-20260824/120/`.
+
+### M31 fullscreen-transition fence refresh — 2026-08-24
+
+- Fullscreen migration now defers intermediate screen/backing notifications
+  until `NSWindowDidEnterFullScreen` (or a failure callback), then applies one
+  settled drawable-size/frame-rate update. Passive behavior is unchanged.
+- Current signed Release SHA-256 is
+  `5750a67f3b2e30fd60e2310cf01461a1b39d94e0474f8cc4f5c89728b9f61565`.
+  Fence evidence records both display-change events as deferred and the
+  settled enter event; owner/policy/debug build gates pass.
+- Repeat fullscreen DELL 60 runs reach `59.55`/`59.65 FPS` with 16.65 ms p95,
+  zero source/render/migration failures, and zero marshal/drop/timeouts. One-
+  second rolling minima remain below the strict 59-frame gate, so active
+  acceptance is still open and WindowServer variance is not hidden.
+- Exact final-hash Metal evidence is refreshed at
+  `build/native/boot-runtime/cadence/runs/m31-metal-capture-final-20260824/`:
+  `goldeneye-layer-final5750.gputrace` (259 draws, one source encoder,
+  960x540 BGRA8/depth) and non-black `color0-final5750.png` (SHA-256
+  `60578b6c89b0d7bda4dc0dbc32883866d38e6fb71f9c4a35acce52c8bfa24d0f`).
+
+### M23 Cast production-route diagnostic refresh — 2026-08-24
+
+- The Cast production harness now supports an explicit validation-only
+  `GE_CAST_PRODUCTION_BACKGROUND=0|1` override (default validation remains
+  passive), copies owner-failure/native-owner telemetry, detects the scheduler
+  failure early, and uses the actual `/bin/unlink` lock path.
+- Current foreground API/shader validation reaches Gunbarrel tick `2944` and
+  fails closed at `GE120 scheduler deadline debt exceeded limit: 241`; it does
+  not reach `castSubmit=1`, has no crash, and emits no Cast authority failure.
+  This is a Debug/validation Gunbarrel timing boundary, not permission to
+  bypass the source route or substitute Cast assets.
+- The harness syntax/diff gates pass. M23 live supplied-drawable Cast Metal
+  capture remains open; source-row Cast references and passive owner
+  composition evidence remain valid but are not promoted to live capture.
+- Fresh current-source Cast references pass strict Metal API/shader validation:
+  row 1 repeats byte-identically (`878411975a89…` reference raw), and explicit
+  row 2/random-word `3` passes with `77c32bfe06d76b63114757c1915964d14331072be98c52b4febce17eccaf2454`
+  (evidence under `build/native/cast-reference-capture-v6/`).
+- Optimized Release capture lane now reaches live Cast: source row 2 submits
+  at tick `4185` (61 draws, 2,265 vertices, 16 poses) and an inspected
+  CAMetalLayer trace contains 68 source-scene draws with BGRA8/depth
+  attachments. Durable evidence:
+  `build/native/cast-production-route-v6/m23-cast-release-capture-20260824/`.
+- M23 still does not claim sustained physical Cast cadence or N64 pixel parity;
+  Debug/API validation remains bounded by the Gunbarrel debt horizon.
+- Paired source-authority Cast route smoke passes again, including the
+  Gunbarrel blood acknowledgement at tick `3072`; evidence is under
+  `build/native/original-source-v6/paired-authority-v6`.
+
+### M23/M31 current-hash validation and activation refresh — 2026-08-24
+
+- The current signed Release executable is
+  `f59562608db6c440e0bb1a9cacf08278cb7f703643641cc46b308364b79e081d`;
+  `build_native_boot.sh`, codesign, owner/policy, Gunbarrel stepper, and
+  paired-authority gates pass.
+- Current-hash optimized Release Cast validation with Metal API and shader
+  validation reaches row 2 `castSubmit=1` at tick `3980` with no owner failure:
+  `build/native/cast-production-route-v6/m23-cast-release-validation-postactivation-20260824/`.
+- Current-hash explicit foreground Cast capture reaches tick `4022` and
+  produces a 72-draw source-scene CAMetalLayer trace with 960x540
+  BGRA8/depth attachments. `cast-color0.png` is non-black (SHA-256
+  `d621e34399928be216cacf43619472ce5c3107fbfa3d61de442a5a71a27ad03d`):
+  `build/native/cast-production-route-v6/m23-cast-release-capture-postactivation-20260824/`.
+- Strict Cast row 1 repeats byte-identically; row 2/random-word `3` passes
+  API/shader validation with raw SHA-256
+  `77c32bfe06d76b63114757c1915964d14331072be98c52b4febce17eccaf2454`.
+- Explicit cadence probes now request foreground activation only inside the
+  non-background cadence branch, fixing direct-executable readiness without
+  changing passive policy. Fresh passive evidence passes at 120.003 Hz with
+  `601` source frames, zero drops/violations, inactive/non-key alpha-zero
+  window: `build/native/boot-runtime/cadence/runs/m31-passive-postactivation-20260824/120/`.
+- Fresh active windowed 120 reaches the epoch with logic `119.998 Hz` and
+  zero source/render/migration failures but presents `114.24 FPS`; fullscreen
+  triple-buffered DELL 60 reaches `58.999 FPS` with rolling minimum `52`.
+  A two-drawable comparison reaches `59.68 FPS` with rolling minimum `59`,
+  but has two transition-rejected timestamps. These remain compositor/display
+  evidence gaps, not reasons to weaken source or passive contracts.
+- M31 direct-display/Metal-HUD proof and strict sustained active 120/60
+  presentation remain open.

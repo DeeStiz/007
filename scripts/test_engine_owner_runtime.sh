@@ -36,6 +36,8 @@ rg -q 'presentationPath=.*suppliedDrawable' \
     "${PROJECT_ROOT}/native/host/native_title_owner.swift"
 rg -q 'layer\.maximumDrawableCount = 2' \
     "${PROJECT_ROOT}/native/host/display_link_runtime.swift"
+rg -q 'layer\.maximumDrawableCount = 3' \
+    "${PROJECT_ROOT}/native/host/display_link_runtime.swift"
 rg -q 'layer\.displaySyncEnabled = true' \
     "${PROJECT_ROOT}/native/host/display_link_runtime.swift"
 rg -q 'CAFrameRateRange\(minimum: 60, maximum: 120, preferred: 120\)' \

@@ -21,6 +21,8 @@ ALLOW_FOREGROUND_CAPTURE="${GOLDENEYE_ALLOW_FOREGROUND_CAPTURE:-0}"
 WAIT_SECONDS="${GE_CAST_PRODUCTION_WAIT_SECONDS:-300}"
 CADENCE_WARMUP_SECONDS="${GE_CAST_PRODUCTION_CADENCE_WARMUP:-0}"
 CADENCE_PROBE="${GE_CAST_PRODUCTION_CADENCE_PROBE:-0}"
+BACKGROUND_OVERRIDE="${GE_CAST_PRODUCTION_BACKGROUND:-}"
+BUILD_CONFIGURATION="${GE_CAST_PRODUCTION_BUILD_CONFIGURATION:-debug}"
 [[ "${WAIT_SECONDS}" =~ ^[0-9]+$ && "${WAIT_SECONDS}" -gt 0 ]] || {
     echo "Cast production route V6: GE_CAST_PRODUCTION_WAIT_SECONDS must be a positive integer" >&2
     exit 2
@@ -35,6 +37,14 @@ CADENCE_PROBE="${GE_CAST_PRODUCTION_CADENCE_PROBE:-0}"
 }
 [[ "${ALLOW_FOREGROUND_CAPTURE}" == 0 || "${ALLOW_FOREGROUND_CAPTURE}" == 1 ]] || {
     echo "Cast production route V6: GOLDENEYE_ALLOW_FOREGROUND_CAPTURE must be 0 or 1" >&2
+    exit 2
+}
+[[ -z "${BACKGROUND_OVERRIDE}" || "${BACKGROUND_OVERRIDE}" == 0 || "${BACKGROUND_OVERRIDE}" == 1 ]] || {
+    echo "Cast production route V6: GE_CAST_PRODUCTION_BACKGROUND must be 0 or 1" >&2
+    exit 2
+}
+[[ "${BUILD_CONFIGURATION}" == debug || "${BUILD_CONFIGURATION}" == release ]] || {
+    echo "Cast production route V6: GE_CAST_PRODUCTION_BUILD_CONFIGURATION must be debug or release" >&2
     exit 2
 }
 case "${CAPTURE_MODE}" in
@@ -62,6 +72,8 @@ esac
 NATIVE_BACKGROUND=1
 if [[ "${CAPTURE_MODE}" == "capture" ]]; then
     NATIVE_BACKGROUND=0
+elif [[ -n "${BACKGROUND_OVERRIDE}" ]]; then
+    NATIVE_BACKGROUND="${BACKGROUND_OVERRIDE}"
 fi
 
 fail() {
@@ -98,14 +110,14 @@ ROM_SHA1=$(shasum -a 1 "${ROM_PATH}" | awk '{print tolower($1)}')
 [[ "${ROM_SHA1}" == "abe01e4aeb033b6c0836819f549c791b26cfde83" ]] ||
     fail "external ROM SHA-1 mismatch: ${ROM_SHA1}"
 
-BUILD_LOG="${BUILD_ROOT}/debug-build.log"
-if ! swift build --configuration debug \
+BUILD_LOG="${BUILD_ROOT}/${BUILD_CONFIGURATION}-build.log"
+if ! swift build --configuration "${BUILD_CONFIGURATION}" \
     --scratch-path "${SWIFT_BUILD_ROOT}" \
     --product GoldenEyeHost >"${BUILD_LOG}" 2>&1; then
     tail -80 "${BUILD_LOG}" >&2
-    fail "debug production-route build failed"
+    fail "${BUILD_CONFIGURATION} production-route build failed"
 fi
-BIN_PATH=$(swift build --configuration debug \
+BIN_PATH=$(swift build --configuration "${BUILD_CONFIGURATION}" \
     --scratch-path "${SWIFT_BUILD_ROOT}" \
     --product GoldenEyeHost --show-bin-path)
 DEBUG_EXECUTABLE="${BIN_PATH}/GoldenEyeHost"
@@ -138,6 +150,8 @@ AUTHORITY_LOG="${BUILD_ROOT}/source-frontend-authority.log"
 BOUNDARY_LOG="${BUILD_ROOT}/gpu-boundaries.log"
 GPUD_LOG="${BUILD_ROOT}/gpudebug.log"
 BLOCKER_LOG="${BUILD_ROOT}/blocker.txt"
+ENGINE_FAILURE_LOG="${BUILD_ROOT}/engine-owner-failure.log"
+OWNER_TELEMETRY_LOG="${BUILD_ROOT}/native-title-owner.log"
 CRASH_MARKER="${BUILD_ROOT}/crash-marker"
 for log in "${CAST_LOG}" "${OWNER_LOG}" "${FRAME_LOG}" "${AUTHORITY_LOG}"; do : > "${log}"; done
 
@@ -150,9 +164,11 @@ cleanup() {
         cp -f /tmp/goldeneye-source-frontend-owner.log "${OWNER_LOG}" 2>/dev/null || true
         cp -f /tmp/goldeneye-source-product-renderer-v6-frames.log "${FRAME_LOG}" 2>/dev/null || true
         cp -f /tmp/goldeneye-source-frontend-authority.log "${AUTHORITY_LOG}" 2>/dev/null || true
+        cp -f /tmp/goldeneye-engine-owner-failure.log "${ENGINE_FAILURE_LOG}" 2>/dev/null || true
+        cp -f /tmp/goldeneye-native-title-owner.log "${OWNER_TELEMETRY_LOG}" 2>/dev/null || true
     fi
     if [[ "${RUNTIME_LOCK_HELD}" == "1" ]]; then
-        /usr/bin/unlink "${RUNTIME_LOCK_FILE}" 2>/dev/null || true
+        /bin/unlink "${RUNTIME_LOCK_FILE}" 2>/dev/null || true
         RUNTIME_LOCK_HELD=0
     fi
 }
@@ -170,6 +186,8 @@ touch "${CRASH_MARKER}"
 : > /tmp/goldeneye-source-frontend-owner.log
 : > /tmp/goldeneye-source-product-renderer-v6-frames.log
 : > /tmp/goldeneye-source-frontend-authority.log
+: > /tmp/goldeneye-engine-owner-failure.log
+: > /tmp/goldeneye-native-title-owner.log
 
 APP_LAUNCH_LOG="${BUILD_ROOT}/app-launch.log"
 (
@@ -207,9 +225,9 @@ for _ in $(seq 1 20); do
     sleep 1
 done
 kill -0 "${PID}" 2>/dev/null || fail "production Cast app did not start"
-printf 'pid=%s\nseed=%s\nmode=%s\nshaderValidation=%s\ncaptureEnabled=%s\ncadenceProbe=%s\nwaitSeconds=%s\ncastRoot=%s\n' \
-    "${PID}" "${SEED}" "${CAPTURE_MODE}" "${SHADER_VALIDATION}" \
-    "${CAPTURE_ENABLED}" "${CADENCE_PROBE}" "${WAIT_SECONDS}" "${CAST_ROOT}" > "${BUILD_ROOT}/launch.txt"
+printf 'pid=%s\nseed=%s\nmode=%s\nbuildConfiguration=%s\nshaderValidation=%s\ncaptureEnabled=%s\nnativeBackground=%s\ncadenceProbe=%s\nwaitSeconds=%s\ncastRoot=%s\n' \
+    "${PID}" "${SEED}" "${CAPTURE_MODE}" "${BUILD_CONFIGURATION}" "${SHADER_VALIDATION}" \
+    "${CAPTURE_ENABLED}" "${NATIVE_BACKGROUND}" "${CADENCE_PROBE}" "${WAIT_SECONDS}" "${CAST_ROOT}" > "${BUILD_ROOT}/launch.txt"
 
 cast_seen=0
 owner_cast_seen=0
@@ -221,6 +239,9 @@ for _ in $(seq 1 "${WAIT_SECONDS}"); do
     if rg -q 'castSceneSubmit=1' /tmp/goldeneye-source-frontend-owner.log 2>/dev/null; then
         owner_cast_seen=1
         if [[ "${CAPTURE_MODE}" == "validation" ]]; then break; fi
+    fi
+    if [[ -s /tmp/goldeneye-engine-owner-failure.log ]]; then
+        break
     fi
     if ! kill -0 "${PID}" 2>/dev/null; then break; fi
     sleep 1
@@ -242,7 +263,12 @@ if [[ "${cast_seen}" != 1 && "${owner_cast_seen}" != 1 ]]; then
         echo "waitSeconds=${WAIT_SECONDS}"
         echo "cadenceWarmupSeconds=${CADENCE_WARMUP_SECONDS}"
         echo "processAlive=${process_alive}"
-        echo "deadlineReason=$([[ "${process_alive}" == 1 ]] && echo timeout || echo process-exited)"
+        if [[ -s /tmp/goldeneye-engine-owner-failure.log ]]; then
+            echo "deadlineReason=owner-failed"
+            echo "engineOwnerFailure=$(tr '\n' ' ' < /tmp/goldeneye-engine-owner-failure.log)"
+        else
+            echo "deadlineReason=$([[ "${process_alive}" == 1 ]] && echo timeout || echo process-exited)"
+        fi
         echo "lastOwnerLine=${last_owner_line}"
         echo "lastFrameLine=${last_frame_line}"
         if [[ -n "${latest_crash}" && -s "${latest_crash}" ]]; then

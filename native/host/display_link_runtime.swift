@@ -243,7 +243,16 @@ final class GE120DisplayLinkRuntime: NSObject, CAMetalDisplayLinkDelegate, @unch
         layer.framebufferOnly = true
         layer.pixelFormat = .bgra8Unorm
         layer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
-        layer.maximumDrawableCount = 2
+        if Self.cadenceDrawableCountOverride() == 2 {
+            layer.maximumDrawableCount = 2
+        } else {
+            // CAMetalLayer permits two or three drawables. The supplied
+            // CAMetalDisplayLink path uses triple buffering by default so a
+            // fullscreen/display migration does not starve the compositor;
+            // an explicit cadence probe may request the double-buffer
+            // compatibility comparison above.
+            layer.maximumDrawableCount = 3
+        }
         layer.displaySyncEnabled = true
         layer.allowsNextDrawableTimeout = true
         layer.presentsWithTransaction = false
@@ -881,6 +890,15 @@ final class GE120DisplayLinkRuntime: NSObject, CAMetalDisplayLinkDelegate, @unch
             return nil
         }
         return CAFrameRateRange(minimum: minimum, maximum: maximum, preferred: preferred)
+    }
+
+    private static func cadenceDrawableCountOverride() -> Int? {
+        guard ProcessInfo.processInfo.environment["GOLDENEYE_CADENCE_PROBE"] == "1",
+              let raw = ProcessInfo.processInfo.environment["GOLDENEYE_CADENCE_DRAWABLE_COUNT"],
+              raw == "2" || raw == "3" else {
+            return nil
+        }
+        return Int(raw)
     }
 
     private static func currentThreadIdentifier() -> UInt64 {

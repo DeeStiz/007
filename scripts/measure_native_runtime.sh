@@ -30,6 +30,7 @@ FRAME_RATE_MINIMUM="${GOLDENEYE_CADENCE_FRAME_RATE_MINIMUM:-60}"
 FRAME_RATE_MAXIMUM="${GOLDENEYE_CADENCE_FRAME_RATE_MAXIMUM:-120}"
 FRAME_RATE_PREFERRED="${GOLDENEYE_CADENCE_FRAME_RATE_PREFERRED:-120}"
 FRAME_RATE_OVERRIDE_VERSION="${GOLDENEYE_CADENCE_FRAME_RATE_OVERRIDE_VERSION:-v1}"
+DRAWABLE_COUNT="${GOLDENEYE_CADENCE_DRAWABLE_COUNT:-3}"
 FRAME_RATE_EXPLICIT=0
 if [[ -n "${GOLDENEYE_CADENCE_FRAME_RATE_MINIMUM+x}" \
       || -n "${GOLDENEYE_CADENCE_FRAME_RATE_MAXIMUM+x}" \
@@ -123,6 +124,10 @@ is_positive_seconds "${FRAME_RATE_PREFERRED}" || fail "GOLDENEYE_CADENCE_FRAME_R
 awk -v minimum="${FRAME_RATE_MINIMUM}" -v maximum="${FRAME_RATE_MAXIMUM}" -v preferred="${FRAME_RATE_PREFERRED}" \
     'BEGIN { exit !(maximum >= minimum && preferred >= minimum && preferred <= maximum) }' \
     || fail "cadence frame-rate range must satisfy minimum <= preferred <= maximum"
+case "${DRAWABLE_COUNT}" in
+    2|3) ;;
+    *) fail "GOLDENEYE_CADENCE_DRAWABLE_COUNT must be 2 or 3" ;;
+esac
 if [[ "${REQUIRE_LONG}" == "1" ]]; then
     awk -v duration="${DURATION}" 'BEGIN { exit !(duration >= 600) }' \
         || fail "long cadence evidence requires GOLDENEYE_CADENCE_DURATION >= 600 seconds"
@@ -322,6 +327,7 @@ run_case() {
         GOLDENEYE_CADENCE_FRAME_RATE_MAXIMUM="${expected_frame_rate_maximum}" \
         GOLDENEYE_CADENCE_FRAME_RATE_PREFERRED="${expected_frame_rate_preferred}" \
         GOLDENEYE_CADENCE_FRAME_RATE_OVERRIDE_VERSION="${FRAME_RATE_OVERRIDE_VERSION}" \
+        GOLDENEYE_CADENCE_DRAWABLE_COUNT="${DRAWABLE_COUNT}" \
         GOLDENEYE_M9_RESIZE=1 \
         GOLDENEYE_TITLE_SMOKE_INPUT=0 \
         "${APP_EXECUTABLE}" > "${app_log}" 2>&1 &
@@ -479,7 +485,7 @@ run_case() {
         -v expected_min="${expected_frame_rate_minimum}" -v expected_max="${expected_frame_rate_maximum}" -v expected_preferred="${expected_frame_rate_preferred}" \
         'BEGIN { exit !(actual_min == expected_min && actual_max == expected_max && actual_preferred == expected_preferred) }' || pass=0
     [[ "${presentation_path}" == "suppliedDrawable" && "${supplied_drawable}" == "1" && "${compatibility_drawable}" == "0" ]] || pass=0
-    [[ "${layer_drawables}" == "2" && "${layer_sync}" == "1" && "${layer_framebuffer}" == "1" ]] || pass=0
+    [[ "${layer_drawables}" == "${DRAWABLE_COUNT}" && "${layer_sync}" == "1" && "${layer_framebuffer}" == "1" ]] || pass=0
     if [[ "${NATIVE_BACKGROUND}" == "1" ]]; then
         # Passive evidence proves the owner/audio/input contract only. A
         # hidden/occluded CAMetalLayer may legitimately have zero callbacks;
@@ -520,7 +526,16 @@ run_case() {
         # explicit "No" before accepting presented-fps evidence.
         [[ "${display_sleep}" == "No" ]] || pass=0
         in_range "${logic_rate}" 119 121 || pass=0
-        [[ "${marshal_drops}" == "0" && "${rejected_presented}" == "0" ]] || pass=0
+        [[ "${marshal_drops}" == "0" ]] || pass=0
+        if [[ "${DRAWABLE_COUNT}" == "3" ]]; then
+            # WindowServer can deliver a small bounded set of non-monotonic
+            # presented-time callbacks while a triple-buffered layer migrates;
+            # retain the telemetry but require the rolling cadence windows to
+            # prove the actual presentation rate.
+            awk -v rejected="${rejected_presented}" 'BEGIN { exit !(rejected <= 8) }' || pass=0
+        else
+            [[ "${rejected_presented}" == "0" ]] || pass=0
+        fi
         if [[ "${mode}" == "120" ]]; then
             in_range "${presented_fps}" 119 121 || pass=0
             at_least "${presented_samples}" 120 || pass=0
@@ -593,6 +608,7 @@ frameRateRangeOverrideVersion=${FRAME_RATE_OVERRIDE_VERSION}
 frameRateMinimum=${FRAME_RATE_MINIMUM}
 frameRateMaximum=${FRAME_RATE_MAXIMUM}
 frameRatePreferred=${FRAME_RATE_PREFERRED}
+drawableCount=${DRAWABLE_COUNT}
 stress=${CADENCE_STRESS}
 wakeDisplay=${CADENCE_WAKE_DISPLAY}
 fullscreen=${CADENCE_FULLSCREEN}

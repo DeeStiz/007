@@ -350,6 +350,7 @@ private final class GoldenEyeViewController: NSViewController {
     private var didScheduleCadenceSafetyTermination = false
     private var cadenceMeasurementStarted = false
     private var cadenceWarmupReadinessDeadline = Date.distantPast
+    private var fullscreenTransitioning = false
     private var metalDeviceState: AnyObject?
     private var frameRenderer: (any GoldenEyeFrameRenderer)?
     private var nativeTitleOwner: GoldenEyeNativeTitleOwner?
@@ -1126,6 +1127,12 @@ private final class GoldenEyeViewController: NSViewController {
     }
 
     private func refreshDisplayConfiguration(source: String) {
+        if fullscreenTransitioning {
+            recordInputEvidence(
+                "event=displayDidChange source=\(source) deferred=1 reason=fullscreenTransition"
+            )
+            return
+        }
         gameView.updateDrawableSize()
         nativeTitleOwner?.requestPreferredFrameRateRange(
             preferredFrameRateRange(for: view.window?.screen)
@@ -1135,6 +1142,18 @@ private final class GoldenEyeViewController: NSViewController {
                 + "screen=\(view.window?.screen?.localizedName ?? "none") "
                 + "scale=\(view.window?.backingScaleFactor ?? 1.0)"
         )
+    }
+
+    /// Fullscreen animation emits intermediate screen/backing notifications.
+    /// Hold those requests until AppKit reports the settled state so the
+    /// supplied-drawable layer is resized/reranged exactly once per migration.
+    fileprivate func setFullscreenTransitioning(
+        _ transitioning: Bool,
+        source: String
+    ) {
+        fullscreenTransitioning = transitioning
+        guard !transitioning else { return }
+        refreshDisplayConfiguration(source: source)
     }
 
     /// Keep the display-link range aligned with the actual screen mode. A
@@ -1471,7 +1490,15 @@ private final class GoldenEyeAppDelegate: NSObject, NSApplicationDelegate, NSWin
             window.makeKeyAndOrderFront(nil)
         }
         if !backgroundRuntimeEnabled {
-            NSApp.activate()
+            // Direct executable launches do not always receive an activation
+            // grant while another app owns the foreground. Explicit
+            // interactive/cadence runs are the only mode allowed to request
+            // that grant; passive/background launches never enter this path.
+            if cadenceProbeEnabled {
+                NSApp.activate(ignoringOtherApps: true)
+            } else {
+                NSApp.activate()
+            }
         }
         recordCadenceWindowState(event: "activeGateObserved")
         if prefers120Fullscreen {
@@ -1680,12 +1707,54 @@ private final class GoldenEyeAppDelegate: NSObject, NSApplicationDelegate, NSWin
         return true
     }
 
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        guard notification.object as AnyObject? === window else { return }
+        viewController?.setFullscreenTransitioning(
+            true,
+            source: "NSWindowWillEnterFullScreenNotification"
+        )
+    }
+
+    func windowWillExitFullScreen(_ notification: Notification) {
+        guard notification.object as AnyObject? === window else { return }
+        viewController?.setFullscreenTransitioning(
+            true,
+            source: "NSWindowWillExitFullScreenNotification"
+        )
+    }
+
+    func windowDidFailToEnterFullScreen(_ failedWindow: NSWindow) {
+        guard failedWindow === window else { return }
+        viewController?.setFullscreenTransitioning(
+            false,
+            source: "NSWindowDidFailToEnterFullScreenNotification"
+        )
+    }
+
+    func windowDidFailToExitFullScreen(_ failedWindow: NSWindow) {
+        guard failedWindow === window else { return }
+        viewController?.setFullscreenTransitioning(
+            false,
+            source: "NSWindowDidFailToExitFullScreenNotification"
+        )
+    }
+
     func windowDidEnterFullScreen(_ notification: Notification) {
+        guard notification.object as AnyObject? === window else { return }
+        viewController?.setFullscreenTransitioning(
+            false,
+            source: "NSWindowDidEnterFullScreenNotification"
+        )
         guard cadenceProbeEnabled else { return }
         recordCadenceWindowState(event: "fullscreenEntryReady")
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
+        guard notification.object as AnyObject? === window else { return }
+        viewController?.setFullscreenTransitioning(
+            false,
+            source: "NSWindowDidExitFullScreenNotification"
+        )
         guard cadenceProbeEnabled else { return }
         recordCadenceWindowState(event: "fullscreenExitObserved")
     }

@@ -198,6 +198,21 @@ struct GoldenEyeGunbarrelV6Smoke {
             let integrated230 = try sidecar.integratedRootMotion(sourceSubstep: 230)
             let integrated348 = try sidecar.integratedRootMotion(sourceSubstep: 348)
             let integrated400 = try sidecar.integratedRootMotion(sourceSubstep: 400)
+            var stepper = try GoldenEyeGunbarrelDynamicSidecarV6.RootMotionStepperV6(
+                sidecar: sidecar
+            )
+            for checkpoint in [0, 1, 40, 50, 136, 137, 152, 168, 169, 212, 230, 348, 400] {
+                let stepped = try stepper.advance(to: UInt32(checkpoint))
+                let pure = try sidecar.integratedRootMotion(
+                    sourceSubstep: UInt32(checkpoint)
+                )
+                check(stepped == pure, "incremental root-motion checkpoint (checkpoint)")
+            }
+            let rewind = try stepper.advance(to: 399)
+            let pureRewind = try sidecar.integratedRootMotion(sourceSubstep: 399)
+            check(rewind == pureRewind, "incremental root-motion rewind reset")
+            print("gunbarrel_root_motion_rewind_reset=PASS")
+            print("gunbarrel_root_motion_stepper=PASS checkpoints=13")
             check(integrated0.translationQ16.x == 0 && integrated0.translationQ16.z == 0, "root integrator initial X/Z zero")
             check(integrated0.translationQ16.y == integrated1.translationQ16.y
                 && integrated1.translationQ16.y == integrated2.translationQ16.y,

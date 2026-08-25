@@ -37,12 +37,20 @@ grep -Fq 'usesPassiveNativeBackgroundRuntime' "${MAIN}"
 grep -Fq 'app.setActivationPolicy(' "${MAIN}"
 grep -Fq 'usesPassiveNativeBackgroundRuntime() ? .accessory : .regular' "${MAIN}"
 ! grep -Fq 'window.collectionBehavior = [.canJoinAllSpaces, .ignoresCycle]' "${MAIN}"
-! grep -Fq 'activate(ignoringOtherApps: true)' "${MAIN}"
+# Explicit cadence/interactive probes may request foreground activation so a
+# direct executable launch can establish the measured active gate. The call
+# must remain behind the non-background cadence branch; passive launches are
+# still forbidden from activating or taking input focus.
+grep -Fq 'if cadenceProbeEnabled' "${MAIN}"
+grep -Fq 'NSApp.activate(ignoringOtherApps: true)' "${MAIN}"
 ! grep -Fq 'window.level = .floating' "${MAIN}"
 ! grep -Fq 'window.orderFrontRegardless()' "${MAIN}"
 ! grep -Fq 'scheduleCadenceKeepAlive' "${MAIN}"
 grep -Fq 'source: "initial"' "${MAIN}"
 grep -Fq 'applicationShouldHandleReopen' "${MAIN}"
+grep -Fq 'deferred=1 reason=fullscreenTransition' "${MAIN}"
+grep -Fq 'windowDidFailToEnterFullScreen' "${MAIN}"
+grep -Fq 'windowDidFailToExitFullScreen' "${MAIN}"
 grep -Fq 'Another GoldenEyeHost harness is running' "${RUNNER}"
 
-echo "native background launch policy: PASS passive-by-default click-through explicit-interactive-only"
+echo "native background launch policy: PASS passive-by-default click-through cadence-activation-explicit-interactive-only"
